@@ -15,7 +15,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(200).end();
 
-  const path = req.url?.replace(/^\/api/, "") || "/";
+  // Vercel passes catch-all path segments as query param 'path'
+  // e.g. /api/dashboard/stats becomes /api/index.ts?path=dashboard/stats
+  const pathParam = req.query?.path;
+  const pathFromQuery = Array.isArray(pathParam) ? pathParam.join("/") : pathParam;
+  const path = pathFromQuery ? `/${pathFromQuery}` : (req.url?.replace(/^\/api\/index\.ts/, "").replace(/^\/api/, "").split("?")[0] || "/");
 
   try {
     // ==================== DASHBOARD ====================

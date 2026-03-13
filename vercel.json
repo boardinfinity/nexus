@@ -10,7 +10,7 @@
     }
   },
   "rewrites": [
-    { "source": "/api/:path*", "destination": "/api/index.ts" },
+    { "source": "/api/(.*)", "destination": "/api/index.ts?path=$1" },
     { "source": "/((?!api|assets).*)", "destination": "/index.html" }
   ]
 }
