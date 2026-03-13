@@ -200,9 +200,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (pipeline_type === "linkedin_jobs") {
         if (!APIFY_API_KEY) return res.status(400).json({ error: "Apify API key not configured" });
-        const timePostedMap: Record<string, string> = { past_24h: "r86400", past_week: "r604800", past_month: "r2592000" };
+        const timePostedMap: Record<string, string> = {
+          "past_24h": "r86400", "24hr": "r86400",
+          "past_week": "r604800", "past week": "r604800",
+          "past_month": "r2592000", "past month": "r2592000",
+        };
         const actorInput: Record<string, any> = {
-          keywords: config?.keywords || "software engineer",
+          keywords: config?.search_keywords || config?.keywords || "software engineer",
           location: config?.location || "India",
           maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
         };
