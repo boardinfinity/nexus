@@ -18,11 +18,12 @@ export async function runLinkedInJobsScraper(config: Record<string, unknown>): P
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          searchKeywords: config.search_keywords || "software engineer",
+          keywords: config.search_keywords || config.keywords || "software engineer",
           location: config.location || "India",
-          dateSincePosted: config.date_posted || "past month",
-          jobType: config.employment_type || "full-time",
-          limit: config.limit || 25,
+          maxPages: Math.ceil(((config.limit as number) || 25) / 10),
+          ...(config.date_posted === "past_24h" ? { timePosted: "r86400" } :
+              config.date_posted === "past_week" ? { timePosted: "r604800" } :
+              config.date_posted === "past_month" ? { timePosted: "r2592000" } : {}),
         }),
       }
     );

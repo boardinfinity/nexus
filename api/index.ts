@@ -299,13 +299,21 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
 async function executeLinkedInJobs(runId: string, config: any) {
   if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
 
-  const actorInput = {
-    searchKeywords: config.keywords || "software engineer",
-    location: config.location || "India",
-    dateSincePosted: config.date_posted || "past month",
-    jobType: config.employment_type || "",
-    rows: parseInt(config.limit) || 100,
+  // Map date_posted to Apify's timePosted format
+  const timePostedMap: Record<string, string> = {
+    "past_24h": "r86400",
+    "past_week": "r604800",
+    "past_month": "r2592000",
+    "any": "",
   };
+  const actorInput: Record<string, any> = {
+    keywords: config.keywords || "software engineer",
+    location: config.location || "India",
+    maxPages: Math.ceil((parseInt(config.limit) || 100) / 10),
+  };
+  if (config.date_posted && timePostedMap[config.date_posted]) {
+    actorInput.timePosted = timePostedMap[config.date_posted];
+  }
 
   // Start Apify actor run
   const startRes = await fetch(
