@@ -369,16 +369,16 @@ async function executePipeline(
           const raw = item as Record<string, unknown>;
           if (pipelineType === "linkedin_jobs") {
             await storage.upsertJob({
-              external_id: (raw.id || raw.jobId || raw.url || `linkedin-${Date.now()}-${processed}`) as string,
+              external_id: (raw.jobId || raw.id || raw.url || `linkedin-${Date.now()}-${processed}`) as string,
               source: "linkedin",
               title: (raw.title || raw.jobTitle || "Unknown") as string,
-              company_name: (raw.companyName || raw.company || null) as string | null,
+              company_name: (raw.company || raw.companyName || null) as string | null,
               description: (raw.description || null) as string | null,
               location_raw: (raw.location || raw.formattedLocation || null) as string | null,
               location_country: (raw.country || null) as string | null,
               application_url: (raw.applyUrl || raw.link || null) as string | null,
               source_url: (raw.url || raw.jobUrl || null) as string | null,
-              posted_at: (raw.postedAt || raw.publishedAt || null) as string | null,
+              posted_at: (raw.datePosted || raw.postedAt || raw.publishedAt || null) as string | null,
               employment_type: mapEmploymentType(raw.contractType as string | undefined),
               seniority_level: mapSeniorityLevel(raw.experienceLevel as string | undefined),
               enrichment_status: "pending",

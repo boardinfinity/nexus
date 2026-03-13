@@ -373,18 +373,31 @@ async function executeLinkedInJobs(runId: string, config: any) {
   const resultsRes = await fetch(
     `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=1000`
   );
-  const results = await resultsRes.json();
+  const rawResults = await resultsRes.json();
+
+  // Apify practicaltools/linkedin-jobs returns nested structure:
+  // [{scrapedAt, total, jobs: [{jobId, title, company, location, datePosted, url, ...}]}]
+  // Flatten to get the actual job items
+  const jobs: any[] = [];
+  for (const item of rawResults) {
+    if (Array.isArray(item.jobs)) {
+      jobs.push(...item.jobs);
+    } else {
+      // Fallback: treat item itself as a job if no nested structure
+      jobs.push(item);
+    }
+  }
 
   // Process and upsert jobs
   let processed = 0;
   let failed = 0;
   let skipped = 0;
 
-  await supabase.from("pipeline_runs").update({ total_items: results.length }).eq("id", runId);
+  await supabase.from("pipeline_runs").update({ total_items: jobs.length }).eq("id", runId);
 
-  for (const item of results) {
+  for (const item of jobs) {
     try {
-      const externalId = item.id || item.jobId || item.url || `li-${Date.now()}-${processed}`;
+      const externalId = item.jobId || item.id || item.url || `li-${Date.now()}-${processed}`;
 
       // Check for duplicate
       const { data: existing } = await supabase
@@ -400,13 +413,14 @@ async function executeLinkedInJobs(runId: string, config: any) {
       }
 
       // Upsert company if we have company info
+      const companyName = item.company || item.companyName || null;
       let companyId = null;
-      if (item.companyName) {
+      if (companyName) {
         const { data: company } = await supabase
           .from("companies")
           .upsert(
             {
-              name: item.companyName,
+              name: companyName,
               linkedin_url: item.companyUrl || null,
               domain: item.companyDomain || null,
               enrichment_status: "pending",
@@ -418,14 +432,14 @@ async function executeLinkedInJobs(runId: string, config: any) {
         companyId = company?.id;
       }
 
-      // Insert job
+      // Insert job - map Apify output fields correctly
       await supabase.from("jobs").insert({
         external_id: String(externalId),
         source: "linkedin",
         title: item.title || "Unknown",
         description: item.description || null,
         company_id: companyId,
-        company_name: item.companyName || null,
+        company_name: companyName,
         location_raw: item.location || item.formattedLocation || null,
         location_city: item.city || null,
         location_state: item.state || null,
@@ -435,7 +449,7 @@ async function executeLinkedInJobs(runId: string, config: any) {
         salary_min: item.salaryMin || null,
         salary_max: item.salaryMax || null,
         salary_currency: item.salaryCurrency || null,
-        posted_at: item.postedAt || item.publishedAt || null,
+        posted_at: item.datePosted || item.postedAt || item.publishedAt || null,
         application_url: item.applyUrl || item.applicationUrl || null,
         source_url: item.url || item.link || null,
         recruiter_name: item.recruiterName || null,

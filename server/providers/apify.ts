@@ -80,7 +80,16 @@ export async function runLinkedInJobsScraper(config: Record<string, unknown>): P
       };
     }
 
-    const items = await itemsRes.json() as unknown[];
+    const rawItems = await itemsRes.json() as any[];
+    // Apify practicaltools/linkedin-jobs returns nested: [{scrapedAt, total, jobs: [...]}]
+    const items: unknown[] = [];
+    for (const item of rawItems) {
+      if (Array.isArray(item.jobs)) {
+        items.push(...item.jobs);
+      } else {
+        items.push(item);
+      }
+    }
     return {
       success: true,
       data: items,
