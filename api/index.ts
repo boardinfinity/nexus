@@ -416,20 +416,27 @@ async function executeLinkedInJobs(runId: string, config: any) {
       const companyName = item.company || item.companyName || null;
       let companyId = null;
       if (companyName) {
-        const { data: company } = await supabase
+        // Try to find existing company first
+        const { data: existingCompany } = await supabase
           .from("companies")
-          .upsert(
-            {
+          .select("id")
+          .eq("name", companyName)
+          .maybeSingle();
+        if (existingCompany) {
+          companyId = existingCompany.id;
+        } else {
+          const { data: newCompany } = await supabase
+            .from("companies")
+            .insert({
               name: companyName,
               linkedin_url: item.companyUrl || null,
               domain: item.companyDomain || null,
               enrichment_status: "pending",
-            },
-            { onConflict: "linkedin_url", ignoreDuplicates: true }
-          )
-          .select("id")
-          .maybeSingle();
-        companyId = company?.id;
+            })
+            .select("id")
+            .maybeSingle();
+          companyId = newCompany?.id;
+        }
       }
 
       // Insert job - map Apify output fields correctly
