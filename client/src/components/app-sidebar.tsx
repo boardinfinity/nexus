@@ -2,6 +2,7 @@ import { useLocation, Link } from "wouter";
 import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
+  BookOpen, Sparkles,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -19,6 +20,8 @@ const navItems = [
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "People", href: "/people", icon: Users },
   { title: "Pipelines", href: "/pipelines", icon: GitBranch },
+  { title: "Taxonomy", href: "/taxonomy", icon: BookOpen },
+  { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles },
   { title: "Monitoring", href: "/monitoring", icon: Activity },
   { title: "Settings", href: "/settings", icon: Settings },
 ];

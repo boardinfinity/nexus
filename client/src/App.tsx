@@ -15,6 +15,8 @@ import People from "@/pages/people";
 import Pipelines from "@/pages/pipelines";
 import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
+import Taxonomy from "@/pages/taxonomy";
+import JDAnalyzer from "@/pages/jd-analyzer";
 import Login from "@/pages/login";
 import { Loader2 } from "lucide-react";
 
@@ -28,6 +30,8 @@ function AppRouter() {
       <Route path="/pipelines" component={Pipelines} />
       <Route path="/monitoring" component={Monitoring} />
       <Route path="/settings" component={Settings} />
+      <Route path="/taxonomy" component={Taxonomy} />
+      <Route path="/jd-analyzer" component={JDAnalyzer} />
       <Route component={NotFound} />
     </Switch>
   );

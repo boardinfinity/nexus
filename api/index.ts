@@ -7,6 +7,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 
 // Supabase client using anon key (for auth verification)
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
@@ -409,7 +410,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         apollo: { configured: false, key_preview: null },
         proxycurl: { configured: false, key_preview: null },
         hunter: { configured: false, key_preview: null },
-        openai: { configured: false, key_preview: null },
+        openai: { configured: !!OPENAI_API_KEY, key_preview: OPENAI_API_KEY ? `...${OPENAI_API_KEY.slice(-6)}` : null },
       });
     }
 
@@ -434,6 +435,143 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (error) return res.status(500).json({ error: error.message });
       return res.json({ data: data || [], total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
+    // ==================== TAXONOMY ====================
+    if (path === "/taxonomy" && req.method === "GET") {
+      const { category, source, search, page = "1", limit = "50" } = req.query as Record<string, string>;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+
+      let query = supabase
+        .from("taxonomy_skills")
+        .select("*", { count: "exact" });
+
+      if (category) query = query.eq("category", category);
+      if (source) query = query.eq("source", source);
+      if (search) query = query.ilike("name", `%${search}%`);
+
+      const { data, error, count } = await query
+        .order("name")
+        .range(offset, offset + parseInt(limit) - 1);
+
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ data: data || [], total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
+    if (path === "/taxonomy/stats" && req.method === "GET") {
+      // Category counts
+      const { data: catData, error: catErr } = await supabase
+        .from("taxonomy_skills")
+        .select("category");
+      if (catErr) return res.status(500).json({ error: catErr.message });
+
+      const categoryCounts: Record<string, number> = {};
+      for (const row of catData || []) {
+        categoryCounts[row.category] = (categoryCounts[row.category] || 0) + 1;
+      }
+
+      // Hot technology count
+      const { count: hotCount } = await supabase
+        .from("taxonomy_skills")
+        .select("id", { count: "exact", head: true })
+        .eq("is_hot_technology", true);
+
+      // Top skills by job count
+      const { data: topSkills, error: topErr } = await supabase
+        .from("job_skills")
+        .select("skill_name, taxonomy_skill_id");
+      if (topErr) return res.status(500).json({ error: topErr.message });
+
+      const skillCounts: Record<string, number> = {};
+      for (const row of topSkills || []) {
+        skillCounts[row.skill_name] = (skillCounts[row.skill_name] || 0) + 1;
+      }
+      const topSkillsList = Object.entries(skillCounts)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([name, count]) => ({ name, job_count: count }));
+
+      return res.json({
+        total: (catData || []).length,
+        by_category: categoryCounts,
+        hot_technologies: hotCount || 0,
+        top_skills: topSkillsList,
+      });
+    }
+
+    if (path.match(/^\/taxonomy\/[^/]+$/) && req.method === "GET") {
+      const id = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("taxonomy_skills")
+        .select("*")
+        .eq("id", id)
+        .single();
+      if (error) return res.status(404).json({ error: "Taxonomy skill not found" });
+
+      // Get job count for this skill
+      const { count: jobCount } = await supabase
+        .from("job_skills")
+        .select("id", { count: "exact", head: true })
+        .eq("taxonomy_skill_id", id);
+
+      return res.json({ ...data, job_count: jobCount || 0 });
+    }
+
+    if (path === "/analyze-jd" && req.method === "POST") {
+      const { text, job_id } = req.body || {};
+      let jdText = text;
+
+      if (!jdText && job_id) {
+        const { data: job } = await supabase
+          .from("jobs")
+          .select("description")
+          .eq("id", job_id)
+          .single();
+        jdText = job?.description;
+      }
+
+      if (!jdText) {
+        return res.status(400).json({ error: "Provide 'text' or 'job_id'" });
+      }
+
+      if (!OPENAI_API_KEY) {
+        return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
+      }
+
+      try {
+        const extracted = await extractSkillsWithAI(jdText);
+
+        // Try to match against taxonomy
+        const matched = [];
+        for (const skill of extracted) {
+          const { data: match } = await supabase
+            .from("taxonomy_skills")
+            .select("id, name, category, subcategory")
+            .ilike("name", `%${skill.name}%`)
+            .limit(1)
+            .single();
+
+          matched.push({
+            ...skill,
+            taxonomy_match: match || null,
+          });
+        }
+
+        return res.json({ skills: matched, total: matched.length });
+      } catch (err: any) {
+        return res.status(500).json({ error: err.message || "AI extraction failed" });
+      }
+    }
+
+    if (path.match(/^\/jobs\/[^/]+\/skills$/) && req.method === "GET") {
+      const jobId = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("job_skills")
+        .select("*, taxonomy_skill:taxonomy_skills(id, name, category, subcategory)")
+        .eq("job_id", jobId)
+        .order("confidence_score", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data || []);
     }
 
     return res.status(404).json({ error: "Not found", path });
@@ -753,9 +891,54 @@ async function executeCompanyEnrichment(runId: string, config: any) {
   }).eq("id", runId);
 }
 
+async function extractSkillsWithAI(text: string): Promise<Array<{ name: string; category: string; confidence: number }>> {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: `You are a skill extraction expert. Extract skills from job descriptions and return structured JSON.
+Categories: "skill" (soft skills like communication), "technology" (tools/languages/frameworks), "knowledge" (domain knowledge), "ability" (cognitive/physical abilities).
+Return ONLY a JSON array of objects with: name (string), category (string), confidence (number 0-1).
+Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over "frontend".`,
+        },
+        {
+          role: "user",
+          content: `Extract skills from this job description:\n\n${text.slice(0, 4000)}`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 2000,
+    }),
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text();
+    throw new Error(`OpenAI API error: ${response.status} ${errBody}`);
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "[]";
+
+  // Parse JSON from response (handle markdown code blocks)
+  const jsonStr = content.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
+  try {
+    const parsed = JSON.parse(jsonStr);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 async function executeJDEnrichment(runId: string, config: any) {
   const batchSize = parseInt(config.batch_size) || 100;
-  const statusFilter = config.status || "pending";
+  const statusFilter = config.status_filter || config.status || "pending";
 
   const { data: jobs, error } = await supabase
     .from("jobs")
@@ -777,27 +960,65 @@ async function executeJDEnrichment(runId: string, config: any) {
   await supabase.from("pipeline_runs").update({ total_items: jobs.length }).eq("id", runId);
 
   let processed = 0;
-  for (const job of jobs) {
-    // Basic keyword extraction (stub for GPT-4o mini)
-    const skills = extractSkillsKeyword(job.description || "");
+  let failed = 0;
+  const useAI = !!OPENAI_API_KEY;
 
-    for (const skill of skills) {
-      await supabase.from("job_skills").insert({
-        job_id: job.id,
-        skill_name: skill,
-        skill_category: categorizeSkill(skill),
-        confidence_score: 0.7,
-        extraction_method: "keyword",
-      });
+  // Process in batches of 5 with Promise.allSettled
+  for (let i = 0; i < jobs.length; i += 5) {
+    const batch = jobs.slice(i, i + 5);
+    const results = await Promise.allSettled(
+      batch.map(async (job) => {
+        let skills: Array<{ name: string; category: string; confidence: number }>;
+
+        if (useAI) {
+          skills = await extractSkillsWithAI(job.description || "");
+        } else {
+          // Fallback to keyword extraction
+          const keywords = extractSkillsKeyword(job.description || "");
+          skills = keywords.map((k) => ({ name: k, category: categorizeSkill(k), confidence: 0.7 }));
+        }
+
+        for (const skill of skills) {
+          // Try to match against taxonomy
+          let taxonomySkillId: string | null = null;
+          const { data: match } = await supabase
+            .from("taxonomy_skills")
+            .select("id")
+            .ilike("name", skill.name)
+            .limit(1)
+            .single();
+          if (match) taxonomySkillId = match.id;
+
+          await supabase.from("job_skills").upsert({
+            job_id: job.id,
+            skill_name: skill.name,
+            skill_category: skill.category,
+            confidence_score: skill.confidence,
+            extraction_method: useAI ? "ai" : "keyword",
+            taxonomy_skill_id: taxonomySkillId,
+          }, { onConflict: "job_id,skill_name", ignoreDuplicates: true });
+        }
+
+        await supabase.from("jobs").update({ enrichment_status: "complete" }).eq("id", job.id);
+      })
+    );
+
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        processed++;
+      } else {
+        failed++;
+        console.error("JD enrichment error:", r.reason);
+      }
     }
 
-    await supabase.from("jobs").update({ enrichment_status: "complete" }).eq("id", job.id);
-    processed++;
+    await supabase.from("pipeline_runs").update({ processed_items: processed, failed_items: failed }).eq("id", runId);
   }
 
   await supabase.from("pipeline_runs").update({
     status: "completed",
     processed_items: processed,
+    failed_items: failed,
     completed_at: new Date().toISOString(),
   }).eq("id", runId);
 }

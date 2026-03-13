@@ -7,7 +7,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
-import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain } from "lucide-react";
 import type { PipelineRun } from "@shared/schema";
 
 export default function Pipelines() {
@@ -102,6 +102,20 @@ export default function Pipelines() {
             icon={FileText}
             fields={[
               { name: "batch_size", label: "Batch Size", type: "number", placeholder: "100", defaultValue: "100" },
+              { name: "status_filter", label: "Status", type: "select", options: [
+                { value: "pending", label: "Pending Only" },
+                { value: "partial", label: "Partial" },
+                { value: "failed", label: "Failed (Retry)" },
+              ], defaultValue: "pending" },
+            ]}
+          />
+          <PipelineTrigger
+            type="jd_enrichment"
+            title="Skill Extraction"
+            description="AI-powered skill extraction with taxonomy mapping"
+            icon={Brain}
+            fields={[
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
               { name: "status_filter", label: "Status", type: "select", options: [
                 { value: "pending", label: "Pending Only" },
                 { value: "partial", label: "Partial" },
