@@ -1,5 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
+import * as bcrypt from "bcryptjs";
+import * as jwt from "jsonwebtoken";
 
 const supabaseUrl = process.env.SUPABASE_URL!;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!;
@@ -8,6 +10,8 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const JWT_SECRET = process.env.JWT_SECRET || "nexus-survey-secret-change-me";
+const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 
 // Supabase client using anon key (for auth verification)
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
@@ -43,6 +47,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const pathParam = req.query?.path;
   const pathFromQuery = Array.isArray(pathParam) ? pathParam.join("/") : pathParam;
   const path = pathFromQuery ? `/${pathFromQuery}` : (req.url?.replace(/^\/api\/index\.ts/, "").replace(/^\/api/, "").split("?")[0] || "/");
+
+  // ==================== SURVEY ROUTES (public / survey-JWT auth, before main auth) ====================
+  if (path.startsWith("/survey/")) {
+    try {
+      return await handleSurveyRoutes(path, req, res);
+    } catch (err: any) {
+      console.error("Survey API Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
 
   // Authenticate all requests
   const auth = await verifyAuth(req);
@@ -1501,4 +1515,340 @@ function categorizeSkill(skill: string): string {
   if (cloud.includes(lower)) return "cloud";
   if (tools.includes(lower)) return "tool";
   return "other";
+}
+
+// ==================== SURVEY FUNCTIONS ====================
+
+function generateSecureOtp(length: number): string {
+  const digits = "0123456789";
+  let otp = "";
+  for (let i = 0; i < length; i++) {
+    otp += digits[Math.floor(Math.random() * digits.length)];
+  }
+  return otp;
+}
+
+function verifySurveyJwt(req: VercelRequest): { respondent_id: string; email: string } | null {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) return null;
+  const token = authHeader.substring(7);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET) as { respondent_id: string; email: string };
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+const SURVEY_SECTIONS = ["profile", "hiring_overview", "skill_ratings", "gap_analysis", "emerging_trends"];
+
+async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelResponse): Promise<VercelResponse> {
+  // ---- POST /api/survey/auth/send-otp ----
+  if (path === "/survey/auth/send-otp" && req.method === "POST") {
+    const { email } = req.body || {};
+    if (!email || typeof email !== "string") {
+      return res.status(400).json({ error: "Email is required" });
+    }
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const otp = generateSecureOtp(6);
+    const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    const hashedOtp = await bcrypt.hash(otp, 10);
+
+    const { error } = await supabase.from("survey_respondents").upsert(
+      { email: normalizedEmail, auth_otp: hashedOtp, auth_otp_expires: expires },
+      { onConflict: "email" }
+    );
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Send OTP via Resend if configured, otherwise log to console
+    if (RESEND_API_KEY) {
+      try {
+        await fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${RESEND_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            from: "Nexus Survey <noreply@boardinfinity.com>",
+            to: [normalizedEmail],
+            subject: "Your Nexus Survey Access Code",
+            text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
+          }),
+        });
+      } catch (emailErr: any) {
+        console.error("Failed to send OTP email:", emailErr.message);
+        console.log(`[SURVEY OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+      }
+    } else {
+      console.log(`[SURVEY OTP] Email: ${normalizedEmail}, OTP: ${otp}`);
+    }
+
+    return res.json({ message: "OTP sent to your email" });
+  }
+
+  // ---- POST /api/survey/auth/verify-otp ----
+  if (path === "/survey/auth/verify-otp" && req.method === "POST") {
+    const { email, otp } = req.body || {};
+    if (!email || !otp) {
+      return res.status(400).json({ error: "Email and OTP are required" });
+    }
+    const normalizedEmail = email.toLowerCase().trim();
+
+    const { data: respondent, error } = await supabase
+      .from("survey_respondents")
+      .select("id, auth_otp, auth_otp_expires")
+      .eq("email", normalizedEmail)
+      .single();
+
+    if (error || !respondent) {
+      return res.status(404).json({ error: "Email not found. Please request a new OTP." });
+    }
+    if (!respondent.auth_otp || !respondent.auth_otp_expires) {
+      return res.status(400).json({ error: "No OTP pending. Please request a new one." });
+    }
+    if (new Date(respondent.auth_otp_expires) < new Date()) {
+      return res.status(400).json({ error: "OTP has expired. Please request a new one." });
+    }
+    const isValid = await bcrypt.compare(otp, respondent.auth_otp);
+    if (!isValid) {
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    // Clear OTP and update login time
+    await supabase.from("survey_respondents").update({
+      auth_otp: null,
+      auth_otp_expires: null,
+      last_login_at: new Date().toISOString(),
+    }).eq("id", respondent.id);
+
+    const token = jwt.sign(
+      { respondent_id: respondent.id, email: normalizedEmail },
+      JWT_SECRET,
+      { expiresIn: "7d" }
+    );
+
+    return res.json({ token, respondent_id: respondent.id });
+  }
+
+  // ---- GET /api/survey/skill-list (public) ----
+  if (path === "/survey/skill-list" && req.method === "GET") {
+    const { data: skills, error } = await supabase
+      .from("taxonomy_skills")
+      .select("id, name, category")
+      .order("category")
+      .order("name");
+
+    if (error) return res.status(500).json({ error: error.message });
+
+    // Group by category
+    const grouped: Record<string, { id: string; name: string }[]> = {};
+    for (const skill of skills || []) {
+      const cat = skill.category || "Other";
+      if (!grouped[cat]) grouped[cat] = [];
+      grouped[cat].push({ id: skill.id, name: skill.name });
+    }
+
+    return res.json(grouped);
+  }
+
+  // ---- All routes below require survey JWT ----
+  const surveyAuth = verifySurveyJwt(req);
+  if (!surveyAuth) {
+    return res.status(401).json({ error: "Survey authentication required" });
+  }
+
+  // ---- GET /api/survey/progress ----
+  if (path === "/survey/progress" && req.method === "GET") {
+    const respondentId = surveyAuth.respondent_id;
+
+    // Check profile completion
+    const { data: respondent } = await supabase
+      .from("survey_respondents")
+      .select("full_name, company_name, designation, industry, company_size, years_of_experience, location_city, location_country")
+      .eq("id", respondentId)
+      .single();
+
+    const profileFields = respondent
+      ? [respondent.full_name, respondent.company_name, respondent.designation, respondent.industry, respondent.company_size].filter(Boolean)
+      : [];
+    const profileStatus = profileFields.length >= 5 ? "complete" : profileFields.length > 0 ? "in_progress" : "pending";
+
+    // Check section responses
+    const { data: responses } = await supabase
+      .from("survey_responses")
+      .select("section_key, question_key")
+      .eq("respondent_id", respondentId);
+
+    const sectionCounts: Record<string, number> = {};
+    for (const r of responses || []) {
+      sectionCounts[r.section_key] = (sectionCounts[r.section_key] || 0) + 1;
+    }
+
+    // Check skill ratings
+    const { count: skillCount } = await supabase
+      .from("survey_skill_ratings")
+      .select("id", { count: "exact", head: true })
+      .eq("respondent_id", respondentId);
+
+    // Required question counts per section
+    const requiredCounts: Record<string, number> = {
+      hiring_overview: 5,
+      gap_analysis: 4,
+      emerging_trends: 3,
+    };
+
+    const getStatus = (key: string) => {
+      if (key === "profile") return profileStatus;
+      if (key === "skill_ratings") {
+        if ((skillCount || 0) >= 10) return "complete";
+        if ((skillCount || 0) > 0) return "in_progress";
+        return "pending";
+      }
+      const count = sectionCounts[key] || 0;
+      const required = requiredCounts[key] || 1;
+      if (count >= required) return "complete";
+      if (count > 0) return "in_progress";
+      return "pending";
+    };
+
+    const progress: Record<string, string> = {};
+    let completedSections = 0;
+    for (const section of SURVEY_SECTIONS) {
+      progress[section] = getStatus(section);
+      if (progress[section] === "complete") completedSections++;
+    }
+
+    return res.json({
+      ...progress,
+      total_pct: Math.round((completedSections / SURVEY_SECTIONS.length) * 100),
+    });
+  }
+
+  // ---- POST /api/survey/responses ----
+  if (path === "/survey/responses" && req.method === "POST") {
+    const respondentId = surveyAuth.respondent_id;
+    const { section_key, responses, profile, skill_ratings } = req.body || {};
+
+    // Handle profile update (Section A)
+    if (section_key === "profile" && profile) {
+      const { error } = await supabase
+        .from("survey_respondents")
+        .update({
+          full_name: profile.full_name || null,
+          company_name: profile.company_name || null,
+          designation: profile.designation || null,
+          industry: profile.industry || null,
+          company_size: profile.company_size || null,
+          years_of_experience: profile.years_of_experience != null ? parseInt(profile.years_of_experience) : null,
+          location_city: profile.location_city || null,
+          location_country: profile.location_country || null,
+        })
+        .eq("id", respondentId);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ saved: true, section_key: "profile" });
+    }
+
+    // Handle skill ratings (Section C)
+    if (section_key === "skill_ratings" && skill_ratings) {
+      for (const rating of skill_ratings) {
+        const { error } = await supabase.from("survey_skill_ratings").upsert(
+          {
+            respondent_id: respondentId,
+            skill_name: rating.skill_name,
+            taxonomy_skill_id: rating.taxonomy_skill_id || null,
+            importance_rating: rating.importance_rating || null,
+            demonstration_rating: rating.demonstration_rating || null,
+            is_custom_skill: rating.is_custom_skill || false,
+          },
+          { onConflict: "respondent_id,skill_name" }
+        );
+        if (error) {
+          console.error("Skill rating upsert error:", error);
+        }
+      }
+      return res.json({ saved: true, section_key: "skill_ratings", count: skill_ratings.length });
+    }
+
+    // Handle generic section responses (Sections B, D, E)
+    if (!section_key || !responses || !Array.isArray(responses)) {
+      return res.status(400).json({ error: "section_key and responses[] are required" });
+    }
+
+    for (const item of responses) {
+      const { error } = await supabase.from("survey_responses").upsert(
+        {
+          respondent_id: respondentId,
+          section_key,
+          question_key: item.question_key,
+          response_type: item.response_type,
+          response_value: item.response_value,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: "respondent_id,section_key,question_key" }
+      );
+      if (error) {
+        console.error("Response upsert error:", error);
+      }
+    }
+
+    return res.json({ saved: true, section_key, count: responses.length });
+  }
+
+  // ---- GET /api/survey/my-responses ----
+  if (path === "/survey/my-responses" && req.method === "GET") {
+    const respondentId = surveyAuth.respondent_id;
+
+    const [{ data: respondent }, { data: responses }, { data: skillRatings }] = await Promise.all([
+      supabase.from("survey_respondents")
+        .select("full_name, company_name, designation, industry, company_size, years_of_experience, location_city, location_country")
+        .eq("id", respondentId).single(),
+      supabase.from("survey_responses").select("*").eq("respondent_id", respondentId),
+      supabase.from("survey_skill_ratings").select("*").eq("respondent_id", respondentId),
+    ]);
+
+    return res.json({ profile: respondent, responses: responses || [], skill_ratings: skillRatings || [] });
+  }
+
+  // ---- GET /api/survey/results (admin-only via main app auth) ----
+  if (path === "/survey/results" && req.method === "GET") {
+    // For admin results, also check main app auth
+    const mainAuth = await verifyAuth(req);
+    if (!mainAuth.authenticated) {
+      return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const [{ data: respondents, count }, { data: allResponses }, { data: allRatings }] = await Promise.all([
+      supabase.from("survey_respondents").select("id, email, full_name, company_name, industry, created_at", { count: "exact" }),
+      supabase.from("survey_responses").select("*"),
+      supabase.from("survey_skill_ratings").select("*"),
+    ]);
+
+    // Compute skill averages
+    const skillAverages: Record<string, { importance_avg: number; demonstration_avg: number; count: number }> = {};
+    for (const r of allRatings || []) {
+      if (!skillAverages[r.skill_name]) {
+        skillAverages[r.skill_name] = { importance_avg: 0, demonstration_avg: 0, count: 0 };
+      }
+      const sa = skillAverages[r.skill_name];
+      sa.importance_avg += r.importance_rating || 0;
+      sa.demonstration_avg += r.demonstration_rating || 0;
+      sa.count++;
+    }
+    for (const name of Object.keys(skillAverages)) {
+      const sa = skillAverages[name];
+      sa.importance_avg = Math.round((sa.importance_avg / sa.count) * 10) / 10;
+      sa.demonstration_avg = Math.round((sa.demonstration_avg / sa.count) * 10) / 10;
+    }
+
+    return res.json({
+      total_respondents: count || 0,
+      respondents: respondents || [],
+      responses: allResponses || [],
+      skill_averages: skillAverages,
+    });
+  }
+
+  return res.status(404).json({ error: "Survey endpoint not found", path });
 }
