@@ -2010,7 +2010,7 @@ async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelR
     // Send OTP via Resend if configured, otherwise log to console
     if (RESEND_API_KEY) {
       try {
-        await fetch("https://api.resend.com/emails", {
+        const emailRes = await fetch("https://api.resend.com/emails", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${RESEND_API_KEY}`,
@@ -2023,12 +2023,19 @@ async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelR
             text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
           }),
         });
+        const emailBody = await emailRes.json();
+        if (!emailRes.ok) {
+          console.error(`[SURVEY OTP] Resend API error (${emailRes.status}):`, JSON.stringify(emailBody));
+          console.log(`[SURVEY OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+        } else {
+          console.log(`[SURVEY OTP] Sent via Resend to ${normalizedEmail}, id: ${emailBody.id}`);
+        }
       } catch (emailErr: any) {
-        console.error("Failed to send OTP email:", emailErr.message);
+        console.error("[SURVEY OTP] Failed to send email:", emailErr.message);
         console.log(`[SURVEY OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
       }
     } else {
-      console.log(`[SURVEY OTP] Email: ${normalizedEmail}, OTP: ${otp}`);
+      console.log(`[SURVEY OTP] No RESEND_API_KEY configured. Email: ${normalizedEmail}, OTP: ${otp}`);
     }
 
     return res.json({ message: "OTP sent to your email" });
