@@ -81,7 +81,13 @@ export default function People() {
             header: "Name",
             accessor: (r: Person) => (
               <div>
-                <span className="font-medium">{r.full_name}</span>
+                <div className="flex items-center gap-2">
+                  {r.profile_picture_url && (
+                    <img src={r.profile_picture_url} alt="" className="w-6 h-6 rounded-full object-cover" />
+                  )}
+                  <span className="font-medium">{r.full_name}</span>
+                </div>
+                {r.headline && <div className="text-[11px] text-muted-foreground truncate max-w-[250px]">{r.headline}</div>}
                 <div className="flex gap-1 mt-0.5">
                   {r.is_recruiter && <Badge variant="outline" className="text-[10px] py-0">Recruiter</Badge>}
                   {r.is_hiring_manager && <Badge variant="outline" className="text-[10px] py-0">HM</Badge>}
@@ -92,6 +98,17 @@ export default function People() {
           { header: "Title", accessor: "current_title" as keyof Person, className: "max-w-[200px] truncate" },
           { header: "Company", accessor: "current_company_id" as keyof Person },
           { header: "Location", accessor: (r: Person) => r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country || "—" },
+          { header: "Score", accessor: (r: Person) => (
+            <div className="flex items-center gap-1">
+              <span className={`text-xs font-medium ${r.enrichment_score >= 70 ? "text-green-600" : r.enrichment_score >= 40 ? "text-yellow-600" : "text-red-500"}`}>
+                {r.enrichment_score}
+              </span>
+            </div>
+          )},
+          { header: "Transitions", accessor: (r: Person) => {
+            const transitions = r.career_transitions as any[] | undefined;
+            return transitions?.length ? <span className="text-xs">{transitions.length}</span> : <span className="text-xs text-muted-foreground">—</span>;
+          }},
           { header: "Status", accessor: (r: Person) => <StatusBadge status={r.enrichment_status} /> },
         ]}
         data={data?.data ?? []}
@@ -115,40 +132,105 @@ export default function People() {
           <SheetHeader>
             <SheetTitle>{detail?.full_name || selected?.full_name}</SheetTitle>
           </SheetHeader>
-          {(detail || selected) && (
+          {(detail || selected) && (() => {
+            const p = detail || selected!;
+            const transitions = (p.career_transitions || []) as any[];
+            const certs = (p.certifications || []) as any[];
+            const langs = p.languages_spoken || [];
+            return (
             <div className="space-y-4 mt-4">
+              {p.profile_picture_url && (
+                <img src={p.profile_picture_url} alt="" className="w-16 h-16 rounded-full object-cover" />
+              )}
+              {p.headline && <p className="text-sm text-muted-foreground">{p.headline}</p>}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs text-muted-foreground uppercase">Profile</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   {[
-                    ["Title", detail?.current_title],
-                    ["Company", detail?.current_company_id],
-                    ["Location", [detail?.location_city, detail?.location_country].filter(Boolean).join(", ")],
-                    ["Email", detail?.email],
-                    ["Phone", detail?.phone],
-                    ["Seniority", detail?.seniority],
-                    ["Function", detail?.function],
+                    ["Title", p.current_title],
+                    ["Company", p.current_company_id],
+                    ["Location", [p.location_city, p.location_country].filter(Boolean).join(", ")],
+                    ["Email", p.email],
+                    ["Phone", p.phone],
+                    ["Seniority", p.seniority],
+                    ["Function", p.function],
+                    ["Enrichment Score", p.enrichment_score != null ? `${p.enrichment_score}/100` : null],
+                    ["Connections", p.connections_count],
+                    ["Last Enriched", p.last_enriched_at ? new Date(p.last_enriched_at).toLocaleDateString() : null],
                   ].map(([label, val]) => val ? (
                     <div key={label as string} className="flex justify-between">
                       <span className="text-muted-foreground">{label}</span>
-                      <span className="text-right">{val as string}</span>
+                      <span className="text-right">{String(val)}</span>
                     </div>
                   ) : null)}
                   <div className="flex gap-2 pt-1">
-                    {detail?.is_recruiter && <Badge>Recruiter</Badge>}
-                    {detail?.is_hiring_manager && <Badge>Hiring Manager</Badge>}
+                    {p.is_recruiter && <Badge>Recruiter</Badge>}
+                    {p.is_hiring_manager && <Badge>Hiring Manager</Badge>}
                   </div>
                 </CardContent>
               </Card>
-              {detail?.linkedin_url && (
-                <a href={detail.linkedin_url} target="_blank" rel="noreferrer" className="text-primary text-sm hover:underline block">
+              {transitions.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase">Career Transitions ({transitions.length})</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-xs">
+                    {transitions.map((t: any, i: number) => (
+                      <div key={i} className="border-l-2 border-muted pl-2">
+                        <div className="font-medium">{t.from_title} → {t.to_title}</div>
+                        <div className="text-muted-foreground">{t.from_company}{t.from_company !== t.to_company ? ` → ${t.to_company}` : ""}</div>
+                        <Badge variant="outline" className="text-[10px] mt-0.5">{t.type?.replace("_", " ")}</Badge>
+                      </div>
+                    ))}
+                  </CardContent>
+                </Card>
+              )}
+              {(p.skills?.length > 0 || certs.length > 0 || langs.length > 0) && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase">Skills & Qualifications</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    {p.skills?.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground">Skills:</span>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {p.skills.slice(0, 15).map((s: string) => (
+                            <Badge key={s} variant="secondary" className="text-[10px]">{s}</Badge>
+                          ))}
+                          {p.skills.length > 15 && <span className="text-[10px] text-muted-foreground">+{p.skills.length - 15} more</span>}
+                        </div>
+                      </div>
+                    )}
+                    {certs.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground">Certifications:</span>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {certs.map((c: any, i: number) => (
+                            <Badge key={i} variant="outline" className="text-[10px]">{typeof c === "string" ? c : c.name || c.title || "Cert"}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {langs.length > 0 && (
+                      <div>
+                        <span className="text-xs text-muted-foreground">Languages:</span>
+                        <span className="text-xs ml-1">{langs.join(", ")}</span>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+              {p.linkedin_url && (
+                <a href={p.linkedin_url} target="_blank" rel="noreferrer" className="text-primary text-sm hover:underline block">
                   View LinkedIn Profile
                 </a>
               )}
             </div>
-          )}
+            );
+          })()}
         </SheetContent>
       </Sheet>
     </div>

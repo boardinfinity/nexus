@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
 
@@ -285,38 +285,15 @@ export default function Pipelines() {
           />
           <PipelineTrigger
             type="people_enrichment"
-            title="People Search"
-            description="Search for people by title, company, location (Apollo stub)"
-            icon={Users}
-            fields={[
-              { name: "mode", label: "Mode", type: "select", options: [
-                { value: "search", label: "Search (find new people)" },
-                { value: "enrich", label: "Enrich (existing people)" },
-              ], defaultValue: "search" },
-              { name: "job_title", label: "Job Title", type: "text", placeholder: "e.g. Software Engineer" },
-              { name: "company", label: "Company", type: "text", placeholder: "e.g. Google" },
-              { name: "location", label: "Location", type: "text", placeholder: "e.g. Bangalore" },
-              { name: "seniority", label: "Seniority", type: "select", options: [
-                { value: "any", label: "Any" },
-                { value: "junior", label: "Junior" },
-                { value: "mid", label: "Mid-Level" },
-                { value: "senior", label: "Senior" },
-                { value: "lead", label: "Lead" },
-                { value: "director", label: "Director+" },
-              ] },
-              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
-            ]}
-          />
-          <PipelineTrigger
-            type="people_enrichment"
-            title="People Enrich"
-            description="Enrich existing people with detailed profiles (Apollo stub)"
+            title="Enrich Profiles"
+            description="Enrich people with LinkedIn data via Apify (1 credit per profile)"
             icon={UserCheck}
             fields={[
               { name: "mode", label: "Mode", type: "select", options: [
-                { value: "enrich", label: "Enrich (existing people)" },
+                { value: "enrich", label: "Enrich Profiles (via Apify)" },
+                { value: "search", label: "Search (stub)" },
               ], defaultValue: "enrich" },
-              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "5", defaultValue: "5" },
             ]}
           />
         </div>

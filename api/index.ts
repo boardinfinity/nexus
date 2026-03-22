@@ -2983,171 +2983,389 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
   }).eq("id", runId);
 }
 
-// People Enrichment pipeline (Apollo API stub)
+// People Enrichment pipeline (Apify LinkedIn Profile Scraper)
+
+// Apify actor IDs to try for LinkedIn profile scraping (in order of preference)
+const LINKEDIN_PROFILE_ACTORS = [
+  "curious_coder/linkedin-profile-scraper",
+  "apify/linkedin-profile-scraper",
+  "hlearning/linkedin-profile-scraper",
+];
+
+async function fetchLinkedInProfile(linkedinUrl: string): Promise<any> {
+  let lastError: Error | null = null;
+
+  for (const actorId of LINKEDIN_PROFILE_ACTORS) {
+    try {
+      const actorSlug = actorId.replace("/", "~");
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 120000); // 120s timeout
+
+      const response = await fetch(
+        `https://api.apify.com/v2/acts/${actorSlug}/run-sync-get-dataset-items?token=${APIFY_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            startUrls: [{ url: linkedinUrl }],
+            maxItems: 1,
+            proxyConfiguration: { useApifyProxy: true },
+          }),
+          signal: controller.signal,
+        }
+      );
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => "");
+        lastError = new Error(`Apify ${actorId} error ${response.status}: ${text.slice(0, 200)}`);
+        continue;
+      }
+
+      const items = await response.json();
+      if (Array.isArray(items) && items.length > 0) {
+        return items[0];
+      }
+
+      // If sync returned empty, try async pattern
+      return await fetchLinkedInProfileAsync(actorSlug, linkedinUrl);
+    } catch (e: any) {
+      lastError = e;
+      continue;
+    }
+  }
+
+  throw lastError || new Error("All Apify actors failed for LinkedIn profile scraping");
+}
+
+async function fetchLinkedInProfileAsync(actorSlug: string, linkedinUrl: string): Promise<any> {
+  // Start run
+  const startRes = await fetch(
+    `https://api.apify.com/v2/acts/${actorSlug}/runs?token=${APIFY_API_KEY}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        startUrls: [{ url: linkedinUrl }],
+        maxItems: 1,
+        proxyConfiguration: { useApifyProxy: true },
+      }),
+    }
+  );
+  if (!startRes.ok) throw new Error(`Apify async start failed: ${startRes.status}`);
+  const runData = await startRes.json();
+  const runId = runData.data?.id;
+  const datasetId = runData.data?.defaultDatasetId;
+  if (!runId) throw new Error("No run ID from Apify async start");
+
+  // Poll for completion (max 120s)
+  const maxWait = 120000;
+  const pollInterval = 5000;
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWait) {
+    await new Promise(r => setTimeout(r, pollInterval));
+    const statusRes = await fetch(
+      `https://api.apify.com/v2/actor-runs/${runId}?token=${APIFY_API_KEY}`
+    );
+    if (!statusRes.ok) continue;
+    const statusData = await statusRes.json();
+    const status = statusData.data?.status;
+    if (status === "SUCCEEDED") break;
+    if (status === "FAILED" || status === "ABORTED" || status === "TIMED-OUT") {
+      throw new Error(`Apify run ${status}`);
+    }
+  }
+
+  // Get dataset items
+  if (!datasetId) throw new Error("No dataset ID from Apify run");
+  const dataRes = await fetch(
+    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}`
+  );
+  if (!dataRes.ok) throw new Error(`Failed to get Apify dataset: ${dataRes.status}`);
+  const items = await dataRes.json();
+  return Array.isArray(items) && items.length > 0 ? items[0] : null;
+}
+
+function getSeniorityScore(title: string): number {
+  const t = (title || "").toLowerCase();
+  if (/\b(ceo|cto|cfo|coo|founder|president|chairman)\b/.test(t)) return 90;
+  if (/\b(vp|vice president|svp|evp)\b/.test(t)) return 80;
+  if (/\b(director|head of)\b/.test(t)) return 70;
+  if (/\b(senior manager|sr manager)\b/.test(t)) return 60;
+  if (/\b(manager)\b/.test(t)) return 50;
+  if (/\b(senior|sr|lead|principal)\b/.test(t)) return 40;
+  if (/\b(associate|analyst|engineer|developer|consultant)\b/.test(t)) return 30;
+  if (/\b(junior|jr|entry|trainee|intern)\b/.test(t)) return 20;
+  return 25;
+}
+
+function classifyCareerTransition(prev: any, curr: any): string {
+  const sameCompany = (prev.companyName || prev.company || "").toLowerCase() ===
+    (curr.companyName || curr.company || "").toLowerCase();
+  const seniorityUp = getSeniorityScore(curr.title || curr.position || "") >
+    getSeniorityScore(prev.title || prev.position || "");
+  const prevIndustry = (prev.industry || prev.companyIndustry || "").toLowerCase();
+  const currIndustry = (curr.industry || curr.companyIndustry || "").toLowerCase();
+  const industryChange = prevIndustry && currIndustry && prevIndustry !== currIndustry;
+
+  if (sameCompany && seniorityUp) return "promotion";
+  if (sameCompany) return "lateral";
+  if (industryChange) return "industry_change";
+  return "company_change";
+}
+
+function computeCareerTransitions(experiences: any[]): any[] {
+  if (!experiences || experiences.length < 2) return [];
+
+  // Sort by start date (oldest first)
+  const sorted = [...experiences].sort((a, b) => {
+    const dateA = a.startDate || a.start || a.dateRange?.split("–")[0] || "";
+    const dateB = b.startDate || b.start || b.dateRange?.split("–")[0] || "";
+    return String(dateA).localeCompare(String(dateB));
+  });
+
+  const transitions: any[] = [];
+  for (let i = 1; i < sorted.length; i++) {
+    const prev = sorted[i - 1];
+    const curr = sorted[i];
+    transitions.push({
+      from_title: prev.title || prev.position || null,
+      from_company: prev.companyName || prev.company || null,
+      to_title: curr.title || curr.position || null,
+      to_company: curr.companyName || curr.company || null,
+      type: classifyCareerTransition(prev, curr),
+      date: curr.startDate || curr.start || null,
+    });
+  }
+  return transitions;
+}
+
+function computeEnrichmentScore(data: {
+  headline?: string | null;
+  profilePicture?: string | null;
+  experiences?: any[];
+  education?: any[];
+  skills?: any[];
+  certifications?: any[];
+  careerTransitions?: any[];
+  email?: string | null;
+}): number {
+  let score = 0;
+  if (data.headline) score += 10;
+  if (data.profilePicture) score += 5;
+  if (data.experiences && data.experiences.length >= 2) score += 20;
+  if (data.education && data.education.length > 0) score += 15;
+  if (data.skills && data.skills.length > 0) score += 15;
+  if (data.certifications && data.certifications.length > 0) score += 10;
+  if (data.careerTransitions && data.careerTransitions.length > 0) score += 15;
+  if (data.email) score += 10;
+  return Math.min(score, 100);
+}
+
+function extractProfileData(raw: any) {
+  // Handle various Apify actor response formats
+  const fullName = raw.fullName || raw.full_name || raw.name || null;
+  const headline = raw.headline || raw.title || raw.tagline || null;
+  const profilePicture = raw.profilePicUrl || raw.profilePictureUrl || raw.profilePicture || raw.avatar || raw.photo || null;
+  const connectionsCount = raw.connectionsCount || raw.connections || raw.connectionCount || null;
+
+  // Experiences: different actors use different field names
+  const experiences = raw.experiences || raw.experience || raw.positions || raw.workExperience || [];
+  const education = raw.educations || raw.education || raw.schools || [];
+  const certifications = raw.certifications || raw.certificates || [];
+  const skills = raw.skills || [];
+  const languages = raw.languages || [];
+  const volunteerWork = raw.volunteerExperience || raw.volunteerWork || raw.volunteer || [];
+  const publications = raw.publications || [];
+
+  // Normalize skills to string array
+  const skillsList: string[] = Array.isArray(skills)
+    ? skills.map((s: any) => typeof s === "string" ? s : s.name || s.skill || String(s)).filter(Boolean)
+    : [];
+
+  // Normalize languages to string array
+  const languagesList: string[] = Array.isArray(languages)
+    ? languages.map((l: any) => typeof l === "string" ? l : l.name || l.language || String(l)).filter(Boolean)
+    : [];
+
+  return {
+    fullName,
+    headline,
+    profilePicture,
+    connectionsCount: typeof connectionsCount === "number" ? connectionsCount : parseInt(connectionsCount) || null,
+    experiences: Array.isArray(experiences) ? experiences : [],
+    education: Array.isArray(education) ? education : [],
+    certifications: Array.isArray(certifications) ? certifications : [],
+    skills: skillsList,
+    languages: languagesList,
+    volunteerWork: Array.isArray(volunteerWork) ? volunteerWork : [],
+    publications: Array.isArray(publications) ? publications : [],
+  };
+}
+
 async function executePeopleEnrichment(runId: string, config: any) {
-  const mode = config?.mode || "search"; // "search" or "enrich"
-  const batchSize = parseInt(config?.batch_size) || 50;
+  const mode = config?.mode || "enrich";
+  const batchSize = Math.min(parseInt(config?.batch_size) || 5, 20);
 
   if (mode === "search") {
-    // Apollo People Search API stub
-    // In production: POST https://api.apollo.io/api/v1/mixed_people/search
-    // with person_titles, person_locations, organization_ids, etc.
-    const searchParams = {
+    // Keep search mode as a stub fallback
+    const stubResults = generatePeopleSearchStub({
       job_title: config?.job_title || "",
       location: config?.location || "",
       company: config?.company || "",
       seniority: config?.seniority || "",
       limit: batchSize,
-    };
-
-    // Stub: generate sample results to demonstrate the pipeline
-    const stubResults = generatePeopleSearchStub(searchParams, batchSize);
+    }, batchSize);
     await supabase.from("pipeline_runs").update({ total_items: stubResults.length }).eq("id", runId);
 
-    let processed = 0;
-    let failed = 0;
-    let skipped = 0;
-
+    let processed = 0, failed = 0, skipped = 0;
     for (const person of stubResults) {
       try {
-        // Check for duplicate by email or LinkedIn URL
         if (person.email) {
-          const { data: existing } = await supabase
-            .from("people")
-            .select("id")
-            .eq("email", person.email)
-            .maybeSingle();
+          const { data: existing } = await supabase.from("people").select("id").eq("email", person.email).maybeSingle();
           if (existing) { skipped++; continue; }
         }
-
         let companyId = null;
         if (person.company_name) {
-          const { data: existingCompany } = await supabase
-            .from("companies")
-            .select("id")
-            .eq("name", person.company_name)
-            .maybeSingle();
-          if (existingCompany) {
-            companyId = existingCompany.id;
-          } else {
-            const { data: newCompany } = await supabase
-              .from("companies")
-              .insert({
-                name: person.company_name,
-                domain: person.company_domain || null,
-                enrichment_status: "pending",
-              })
-              .select("id")
-              .maybeSingle();
+          const { data: existingCompany } = await supabase.from("companies").select("id").eq("name", person.company_name).maybeSingle();
+          if (existingCompany) { companyId = existingCompany.id; }
+          else {
+            const { data: newCompany } = await supabase.from("companies").insert({ name: person.company_name, domain: person.company_domain || null, enrichment_status: "pending" }).select("id").maybeSingle();
             companyId = newCompany?.id;
           }
         }
-
         await supabase.from("people").insert({
-          full_name: person.full_name,
-          first_name: person.first_name,
-          last_name: person.last_name,
-          email: person.email || null,
-          linkedin_url: person.linkedin_url || null,
-          current_title: person.title || null,
-          current_company_id: companyId,
-          seniority: mapPersonSeniority(person.seniority),
-          function: mapPersonFunction(person.department),
-          location_city: person.city || null,
-          location_country: person.country || null,
-          enrichment_status: "partial",
-          enrichment_score: 40,
-          enrichment_sources: { apollo_search_stub: true },
-          raw_data: person,
+          full_name: person.full_name, first_name: person.first_name, last_name: person.last_name,
+          email: person.email || null, linkedin_url: person.linkedin_url || null, current_title: person.title || null,
+          current_company_id: companyId, seniority: mapPersonSeniority(person.seniority),
+          function: mapPersonFunction(person.department), location_city: person.city || null,
+          location_country: person.country || null, enrichment_status: "partial", enrichment_score: 40,
+          enrichment_sources: { search_stub: true }, raw_data: person,
         });
         processed++;
-      } catch (e) {
-        failed++;
-      }
+      } catch (e) { failed++; }
     }
 
     await supabase.from("enrichment_logs").insert({
-      entity_type: "person",
-      entity_id: runId,
-      provider: "apollo",
-      operation: "people_search",
-      status: "success",
-      credits_used: processed,
+      entity_type: "person", entity_id: runId, provider: "stub", operation: "people_search",
+      status: "success", credits_used: 0,
     });
-
     await supabase.from("pipeline_runs").update({
-      status: "completed",
-      processed_items: processed,
-      failed_items: failed,
-      skipped_items: skipped,
-      completed_at: new Date().toISOString(),
+      status: "completed", processed_items: processed, failed_items: failed,
+      skipped_items: skipped, completed_at: new Date().toISOString(),
     }).eq("id", runId);
-
-  } else if (mode === "enrich") {
-    // Apollo People Enrich API stub
-    // In production: POST https://api.apollo.io/api/v1/people/match
-    // with email, linkedin_url, first_name, last_name, organization_name
-    const { data: people, error } = await supabase
-      .from("people")
-      .select("id, full_name, email, linkedin_url, current_title")
-      .in("enrichment_status", ["pending", "partial"])
-      .limit(batchSize);
-
-    if (error) throw error;
-    if (!people?.length) {
-      await supabase.from("pipeline_runs").update({
-        status: "completed",
-        total_items: 0,
-        completed_at: new Date().toISOString(),
-      }).eq("id", runId);
-      return;
-    }
-
-    await supabase.from("pipeline_runs").update({ total_items: people.length }).eq("id", runId);
-
-    let processed = 0;
-    let failed = 0;
-
-    for (const person of people) {
-      try {
-        // Stub enrichment: In production, call Apollo enrich API and merge data
-        // For now, mark as enriched with stub data
-        const enrichedData = {
-          phone: null, // Would come from Apollo
-          bio: "[Stub] Enrichment data would come from Apollo API",
-          skills: ["Leadership", "Strategy"],
-        };
-
-        await supabase.from("people").update({
-          bio: enrichedData.bio,
-          skills: enrichedData.skills,
-          enrichment_status: "partial",
-          enrichment_score: 50,
-          enrichment_sources: { apollo_enrich_stub: true },
-        }).eq("id", person.id);
-
-        processed++;
-      } catch (e) {
-        failed++;
-      }
-    }
-
-    await supabase.from("enrichment_logs").insert({
-      entity_type: "person",
-      entity_id: runId,
-      provider: "apollo",
-      operation: "people_enrich",
-      status: "success",
-      credits_used: processed,
-    });
-
-    await supabase.from("pipeline_runs").update({
-      status: "completed",
-      processed_items: processed,
-      failed_items: failed,
-      completed_at: new Date().toISOString(),
-    }).eq("id", runId);
+    return;
   }
+
+  // Mode: "enrich" — Real Apify LinkedIn profile enrichment
+  const { data: people, error } = await supabase
+    .from("people")
+    .select("id, full_name, email, linkedin_url, current_title")
+    .in("enrichment_status", ["pending", "partial"])
+    .not("linkedin_url", "is", null)
+    .limit(batchSize);
+
+  if (error) throw error;
+  if (!people?.length) {
+    await supabase.from("pipeline_runs").update({
+      status: "completed", total_items: 0, completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+    return;
+  }
+
+  await supabase.from("pipeline_runs").update({ total_items: people.length }).eq("id", runId);
+
+  let processed = 0;
+  let failed = 0;
+  const currentMonth = new Date().toISOString().slice(0, 7) + "-01";
+
+  for (let i = 0; i < people.length; i++) {
+    const person = people[i];
+    try {
+      // Rate limit: 3 second delay between Apify calls (skip for first call)
+      if (i > 0) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
+
+      const rawProfile = await fetchLinkedInProfile(person.linkedin_url!);
+      if (!rawProfile) {
+        await supabase.from("enrichment_logs").insert({
+          entity_type: "person", entity_id: person.id, provider: "apify",
+          operation: "profile_enrich", status: "no_data", credits_used: 1,
+          pipeline_run_id: runId,
+        });
+        failed++;
+        continue;
+      }
+
+      const profile = extractProfileData(rawProfile);
+      const careerTransitions = computeCareerTransitions(profile.experiences);
+      const enrichmentScore = computeEnrichmentScore({
+        headline: profile.headline,
+        profilePicture: profile.profilePicture,
+        experiences: profile.experiences,
+        education: profile.education,
+        skills: profile.skills,
+        certifications: profile.certifications,
+        careerTransitions,
+        email: person.email,
+      });
+
+      // Determine current title from most recent experience if not already set
+      let currentTitle = person.current_title;
+      if (!currentTitle && profile.experiences.length > 0) {
+        const latest = profile.experiences[0];
+        currentTitle = latest.title || latest.position || null;
+      }
+
+      await supabase.from("people").update({
+        full_name: profile.fullName || person.full_name,
+        headline: profile.headline,
+        profile_picture_url: profile.profilePicture,
+        connections_count: profile.connectionsCount,
+        current_title: currentTitle,
+        experience: profile.experiences,
+        education: profile.education,
+        certifications: profile.certifications,
+        skills: profile.skills,
+        languages_spoken: profile.languages,
+        volunteer_work: profile.volunteerWork,
+        publications: profile.publications,
+        career_transitions: careerTransitions,
+        enrichment_status: "enriched",
+        enrichment_score: enrichmentScore,
+        enrichment_sources: { apify_linkedin: true },
+        last_enriched_at: new Date().toISOString(),
+        raw_data: rawProfile,
+      }).eq("id", person.id);
+
+      await supabase.from("enrichment_logs").insert({
+        entity_type: "person", entity_id: person.id, provider: "apify",
+        operation: "profile_enrich", status: "success", credits_used: 1,
+        pipeline_run_id: runId,
+      });
+
+      processed++;
+    } catch (e: any) {
+      await supabase.from("enrichment_logs").insert({
+        entity_type: "person", entity_id: person.id, provider: "apify",
+        operation: "profile_enrich", status: "failed", credits_used: 0,
+        error_message: e?.message?.slice(0, 500) || "Unknown error",
+        pipeline_run_id: runId,
+      });
+      failed++;
+    }
+  }
+
+  // Update credits
+  if (processed > 0) {
+    await supabase.rpc("increment_credits_used", { p_provider: "apify", p_month: currentMonth, p_amount: processed });
+  }
+
+  await supabase.from("pipeline_runs").update({
+    status: "completed", processed_items: processed, failed_items: failed,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
 }
 
 // ==================== CSV UPLOAD BATCH PROCESSING ====================

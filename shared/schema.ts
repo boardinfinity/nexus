@@ -75,6 +75,15 @@ export interface Person {
   enrichment_status: typeof enrichmentStatusEnum[number];
   enrichment_score: number;
   raw_data: unknown;
+  certifications: unknown[];
+  languages_spoken: string[] | null;
+  volunteer_work: unknown[];
+  publications: unknown[];
+  profile_picture_url: string | null;
+  headline: string | null;
+  connections_count: number | null;
+  career_transitions: unknown[];
+  last_enriched_at: string | null;
   created_at: string;
   updated_at: string;
 }
