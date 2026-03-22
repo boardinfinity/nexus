@@ -1243,6 +1243,410 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ data: enriched, total: count || 0, page: parseInt(page), limit: parseInt(limit) });
     }
 
+    // ==================== SURVEY ADMIN ENDPOINTS ====================
+    const ADMIN_SURVEY_SECTIONS = ["profile", "hiring_overview", "skill_ratings", "gap_analysis", "emerging_trends"];
+
+    function determineSurveyStatus(respondent: any, responseSectionKeys: string[]): string {
+      const uniqueSections = [...new Set(responseSectionKeys)];
+      if (uniqueSections.length >= 5) return "completed";
+      if (uniqueSections.length > 0) return "started";
+      if (respondent.last_login_at) return "registered";
+      return "invited";
+    }
+
+    // GET /api/admin/survey/dashboard
+    if (path === "/admin/survey/dashboard" && req.method === "GET") {
+      const [
+        { data: respondents },
+        { data: allResponses },
+        { data: allRatings },
+      ] = await Promise.all([
+        supabase.from("survey_respondents").select("*"),
+        supabase.from("survey_responses").select("respondent_id, section_key"),
+        supabase.from("survey_skill_ratings").select("respondent_id, skill_name, importance_rating, demonstration_rating"),
+      ]);
+
+      const respList = respondents || [];
+      const responseList = allResponses || [];
+      const ratingList = allRatings || [];
+
+      // Build per-respondent section sets
+      const respondentSections: Record<string, Set<string>> = {};
+      for (const r of responseList) {
+        if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
+        respondentSections[r.respondent_id].add(r.section_key);
+      }
+      // Profile section: check if respondent has full_name set
+      for (const resp of respList) {
+        if (resp.full_name) {
+          if (!respondentSections[resp.id]) respondentSections[resp.id] = new Set();
+          respondentSections[resp.id].add("profile");
+        }
+      }
+
+      let totalInvited = 0, totalRegistered = 0, totalStarted = 0, totalCompleted = 0;
+      for (const resp of respList) {
+        const sections = respondentSections[resp.id] ? [...respondentSections[resp.id]] : [];
+        const status = determineSurveyStatus(resp, sections);
+        totalInvited++;
+        if (status === "registered" || status === "started" || status === "completed") totalRegistered++;
+        if (status === "started" || status === "completed") totalStarted++;
+        if (status === "completed") totalCompleted++;
+      }
+
+      // Sections completion counts
+      const sectionsCompletion: Record<string, number> = {};
+      for (const section of ADMIN_SURVEY_SECTIONS) {
+        sectionsCompletion[section] = 0;
+      }
+      for (const respId of Object.keys(respondentSections)) {
+        for (const section of respondentSections[respId]) {
+          if (sectionsCompletion[section] !== undefined) sectionsCompletion[section]++;
+        }
+      }
+
+      // Responses by industry and company size
+      const industryCounts: Record<string, number> = {};
+      const companySizeCounts: Record<string, number> = {};
+      for (const resp of respList) {
+        if (resp.industry) industryCounts[resp.industry] = (industryCounts[resp.industry] || 0) + 1;
+        if (resp.company_size) companySizeCounts[resp.company_size] = (companySizeCounts[resp.company_size] || 0) + 1;
+      }
+
+      // Skill ratings summary
+      const skillAggs: Record<string, { impSum: number; demSum: number; count: number }> = {};
+      for (const r of ratingList) {
+        if (!skillAggs[r.skill_name]) skillAggs[r.skill_name] = { impSum: 0, demSum: 0, count: 0 };
+        skillAggs[r.skill_name].impSum += r.importance_rating || 0;
+        skillAggs[r.skill_name].demSum += r.demonstration_rating || 0;
+        skillAggs[r.skill_name].count++;
+      }
+      const skillEntries = Object.entries(skillAggs).map(([skill, agg]) => ({
+        skill,
+        importance: Math.round((agg.impSum / agg.count) * 10) / 10,
+        demonstration: Math.round((agg.demSum / agg.count) * 10) / 10,
+        gap: Math.round(((agg.impSum - agg.demSum) / agg.count) * 10) / 10,
+      }));
+      const topImportance = [...skillEntries].sort((a, b) => b.importance - a.importance).slice(0, 10);
+      const topGap = [...skillEntries].sort((a, b) => b.gap - a.gap).slice(0, 10);
+
+      return res.json({
+        total_invited: totalInvited,
+        total_registered: totalRegistered,
+        total_started: totalStarted,
+        total_completed: totalCompleted,
+        completion_rate: totalInvited > 0 ? Math.round((totalCompleted / totalInvited) * 1000) / 10 : 0,
+        sections_completion: sectionsCompletion,
+        responses_by_industry: Object.entries(industryCounts).map(([industry, count]) => ({ industry, count })).sort((a, b) => b.count - a.count),
+        responses_by_company_size: Object.entries(companySizeCounts).map(([company_size, count]) => ({ company_size, count })).sort((a, b) => b.count - a.count),
+        skill_ratings_summary: {
+          top_importance: topImportance.map(s => ({ skill: s.skill, avg: s.importance })),
+          top_gap: topGap.map(s => ({ skill: s.skill, gap: s.gap })),
+          total_skills_rated: ratingList.length,
+        },
+      });
+    }
+
+    // GET /api/admin/survey/respondents
+    if (path === "/admin/survey/respondents" && req.method === "GET") {
+      const { page = "1", limit = "20", status: filterStatus, search } = req.query as Record<string, string>;
+      const pageNum = parseInt(page);
+      const limitNum = parseInt(limit);
+
+      const [{ data: respondents }, { data: allResponses }, { data: allRatings }] = await Promise.all([
+        supabase.from("survey_respondents").select("*").order("created_at", { ascending: false }),
+        supabase.from("survey_responses").select("respondent_id, section_key"),
+        supabase.from("survey_skill_ratings").select("respondent_id"),
+      ]);
+
+      const respList = respondents || [];
+      const responseList = allResponses || [];
+      const ratingList = allRatings || [];
+
+      // Build per-respondent data
+      const respondentSections: Record<string, Set<string>> = {};
+      const respondentRatingCounts: Record<string, number> = {};
+      for (const r of responseList) {
+        if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
+        respondentSections[r.respondent_id].add(r.section_key);
+      }
+      for (const r of ratingList) {
+        respondentRatingCounts[r.respondent_id] = (respondentRatingCounts[r.respondent_id] || 0) + 1;
+      }
+      // Profile section check
+      for (const resp of respList) {
+        if (resp.full_name) {
+          if (!respondentSections[resp.id]) respondentSections[resp.id] = new Set();
+          respondentSections[resp.id].add("profile");
+        }
+      }
+
+      let enriched = respList.map((resp: any) => {
+        const sections = respondentSections[resp.id] ? [...respondentSections[resp.id]] : [];
+        return {
+          id: resp.id,
+          email: resp.email,
+          full_name: resp.full_name,
+          company_name: resp.company_name,
+          designation: resp.designation,
+          industry: resp.industry,
+          status: determineSurveyStatus(resp, sections),
+          sections_completed: sections,
+          skills_rated: respondentRatingCounts[resp.id] || 0,
+          created_at: resp.created_at,
+          last_login_at: resp.last_login_at,
+        };
+      });
+
+      // Apply search filter
+      if (search) {
+        const s = search.toLowerCase();
+        enriched = enriched.filter((r: any) =>
+          (r.email && r.email.toLowerCase().includes(s)) ||
+          (r.full_name && r.full_name.toLowerCase().includes(s)) ||
+          (r.company_name && r.company_name.toLowerCase().includes(s))
+        );
+      }
+
+      // Apply status filter
+      if (filterStatus && filterStatus !== "all") {
+        enriched = enriched.filter((r: any) => r.status === filterStatus);
+      }
+
+      const total = enriched.length;
+      const offset = (pageNum - 1) * limitNum;
+      const paginated = enriched.slice(offset, offset + limitNum);
+
+      return res.json({ respondents: paginated, total, page: pageNum });
+    }
+
+    // GET /api/admin/survey/respondent/:id
+    if (path.match(/^\/admin\/survey\/respondent\/[^/]+$/) && req.method === "GET") {
+      const id = path.split("/").pop()!;
+
+      const [{ data: respondent, error: rErr }, { data: responses }, { data: ratings }] = await Promise.all([
+        supabase.from("survey_respondents").select("*").eq("id", id).single(),
+        supabase.from("survey_responses").select("*").eq("respondent_id", id).order("section_key"),
+        supabase.from("survey_skill_ratings").select("*").eq("respondent_id", id).order("skill_name"),
+      ]);
+
+      if (rErr || !respondent) return res.status(404).json({ error: "Respondent not found" });
+
+      return res.json({
+        respondent,
+        responses: responses || [],
+        skill_ratings: ratings || [],
+      });
+    }
+
+    // POST /api/admin/survey/invite
+    if (path === "/admin/survey/invite" && req.method === "POST") {
+      const { emails } = req.body || {};
+      if (!emails || !Array.isArray(emails) || emails.length === 0) {
+        return res.status(400).json({ error: "emails array is required" });
+      }
+
+      const results: Array<{ email: string; status: string; error?: string }> = [];
+
+      for (const rawEmail of emails) {
+        const email = (rawEmail as string).toLowerCase().trim();
+        if (!email || !email.includes("@")) {
+          results.push({ email: rawEmail, status: "failed", error: "Invalid email" });
+          continue;
+        }
+
+        try {
+          // Upsert respondent record
+          const { error: upsertErr } = await supabase
+            .from("survey_respondents")
+            .upsert({ email }, { onConflict: "email" });
+
+          if (upsertErr) {
+            results.push({ email, status: "failed", error: upsertErr.message });
+            continue;
+          }
+
+          // Try sending invite via Supabase Auth magic link
+          let emailSent = false;
+          try {
+            const { error: linkErr } = await supabase.auth.admin.generateLink({
+              type: "magiclink",
+              email,
+            });
+            if (!linkErr) emailSent = true;
+          } catch {
+            // generateLink not available or failed
+          }
+
+          // Fallback: try signInWithOtp via service role
+          if (!emailSent && RESEND_API_KEY) {
+            try {
+              const otp = generateSecureOtp(6);
+              const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+              const hashedOtp = await bcrypt.hash(otp, 10);
+              await supabase.from("survey_respondents").update({
+                auth_otp: hashedOtp,
+                auth_otp_expires: expires,
+              }).eq("email", email);
+
+              await fetch("https://api.resend.com/emails", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${RESEND_API_KEY}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                  from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
+                  to: [email],
+                  subject: "You're invited to the Nexus MBA Skills Survey",
+                  text: `You've been invited to participate in the Board Infinity MBA Skills Survey.\n\nYour one-time access code is: ${otp}\n\nAccess the survey at: ${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey\n\nThis code is valid for 15 minutes.`,
+                }),
+              });
+              emailSent = true;
+            } catch {
+              // email send failed
+            }
+          }
+
+          results.push({ email, status: emailSent ? "invited" : "added" });
+        } catch (err: any) {
+          results.push({ email, status: "failed", error: err.message });
+        }
+      }
+
+      return res.json({
+        results,
+        total: results.length,
+        successful: results.filter(r => r.status !== "failed").length,
+        failed: results.filter(r => r.status === "failed").length,
+      });
+    }
+
+    // POST /api/admin/survey/remind
+    if (path === "/admin/survey/remind" && req.method === "POST") {
+      const { email } = req.body || {};
+      if (!email) return res.status(400).json({ error: "email is required" });
+
+      const normalizedEmail = (email as string).toLowerCase().trim();
+
+      // Generate new OTP and send
+      let emailSent = false;
+      try {
+        const { error: linkErr } = await supabase.auth.admin.generateLink({
+          type: "magiclink",
+          email: normalizedEmail,
+        });
+        if (!linkErr) emailSent = true;
+      } catch {
+        // fallback
+      }
+
+      if (!emailSent && RESEND_API_KEY) {
+        try {
+          const otp = generateSecureOtp(6);
+          const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+          const hashedOtp = await bcrypt.hash(otp, 10);
+          await supabase.from("survey_respondents").update({
+            auth_otp: hashedOtp,
+            auth_otp_expires: expires,
+          }).eq("email", normalizedEmail);
+
+          await fetch("https://api.resend.com/emails", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${RESEND_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
+              to: [normalizedEmail],
+              subject: "Reminder: Complete the Nexus MBA Skills Survey",
+              text: `This is a reminder to complete the Board Infinity MBA Skills Survey.\n\nYour new one-time access code is: ${otp}\n\nAccess the survey at: ${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey\n\nThis code is valid for 15 minutes.`,
+            }),
+          });
+          emailSent = true;
+        } catch {
+          // failed
+        }
+      }
+
+      return res.json({ success: true, email_sent: emailSent });
+    }
+
+    // GET /api/admin/survey/analytics
+    if (path === "/admin/survey/analytics" && req.method === "GET") {
+      const [{ data: allResponses }, { data: allRatings }, { data: respondents }] = await Promise.all([
+        supabase.from("survey_responses").select("*"),
+        supabase.from("survey_skill_ratings").select("*"),
+        supabase.from("survey_respondents").select("*"),
+      ]);
+
+      const responseList = allResponses || [];
+      const ratingList = allRatings || [];
+
+      // Skill importance vs demonstration
+      const skillAggs: Record<string, { impSum: number; demSum: number; count: number }> = {};
+      for (const r of ratingList) {
+        if (!skillAggs[r.skill_name]) skillAggs[r.skill_name] = { impSum: 0, demSum: 0, count: 0 };
+        skillAggs[r.skill_name].impSum += r.importance_rating || 0;
+        skillAggs[r.skill_name].demSum += r.demonstration_rating || 0;
+        skillAggs[r.skill_name].count++;
+      }
+      const skillComparison = Object.entries(skillAggs).map(([skill, agg]) => ({
+        skill,
+        importance: Math.round((agg.impSum / agg.count) * 10) / 10,
+        demonstration: Math.round((agg.demSum / agg.count) * 10) / 10,
+        gap: Math.round(((agg.impSum - agg.demSum) / agg.count) * 10) / 10,
+        respondent_count: agg.count,
+      })).sort((a, b) => b.gap - a.gap);
+
+      // Hiring patterns from survey responses
+      const hiringResponses = responseList.filter((r: any) => r.section_key === "hiring_overview");
+      const roleCounts: Record<string, number> = {};
+      const rejectionCounts: Record<string, number[]> = {};
+      for (const r of hiringResponses) {
+        if (r.question_key === "B1" && r.response_value) {
+          const roles = Array.isArray(r.response_value) ? r.response_value : (r.response_value as any)?.selected || [];
+          for (const role of roles) {
+            if (typeof role === "string") roleCounts[role] = (roleCounts[role] || 0) + 1;
+          }
+        }
+        if (r.question_key === "B5" && r.response_value) {
+          const rankings = Array.isArray(r.response_value) ? r.response_value : (r.response_value as any)?.rankings || [];
+          for (const item of rankings) {
+            if (item && typeof item === "object" && item.reason && item.rank) {
+              if (!rejectionCounts[item.reason]) rejectionCounts[item.reason] = [];
+              rejectionCounts[item.reason].push(item.rank);
+            }
+          }
+        }
+      }
+
+      // Gap analysis responses
+      const gapResponses = responseList.filter((r: any) => r.section_key === "gap_analysis");
+      // Trend responses
+      const trendResponses = responseList.filter((r: any) => r.section_key === "emerging_trends");
+
+      return res.json({
+        skill_importance_vs_demonstration: skillComparison,
+        biggest_gaps: skillComparison.slice(0, 10),
+        most_adequate: [...skillComparison].sort((a, b) => a.gap - b.gap).slice(0, 10),
+        hiring_patterns: {
+          top_roles_hired: Object.entries(roleCounts).map(([role, count]) => ({ role, count })).sort((a, b) => b.count - a.count).slice(0, 15),
+          top_rejection_reasons: Object.entries(rejectionCounts).map(([reason, ranks]) => ({
+            reason,
+            avg_rank: Math.round((ranks.reduce((s, r) => s + r, 0) / ranks.length) * 10) / 10,
+            count: ranks.length,
+          })).sort((a, b) => a.avg_rank - b.avg_rank),
+        },
+        gap_analysis_responses: gapResponses,
+        trend_responses: trendResponses,
+        total_respondents: (respondents || []).length,
+        total_ratings: ratingList.length,
+        total_responses: responseList.length,
+      });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
