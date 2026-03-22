@@ -22,6 +22,7 @@ import UploadPage from "@/pages/upload";
 import Analytics from "@/pages/analytics";
 import SurveyAdmin from "@/pages/survey-admin";
 import Login from "@/pages/login";
+import DataQuality from "@/pages/data-quality";
 import SurveyLanding from "@/pages/survey-landing";
 import SurveyForm from "@/pages/survey-form";
 import { Loader2 } from "lucide-react";
@@ -32,6 +33,7 @@ function AppRouter() {
       <Route path="/" component={Dashboard} />
       <Route path="/jobs" component={Jobs} />
       <Route path="/analytics" component={Analytics} />
+      <Route path="/data-quality" component={DataQuality} />
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />

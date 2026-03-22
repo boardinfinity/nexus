@@ -437,6 +437,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
       }
 
+      // Deduplication and co-occurrence pipelines execute synchronously
+      if (pipeline_type === "deduplication" || pipeline_type === "cooccurrence") {
+        await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      }
+
       return res.json(run);
     }
 
@@ -859,7 +864,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ==================== SCHEDULES ====================
-    const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment"];
+    const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment", "deduplication", "cooccurrence"];
     const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "custom"];
 
     if (path.match(/^\/schedules\/?$/) && req.method === "GET") {
@@ -1241,6 +1246,223 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }));
 
       return res.json({ data: enriched, total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+    }
+
+    // ==================== DATA QUALITY & DEDUP ====================
+
+    if (path === "/data-quality/stats" && req.method === "GET") {
+      // Quality score distribution and duplicate stats
+      const { data: jobs, error } = await supabase
+        .from("jobs")
+        .select("quality_score, is_duplicate");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const allJobs = jobs || [];
+      const totalJobs = allJobs.length;
+      const duplicates = allJobs.filter((j: any) => j.is_duplicate).length;
+      const uniqueJobs = totalJobs - duplicates;
+      const scores = allJobs.map((j: any) => j.quality_score || 0);
+      const avgScore = totalJobs > 0 ? Math.round(scores.reduce((a: number, b: number) => a + b, 0) / totalJobs) : 0;
+
+      // Distribution buckets
+      const distribution = [
+        { range: "0-20", count: 0 },
+        { range: "21-40", count: 0 },
+        { range: "41-60", count: 0 },
+        { range: "61-80", count: 0 },
+        { range: "81-100", count: 0 },
+      ];
+      for (const s of scores) {
+        if (s <= 20) distribution[0].count++;
+        else if (s <= 40) distribution[1].count++;
+        else if (s <= 60) distribution[2].count++;
+        else if (s <= 80) distribution[3].count++;
+        else distribution[4].count++;
+      }
+
+      return res.json({
+        total_jobs: totalJobs,
+        duplicates,
+        unique_jobs: uniqueJobs,
+        avg_quality_score: avgScore,
+        distribution,
+      });
+    }
+
+    if (path === "/data-quality/duplicates" && req.method === "GET") {
+      const { page = "1", limit = "20" } = req.query as Record<string, string>;
+      const pageNum = parseInt(page);
+      const limitNum = parseInt(limit);
+      const offset = (pageNum - 1) * limitNum;
+
+      // Get duplicate groups via RPC
+      const { data: groups, error } = await supabase.rpc("find_duplicate_groups");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const allGroups = groups || [];
+      const total = allGroups.length;
+      const paged = allGroups.slice(offset, offset + limitNum);
+
+      // Fetch job details for the paged groups
+      const allJobIds: string[] = [];
+      for (const g of paged) {
+        for (const id of g.job_ids) allJobIds.push(id);
+      }
+
+      let jobDetails: Record<string, any> = {};
+      if (allJobIds.length > 0) {
+        const { data: jobsData } = await supabase
+          .from("jobs")
+          .select("id, title, company_name, location_city, source, quality_score, is_duplicate, duplicate_of")
+          .in("id", allJobIds);
+        for (const j of jobsData || []) {
+          jobDetails[j.id] = j;
+        }
+      }
+
+      const enrichedGroups = paged.map((g: any) => ({
+        dedup_key: g.dedup_key,
+        jobs: g.job_ids.map((id: string) => jobDetails[id] || { id }),
+      }));
+
+      return res.json({ data: enrichedGroups, total, page: pageNum, limit: limitNum });
+    }
+
+    // ==================== EXPORT ENDPOINTS ====================
+
+    if (path === "/export/jobs" && req.method === "GET") {
+      const { source, country, enrichment_status, has_description, limit: limitStr } = req.query as Record<string, string>;
+      const exportLimit = parseInt(limitStr || "10000");
+
+      let query = supabase
+        .from("jobs")
+        .select("id, title, company_name, location_city, location_country, source, posted_at, seniority_level, employment_type, work_mode, description, enrichment_status, quality_score, salary_min, salary_max, industry_domain")
+        .order("created_at", { ascending: false })
+        .limit(exportLimit);
+
+      if (source) query = query.eq("source", source);
+      if (country) query = query.eq("location_country", country);
+      if (enrichment_status) query = query.eq("enrichment_status", enrichment_status);
+      if (has_description === "true") query = query.not("description", "is", null);
+
+      const { data, error } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+
+      const rows = data || [];
+      const headers = ["id", "title", "company_name", "location_city", "location_country", "source", "posted_at", "seniority_level", "employment_type", "work_mode", "description", "enrichment_status", "quality_score", "salary_min", "salary_max", "industry_domain"];
+
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return "";
+        const str = String(val).replace(/"/g, '""');
+        return str.includes(",") || str.includes('"') || str.includes("\n") ? `"${str}"` : str;
+      };
+
+      let csv = headers.join(",") + "\n";
+      for (const row of rows) {
+        const values = headers.map((h) => {
+          let val = (row as any)[h];
+          if (h === "description" && val) val = val.substring(0, 1000);
+          return escapeCsv(val);
+        });
+        csv += values.join(",") + "\n";
+      }
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="nexus_jobs_export_${new Date().toISOString().split("T")[0]}.csv"`);
+      return res.send(csv);
+    }
+
+    if (path === "/export/skills" && req.method === "GET") {
+      const { min_frequency = "2" } = req.query as Record<string, string>;
+      const minFreq = parseInt(min_frequency);
+
+      // Get total jobs count
+      const { count: totalJobs } = await supabase.from("jobs").select("*", { count: "exact", head: true });
+
+      // Get all skills with counts
+      const { data: skills, error } = await supabase
+        .from("job_skills")
+        .select("skill_name, taxonomy_skill_id, confidence_score");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const skillMap: Record<string, { taxonomy_skill_id: string | null; count: number; totalConfidence: number }> = {};
+      for (const s of skills || []) {
+        const name = s.skill_name || "Unknown";
+        if (!skillMap[name]) skillMap[name] = { taxonomy_skill_id: s.taxonomy_skill_id, count: 0, totalConfidence: 0 };
+        skillMap[name].count++;
+        skillMap[name].totalConfidence += s.confidence_score || 0;
+      }
+
+      const total = totalJobs || 1;
+      const rows = Object.entries(skillMap)
+        .filter(([_, v]) => v.count >= minFreq)
+        .map(([name, v]) => ({
+          skill_name: name,
+          taxonomy_skill_id: v.taxonomy_skill_id || "",
+          frequency: v.count,
+          pct_of_total_jobs: Math.round((v.count / total) * 1000) / 10,
+          avg_confidence: Math.round((v.totalConfidence / v.count) * 100) / 100,
+        }))
+        .sort((a, b) => b.frequency - a.frequency);
+
+      const headers = ["skill_name", "taxonomy_skill_id", "frequency", "pct_of_total_jobs", "avg_confidence"];
+      const escapeCsv = (val: any) => {
+        if (val === null || val === undefined) return "";
+        const str = String(val).replace(/"/g, '""');
+        return str.includes(",") || str.includes('"') || str.includes("\n") ? `"${str}"` : str;
+      };
+
+      let csv = headers.join(",") + "\n";
+      for (const row of rows) {
+        csv += headers.map((h) => escapeCsv((row as any)[h])).join(",") + "\n";
+      }
+
+      res.setHeader("Content-Type", "text/csv; charset=utf-8");
+      res.setHeader("Content-Disposition", `attachment; filename="nexus_skills_export_${new Date().toISOString().split("T")[0]}.csv"`);
+      return res.send(csv);
+    }
+
+    // ==================== SKILL CO-OCCURRENCE ====================
+
+    if (path === "/analytics/skill-cooccurrence" && req.method === "GET") {
+      const { skill_name, limit: limitStr = "20" } = req.query as Record<string, string>;
+      const limit = parseInt(limitStr);
+
+      if (skill_name) {
+        // Top co-occurring skills for a given skill
+        const { data, error } = await supabase
+          .from("skill_cooccurrence")
+          .select("*")
+          .or(`skill_a_name.eq.${skill_name},skill_b_name.eq.${skill_name}`)
+          .order("cooccurrence_count", { ascending: false })
+          .limit(limit);
+        if (error) return res.status(500).json({ error: error.message });
+
+        // Normalize: return the "other" skill name
+        const result = (data || []).map((row: any) => ({
+          skill_name: row.skill_a_name === skill_name ? row.skill_b_name : row.skill_a_name,
+          cooccurrence_count: row.cooccurrence_count,
+          pmi_score: row.pmi_score ? Math.round(row.pmi_score * 100) / 100 : null,
+          jobs_with_skill: row.skill_a_name === skill_name ? row.jobs_with_b : row.jobs_with_a,
+        }));
+
+        return res.json(result);
+      } else {
+        // Top overall pairs
+        const { data, error } = await supabase
+          .from("skill_cooccurrence")
+          .select("*")
+          .order("cooccurrence_count", { ascending: false })
+          .limit(limit);
+        if (error) return res.status(500).json({ error: error.message });
+
+        return res.json((data || []).map((row: any) => ({
+          skill_a: row.skill_a_name,
+          skill_b: row.skill_b_name,
+          cooccurrence_count: row.cooccurrence_count,
+          pmi_score: row.pmi_score ? Math.round(row.pmi_score * 100) / 100 : null,
+        })));
+      }
     }
 
     // ==================== SURVEY ADMIN ENDPOINTS ====================
@@ -1656,6 +1878,147 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 // ==================== SCHEDULER HELPERS ====================
 
+// ==================== DEDUPLICATION PIPELINE ====================
+
+async function executeDeduplication(runId: string, _config: any) {
+  // Step 1: Recompute quality scores
+  await supabase.from("pipeline_runs").update({ status: "running", total_items: 0 }).eq("id", runId);
+
+  const { error: qErr } = await supabase.rpc("recompute_quality_scores");
+  if (qErr) throw new Error(`Quality score computation failed: ${qErr.message}`);
+
+  // Step 2: Normalize fields
+  const { error: nErr } = await supabase.rpc("normalize_job_fields");
+  if (nErr) throw new Error(`Normalization failed: ${nErr.message}`);
+
+  // Step 3: Find duplicate groups
+  const { data: groups, error: gErr } = await supabase.rpc("find_duplicate_groups");
+  if (gErr) throw new Error(`Duplicate detection failed: ${gErr.message}`);
+
+  const dupGroups = groups || [];
+  let totalDuplicates = 0;
+
+  // Step 4: For each group, keep highest quality_score job, mark others
+  for (const group of dupGroups) {
+    const jobIds: string[] = group.job_ids;
+    if (jobIds.length < 2) continue;
+
+    const bestId = jobIds[0]; // Already sorted by quality_score DESC
+    const dupeIds = jobIds.slice(1);
+
+    for (const dupeId of dupeIds) {
+      await supabase
+        .from("jobs")
+        .update({ is_duplicate: true, duplicate_of: bestId })
+        .eq("id", dupeId);
+      totalDuplicates++;
+    }
+  }
+
+  // Step 5: Update pipeline run
+  await supabase.from("pipeline_runs").update({
+    status: "completed",
+    total_items: dupGroups.length,
+    processed_items: totalDuplicates,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+}
+
+// ==================== CO-OCCURRENCE PIPELINE ====================
+
+async function executeCooccurrence(runId: string, _config: any) {
+  await supabase.from("pipeline_runs").update({ status: "running" }).eq("id", runId);
+
+  // Step 1: Get all job_skills grouped by job
+  const { data: allSkills, error: sErr } = await supabase
+    .from("job_skills")
+    .select("job_id, skill_name, taxonomy_skill_id")
+    .order("job_id");
+  if (sErr) throw new Error(`Failed to fetch job skills: ${sErr.message}`);
+
+  // Group by job_id
+  const jobSkillsMap: Record<string, Array<{ skill_name: string; taxonomy_skill_id: string | null }>> = {};
+  for (const s of allSkills || []) {
+    if (!jobSkillsMap[s.job_id]) jobSkillsMap[s.job_id] = [];
+    jobSkillsMap[s.job_id].push({ skill_name: s.skill_name, taxonomy_skill_id: s.taxonomy_skill_id });
+  }
+
+  // Filter to jobs with 2+ skills
+  const jobIds = Object.keys(jobSkillsMap).filter(id => jobSkillsMap[id].length >= 2);
+  const totalJobs = jobIds.length;
+
+  // Step 2-3: Generate pairs and count co-occurrences
+  const pairCounts: Record<string, { count: number; skill_a_id: string | null; skill_b_id: string | null }> = {};
+  const skillJobCounts: Record<string, number> = {};
+
+  for (const jobId of jobIds) {
+    const skills = jobSkillsMap[jobId];
+    const uniqueNames = [...new Set(skills.map(s => s.skill_name))];
+
+    // Count jobs per skill
+    for (const name of uniqueNames) {
+      skillJobCounts[name] = (skillJobCounts[name] || 0) + 1;
+    }
+
+    // Generate all pairs (sorted to avoid duplicates)
+    for (let i = 0; i < uniqueNames.length; i++) {
+      for (let j = i + 1; j < uniqueNames.length; j++) {
+        const [a, b] = [uniqueNames[i], uniqueNames[j]].sort();
+        const key = `${a}|||${b}`;
+        if (!pairCounts[key]) {
+          const skillA = skills.find(s => s.skill_name === a);
+          const skillB = skills.find(s => s.skill_name === b);
+          pairCounts[key] = { count: 0, skill_a_id: skillA?.taxonomy_skill_id || null, skill_b_id: skillB?.taxonomy_skill_id || null };
+        }
+        pairCounts[key].count++;
+      }
+    }
+  }
+
+  // Step 5: Upsert into skill_cooccurrence — batch in groups of 100
+  const pairs = Object.entries(pairCounts);
+  const BATCH_SIZE = 100;
+
+  await supabase.from("pipeline_runs").update({ total_items: pairs.length }).eq("id", runId);
+
+  let processed = 0;
+  for (let i = 0; i < pairs.length; i += BATCH_SIZE) {
+    const batch = pairs.slice(i, i + BATCH_SIZE);
+    const rows = batch.map(([key, val]) => {
+      const [a, b] = key.split("|||");
+      return {
+        skill_a_name: a,
+        skill_b_name: b,
+        skill_a_id: val.skill_a_id,
+        skill_b_id: val.skill_b_id,
+        cooccurrence_count: val.count,
+        jobs_with_a: skillJobCounts[a] || 0,
+        jobs_with_b: skillJobCounts[b] || 0,
+        last_updated: new Date().toISOString(),
+      };
+    });
+
+    await supabase
+      .from("skill_cooccurrence")
+      .upsert(rows, { onConflict: "skill_a_name,skill_b_name" });
+
+    processed += batch.length;
+    if (i % (BATCH_SIZE * 10) === 0) {
+      await supabase.from("pipeline_runs").update({ processed_items: processed }).eq("id", runId);
+    }
+  }
+
+  // Step 6: Compute PMI scores
+  const { error: pmiErr } = await supabase.rpc("compute_pmi_scores", { p_total_jobs: totalJobs });
+  if (pmiErr) throw new Error(`PMI computation failed: ${pmiErr.message}`);
+
+  await supabase.from("pipeline_runs").update({
+    status: "completed",
+    processed_items: pairs.length,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+}
+
 function calculateNextRun(frequency: string, cronExpression?: string | null, from?: Date): string {
   const now = from || new Date();
   if (frequency === "custom" && cronExpression) {
@@ -1694,6 +2057,10 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
       await executeJDEnrichment(runId, config);
     } else if (pipelineType === "people_enrichment") {
       await executePeopleEnrichment(runId, config);
+    } else if (pipelineType === "deduplication") {
+      await executeDeduplication(runId, config);
+    } else if (pipelineType === "cooccurrence") {
+      await executeCooccurrence(runId, config);
     }
   } catch (err: any) {
     await supabase.from("pipeline_runs").update({

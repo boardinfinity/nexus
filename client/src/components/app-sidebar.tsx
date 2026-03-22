@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
   BookOpen, Sparkles, Upload, CalendarClock, BarChart3,
-  ClipboardList,
+  ClipboardList, ShieldCheck,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -19,6 +19,7 @@ const navItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Jobs", href: "/jobs", icon: Briefcase },
   { title: "Analytics", href: "/analytics", icon: BarChart3 },
+  { title: "Data Quality", href: "/data-quality", icon: ShieldCheck },
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "People", href: "/people", icon: Users },
   { title: "Upload", href: "/upload", icon: Upload },

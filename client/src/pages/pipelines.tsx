@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2, Download } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
 
@@ -318,6 +318,27 @@ export default function Pipelines() {
               ], defaultValue: "enrich" },
               { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
             ]}
+          />
+        </div>
+      </div>
+
+      {/* Data Quality & Co-occurrence Pipelines */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Data Quality & Analysis</h2>
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <PipelineTrigger
+            type="deduplication"
+            title="Data Quality & Dedup"
+            description="Recompute quality scores and detect duplicates"
+            icon={ShieldCheck}
+            fields={[]}
+          />
+          <PipelineTrigger
+            type="cooccurrence"
+            title="Skill Co-occurrence"
+            description="Compute skill pair frequencies and PMI scores"
+            icon={Network}
+            fields={[]}
           />
         </div>
       </div>
