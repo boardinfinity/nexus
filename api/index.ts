@@ -171,7 +171,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
 
           // Execute synchronous pipelines
-          const syncTypes = ["google_jobs", "company_enrichment", "jd_enrichment", "people_enrichment"];
+          const syncTypes = ["google_jobs", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment"];
           if (syncTypes.includes(schedule.pipeline_type)) {
             await executePipeline(run.id, schedule.pipeline_type, schedule.config as any || {}).catch(console.error);
           }
@@ -428,7 +428,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (error) return res.status(500).json({ error: error.message });
 
       // For non-external pipelines (company_enrichment, jd_enrichment, people_search, people_enrich), execute synchronously
-      if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment" || pipeline_type === "people_enrichment") {
+      if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment" || pipeline_type === "jd_fetch" || pipeline_type === "people_enrichment") {
         await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
       }
 
@@ -859,7 +859,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ==================== SCHEDULES ====================
-    const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "people_enrichment"];
+    const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment"];
     const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "custom"];
 
     if (path.match(/^\/schedules\/?$/) && req.method === "GET") {
@@ -1365,6 +1365,8 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
       await executeGoogleJobs(runId, config);
     } else if (pipelineType === "company_enrichment") {
       await executeCompanyEnrichment(runId, config);
+    } else if (pipelineType === "jd_fetch") {
+      await executeJDFetch(runId, config);
     } else if (pipelineType === "jd_enrichment") {
       await executeJDEnrichment(runId, config);
     } else if (pipelineType === "people_enrichment") {
@@ -1707,6 +1709,7 @@ Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over
       ],
       temperature: 0.3,
       max_tokens: 2000,
+      response_format: { type: "json_object" },
     }),
   });
 
@@ -1716,27 +1719,29 @@ Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over
   }
 
   const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "[]";
+  const content = data.choices?.[0]?.message?.content || "{}";
 
-  // Parse JSON from response (handle markdown code blocks)
-  const jsonStr = content.replace(/```json?\n?/g, "").replace(/```/g, "").trim();
   try {
-    const parsed = JSON.parse(jsonStr);
-    return Array.isArray(parsed) ? parsed : [];
+    const parsed = JSON.parse(content);
+    // Handle both { skills: [...] } and direct array format
+    const skills = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.skills) ? parsed.skills : []);
+    return skills;
   } catch {
     return [];
   }
 }
 
-async function executeJDEnrichment(runId: string, config: any) {
-  const batchSize = parseInt(config.batch_size) || 100;
-  const statusFilter = config.status_filter || config.status || "pending";
+// ==================== JD FETCH PIPELINE (Feature 4) ====================
+
+async function executeJDFetch(runId: string, config: any) {
+  const batchSize = Math.min(parseInt(config.batch_size) || 10, 50);
 
   const { data: jobs, error } = await supabase
     .from("jobs")
-    .select("id, title, description")
-    .eq("enrichment_status", statusFilter)
-    .not("description", "is", null)
+    .select("id, title, company_name, source, source_url, description")
+    .eq("jd_fetch_status", "pending")
+    .or("description.is.null,description.lt.100")
+    .order("created_at", { ascending: false })
     .limit(batchSize);
 
   if (error) throw error;
@@ -1753,45 +1758,354 @@ async function executeJDEnrichment(runId: string, config: any) {
 
   let processed = 0;
   let failed = 0;
-  const useAI = !!OPENAI_API_KEY;
 
-  // Process in batches of 5 with Promise.allSettled
-  for (let i = 0; i < jobs.length; i += 5) {
-    const batch = jobs.slice(i, i + 5);
+  for (const job of jobs) {
+    try {
+      let fetchedDescription: string | null = null;
+
+      // Strategy 1: Apify for LinkedIn jobs with source_url
+      if (job.source === "linkedin" && job.source_url && APIFY_API_KEY) {
+        try {
+          const apifyRes = await fetch(
+            `https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}&timeout=30`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                startUrls: [{ url: job.source_url }],
+                maxRequestsPerCrawl: 1,
+                pageFunction: `async function pageFunction(context) {
+                  const $ = context.jQuery;
+                  const desc = $(".description__text, .show-more-less-html__markup, [class*='description'], .job-description").text().trim();
+                  return { description: desc || document.body.innerText.substring(0, 8000) };
+                }`,
+              }),
+            }
+          );
+          if (apifyRes.ok) {
+            const items = await apifyRes.json();
+            const desc = items?.[0]?.description;
+            if (desc && desc.length > 100) {
+              fetchedDescription = desc;
+            }
+          }
+        } catch (apifyErr: any) {
+          console.error(`[JD Fetch] Apify failed for job ${job.id}:`, apifyErr.message);
+        }
+      }
+
+      // Strategy 2: OpenAI fallback — reconstruct JD from what we know
+      if (!fetchedDescription && OPENAI_API_KEY) {
+        try {
+          const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${OPENAI_API_KEY}`,
+            },
+            body: JSON.stringify({
+              model: "gpt-4o-mini",
+              messages: [{
+                role: "user",
+                content: `Find or reconstruct the full job description for the role "${job.title}" at ${job.company_name || "unknown company"}. ${job.source_url ? `Original posting: ${job.source_url}` : ""}\n\nReturn ONLY the full job description text. If you cannot find it, construct a realistic job description based on the role title and company. Start directly with the job description content.`,
+              }],
+              temperature: 0.3,
+              max_tokens: 2000,
+            }),
+          });
+          if (openaiRes.ok) {
+            const openaiData = await openaiRes.json();
+            const content = openaiData.choices?.[0]?.message?.content;
+            if (content && content.length > 100 && !content.includes("NOT_FOUND")) {
+              fetchedDescription = content;
+            }
+          }
+        } catch (oaiErr: any) {
+          console.error(`[JD Fetch] OpenAI fallback failed for job ${job.id}:`, oaiErr.message);
+        }
+      }
+
+      if (fetchedDescription && fetchedDescription.length > 100) {
+        // Extract implicit data from the JD
+        const implicitData = await extractImplicitData(fetchedDescription, job.title, job.company_name);
+
+        await supabase.from("jobs").update({
+          description: fetchedDescription,
+          jd_fetch_status: "fetched",
+          jd_fetched_at: new Date().toISOString(),
+          enrichment_status: "partial",
+          ...(implicitData.work_mode && { work_mode: implicitData.work_mode }),
+          ...(implicitData.benefits?.length && { benefits: implicitData.benefits }),
+          ...(implicitData.min_experience_years != null && { min_experience_years: implicitData.min_experience_years }),
+          ...(implicitData.max_experience_years != null && { max_experience_years: implicitData.max_experience_years }),
+          ...(implicitData.education_requirements?.length && { education_requirements: implicitData.education_requirements }),
+          ...(implicitData.certifications_required?.length && { certifications_required: implicitData.certifications_required }),
+          ...(implicitData.inferred_salary_min != null && { inferred_salary_min: implicitData.inferred_salary_min }),
+          ...(implicitData.inferred_salary_max != null && { inferred_salary_max: implicitData.inferred_salary_max }),
+          ...(implicitData.inferred_salary_currency && { inferred_salary_currency: implicitData.inferred_salary_currency }),
+          ...(implicitData.inferred_salary_source && { inferred_salary_source: implicitData.inferred_salary_source }),
+          ...(implicitData.industry_domain && { industry_domain: implicitData.industry_domain }),
+          ...(implicitData.tools_platforms?.length && { tools_platforms: implicitData.tools_platforms }),
+        }).eq("id", job.id);
+
+        await supabase.from("enrichment_logs").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          provider: "apify+openai",
+          operation: "jd_fetch",
+          status: "success",
+          details: { description_length: fetchedDescription.length, implicit_fields_extracted: Object.keys(implicitData).length },
+        });
+
+        processed++;
+      } else {
+        await supabase.from("jobs").update({ jd_fetch_status: "failed" }).eq("id", job.id);
+
+        await supabase.from("enrichment_logs").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          provider: "apify+openai",
+          operation: "jd_fetch",
+          status: "failed",
+          details: { error: "Could not fetch or reconstruct JD" },
+        });
+
+        failed++;
+      }
+
+      // Update progress
+      await supabase.from("pipeline_runs").update({
+        processed_items: processed,
+        failed_items: failed,
+      }).eq("id", runId);
+
+      // Rate limit: 2 second delay between jobs
+      await new Promise(r => setTimeout(r, 2000));
+    } catch (jobErr: any) {
+      console.error(`[JD Fetch] Error processing job ${job.id}:`, jobErr.message);
+      await supabase.from("jobs").update({ jd_fetch_status: "failed" }).eq("id", job.id);
+      await supabase.from("enrichment_logs").insert({
+        entity_type: "job",
+        entity_id: job.id,
+        provider: "apify+openai",
+        operation: "jd_fetch",
+        status: "failed",
+        details: { error: jobErr.message },
+      });
+      failed++;
+      await supabase.from("pipeline_runs").update({ processed_items: processed, failed_items: failed }).eq("id", runId);
+    }
+  }
+
+  await supabase.from("pipeline_runs").update({
+    status: "completed",
+    processed_items: processed,
+    failed_items: failed,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+}
+
+async function extractImplicitData(description: string, title: string, companyName: string | null): Promise<any> {
+  if (!OPENAI_API_KEY) return {};
+
+  try {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [
+          {
+            role: "system",
+            content: `You extract structured data from job descriptions. Return a JSON object with these fields (use null for unknown):
+- work_mode: "remote" | "hybrid" | "onsite" | null
+- benefits: string[] (e.g. ["health insurance", "401k", "remote work"])
+- min_experience_years: number | null
+- max_experience_years: number | null
+- education_requirements: string[] (e.g. ["Bachelor's in Computer Science", "MBA preferred"])
+- certifications_required: string[] (e.g. ["CPA", "AWS Certified"])
+- inferred_salary_min: number | null (annual, in local currency)
+- inferred_salary_max: number | null
+- inferred_salary_currency: string | null (e.g. "USD", "INR")
+- inferred_salary_source: "explicit" | "inferred" | null
+- industry_domain: string | null (e.g. "fintech", "healthcare", "e-commerce")
+- tools_platforms: string[] (specific tools/platforms mentioned, e.g. ["Salesforce", "Jira", "AWS"])`,
+          },
+          {
+            role: "user",
+            content: `Job Title: ${title}\nCompany: ${companyName || "Unknown"}\n\nJob Description:\n${description.slice(0, 4000)}`,
+          },
+        ],
+        temperature: 0.2,
+        max_tokens: 1000,
+        response_format: { type: "json_object" },
+      }),
+    });
+
+    if (!response.ok) return {};
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "{}";
+    return JSON.parse(content);
+  } catch {
+    return {};
+  }
+}
+
+// ==================== JD ANALYSIS PIPELINE (Feature 5 — Enhanced jd_enrichment) ====================
+
+async function executeJDEnrichment(runId: string, config: any) {
+  const batchSize = Math.min(parseInt(config.batch_size) || 25, 100);
+
+  const { data: jobs, error } = await supabase
+    .from("jobs")
+    .select("id, title, company_name, description")
+    .in("enrichment_status", ["pending", "partial"])
+    .not("description", "is", null)
+    .order("created_at", { ascending: false })
+    .limit(batchSize);
+
+  if (error) throw error;
+  if (!jobs?.length) {
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      total_items: 0,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+    return;
+  }
+
+  // Filter out jobs with very short descriptions
+  const validJobs = jobs.filter(j => j.description && j.description.length > 100);
+  await supabase.from("pipeline_runs").update({ total_items: validJobs.length }).eq("id", runId);
+
+  let processed = 0;
+  let failed = 0;
+
+  // Process in parallel batches of 5
+  for (let i = 0; i < validJobs.length; i += 5) {
+    const batch = validJobs.slice(i, i + 5);
     const results = await Promise.allSettled(
       batch.map(async (job) => {
-        let skills: Array<{ name: string; category: string; confidence: number }>;
+        // Call GPT-4o-mini with enhanced extraction prompt
+        const response = await fetch("https://api.openai.com/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${OPENAI_API_KEY}`,
+          },
+          body: JSON.stringify({
+            model: "gpt-4o-mini",
+            messages: [
+              {
+                role: "system",
+                content: `You are an expert job description analyst. Extract structured information from job descriptions and return JSON.
 
-        if (useAI) {
-          skills = await extractSkillsWithAI(job.description || "");
-        } else {
-          // Fallback to keyword extraction
-          const keywords = extractSkillsKeyword(job.description || "");
-          skills = keywords.map((k) => ({ name: k, category: categorizeSkill(k), confidence: 0.7 }));
+Return a JSON object with:
+- skills: array of { name: string, type: "technical" | "soft" | "domain" | "tool", required: boolean, confidence: number (0-1) }
+  Extract 10-40 skills. Be specific (e.g. "React.js" not "frontend", "PostgreSQL" not "database").
+- experience: { min_years: number|null, max_years: number|null, level: "entry"|"mid"|"senior"|"lead"|"executive"|null }
+- education: string[] (e.g. ["Bachelor's in CS", "Master's preferred"])
+- certifications: string[]
+- industry: string|null (e.g. "fintech", "healthcare")
+- tools_platforms: string[] (specific tools mentioned)
+- work_mode: "remote"|"hybrid"|"onsite"|null
+- responsibilities: string[] (top 5-8 key responsibilities, brief)
+- seniority: "intern"|"entry"|"mid"|"senior"|"lead"|"manager"|"director"|"executive"|null
+- functions: string[] (job function areas, e.g. ["engineering", "data science", "product management"])`,
+              },
+              {
+                role: "user",
+                content: `Job Title: ${job.title}\nCompany: ${job.company_name || "Unknown"}\n\nJob Description:\n${job.description!.slice(0, 6000)}`,
+              },
+            ],
+            temperature: 0.2,
+            max_tokens: 3000,
+            response_format: { type: "json_object" },
+          }),
+        });
+
+        if (!response.ok) {
+          const errText = await response.text();
+          throw new Error(`OpenAI API error: ${response.status} ${errText}`);
         }
 
+        const aiData = await response.json();
+        const tokenUsage = aiData.usage || {};
+        const content = aiData.choices?.[0]?.message?.content || "{}";
+        const extracted = JSON.parse(content);
+
+        // Match extracted skills against taxonomy
+        const skills = extracted.skills || [];
         for (const skill of skills) {
-          // Try to match against taxonomy
+          if (skill.confidence < 0.6) continue;
+
           let taxonomySkillId: string | null = null;
-          const { data: match } = await supabase
+
+          // Exact match (case-insensitive)
+          const { data: exactMatch } = await supabase
             .from("taxonomy_skills")
             .select("id")
             .ilike("name", skill.name)
             .limit(1)
-            .single();
-          if (match) taxonomySkillId = match.id;
+            .maybeSingle();
+
+          if (exactMatch) {
+            taxonomySkillId = exactMatch.id;
+          } else {
+            // Fuzzy match via find_similar_skill RPC
+            try {
+              const { data: fuzzyMatch } = await supabase
+                .rpc("find_similar_skill", { search_term: skill.name })
+                .limit(1)
+                .maybeSingle();
+              if ((fuzzyMatch as any)?.id) {
+                taxonomySkillId = (fuzzyMatch as any).id;
+              }
+            } catch {
+              // RPC may not exist — skip fuzzy matching
+            }
+          }
 
           await supabase.from("job_skills").upsert({
             job_id: job.id,
             skill_name: skill.name,
-            skill_category: skill.category,
+            skill_category: skill.type || "technical",
             confidence_score: skill.confidence,
-            extraction_method: useAI ? "ai" : "keyword",
+            extraction_method: "ai_enhanced",
             taxonomy_skill_id: taxonomySkillId,
-          }, { onConflict: "job_id,skill_name", ignoreDuplicates: true });
+            is_required: skill.required ?? null,
+          }, { onConflict: "job_id,skill_name" });
         }
 
-        await supabase.from("jobs").update({ enrichment_status: "complete" }).eq("id", job.id);
+        // Update job record with all structured fields
+        const updateFields: any = {
+          enrichment_status: "complete",
+        };
+        if (extracted.experience?.min_years != null) updateFields.min_experience_years = extracted.experience.min_years;
+        if (extracted.experience?.max_years != null) updateFields.max_experience_years = extracted.experience.max_years;
+        if (extracted.education?.length) updateFields.education_requirements = extracted.education;
+        if (extracted.certifications?.length) updateFields.certifications_required = extracted.certifications;
+        if (extracted.work_mode) updateFields.work_mode = extracted.work_mode;
+        if (extracted.industry) updateFields.industry_domain = extracted.industry;
+        if (extracted.tools_platforms?.length) updateFields.tools_platforms = extracted.tools_platforms;
+        if (extracted.seniority) updateFields.seniority_level = extracted.seniority;
+
+        await supabase.from("jobs").update(updateFields).eq("id", job.id);
+
+        // Log enrichment
+        await supabase.from("enrichment_logs").insert({
+          entity_type: "job",
+          entity_id: job.id,
+          provider: "openai",
+          operation: "jd_analysis",
+          status: "success",
+          credits_used: tokenUsage.total_tokens || 0,
+          details: { skills_extracted: skills.length, model: "gpt-4o-mini", tokens: tokenUsage },
+        });
       })
     );
 
@@ -1800,11 +2114,20 @@ async function executeJDEnrichment(runId: string, config: any) {
         processed++;
       } else {
         failed++;
-        console.error("JD enrichment error:", r.reason);
+        console.error("[JD Analysis] Error:", r.reason?.message || r.reason);
+        // Log failure for any job in the batch that failed
       }
     }
 
-    await supabase.from("pipeline_runs").update({ processed_items: processed, failed_items: failed }).eq("id", runId);
+    await supabase.from("pipeline_runs").update({
+      processed_items: processed,
+      failed_items: failed,
+    }).eq("id", runId);
+
+    // Rate limit: 2 second delay between batches
+    if (i + 5 < validJobs.length) {
+      await new Promise(r => setTimeout(r, 2000));
+    }
   }
 
   await supabase.from("pipeline_runs").update({

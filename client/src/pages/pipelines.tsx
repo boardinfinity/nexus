@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2 } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, Users, UserCheck, Brain, Play, Loader2, Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
 
@@ -245,31 +245,21 @@ export default function Pipelines() {
             ]}
           />
           <PipelineTrigger
-            type="jd_enrichment"
-            title="JD Enrichment"
-            description="Extract skills from job descriptions"
-            icon={FileText}
+            type="jd_fetch"
+            title="JD Fetch"
+            description="Fetch missing job descriptions via Apify + OpenAI"
+            icon={Download}
             fields={[
-              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "100", defaultValue: "100" },
-              { name: "status_filter", label: "Status", type: "select", options: [
-                { value: "pending", label: "Pending Only" },
-                { value: "partial", label: "Partial" },
-                { value: "failed", label: "Failed (Retry)" },
-              ], defaultValue: "pending" },
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "10", defaultValue: "10" },
             ]}
           />
           <PipelineTrigger
             type="jd_enrichment"
-            title="Skill Extraction"
-            description="AI-powered skill extraction with taxonomy mapping"
+            title="JD Analysis"
+            description="Extract skills & structured data from JDs using GPT-4o-mini"
             icon={Brain}
             fields={[
-              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" },
-              { name: "status_filter", label: "Status", type: "select", options: [
-                { value: "pending", label: "Pending Only" },
-                { value: "partial", label: "Partial" },
-                { value: "failed", label: "Failed (Retry)" },
-              ], defaultValue: "pending" },
+              { name: "batch_size", label: "Batch Size", type: "number", placeholder: "25", defaultValue: "25" },
             ]}
           />
         </div>
