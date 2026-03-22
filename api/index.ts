@@ -991,7 +991,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ==================== ANALYTICS ====================
 
     if (path === "/analytics/overview" && req.method === "GET") {
-      const { date_from, date_to } = req.query as Record<string, string>;
+      const { date_from, date_to, source, country, status } = req.query as Record<string, string>;
 
       let jobsQuery = supabase.from("jobs").select("*", { count: "exact", head: true });
       let jobsWithDescQuery = supabase.from("jobs").select("*", { count: "exact", head: true }).not("description", "is", null);
@@ -1002,12 +1002,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       let skillsQuery = supabase.from("job_skills").select("skill_name");
       let jobsPeriodQuery = supabase.from("jobs").select("*", { count: "exact", head: true });
 
-      if (date_from) {
-        jobsPeriodQuery = jobsPeriodQuery.gte("created_at", date_from);
-      }
-      if (date_to) {
-        jobsPeriodQuery = jobsPeriodQuery.lte("created_at", date_to);
-      }
+      // Apply filters to all job-related queries
+      const applyJobFilters = (q: any) => {
+        if (source) q = q.eq("source", source);
+        if (country) q = q.eq("location_country", country);
+        if (status) q = q.eq("enrichment_status", status);
+        if (date_from) q = q.gte("created_at", date_from);
+        if (date_to) q = q.lte("created_at", date_to);
+        return q;
+      };
+
+      jobsQuery = applyJobFilters(jobsQuery);
+      jobsWithDescQuery = applyJobFilters(jobsWithDescQuery);
+      jobsAnalyzedQuery = applyJobFilters(jobsAnalyzedQuery);
+      jobsPeriodQuery = applyJobFilters(jobsPeriodQuery);
 
       const [
         totalJobsRes,
@@ -1050,7 +1058,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/analytics/jobs-by-source" && req.method === "GET") {
-      const { data, error } = await supabase.from("jobs").select("source");
+      const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
+      let query = supabase.from("jobs").select("source");
+      if (source) query = query.eq("source", source);
+      if (country) query = query.eq("location_country", country);
+      if (status) query = query.eq("enrichment_status", status);
+      if (date_from) query = query.gte("created_at", date_from);
+      if (date_to) query = query.lte("created_at", date_to);
+      const { data, error } = await query;
       if (error) return res.status(500).json({ error: error.message });
 
       const counts: Record<string, number> = {};
@@ -1066,7 +1081,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/analytics/jobs-by-region" && req.method === "GET") {
-      const { data, error } = await supabase.from("jobs").select("location_country").not("location_country", "is", null);
+      const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
+      let query = supabase.from("jobs").select("location_country").not("location_country", "is", null);
+      if (source) query = query.eq("source", source);
+      if (country) query = query.eq("location_country", country);
+      if (status) query = query.eq("enrichment_status", status);
+      if (date_from) query = query.gte("created_at", date_from);
+      if (date_to) query = query.lte("created_at", date_to);
+      const { data, error } = await query;
       if (error) return res.status(500).json({ error: error.message });
 
       const counts: Record<string, number> = {};
@@ -1100,12 +1122,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/analytics/top-skills" && req.method === "GET") {
-      const limit = parseInt((req.query as Record<string, string>).limit || "20");
-      const { data, error } = await supabase.from("job_skills").select("skill_name");
-      if (error) return res.status(500).json({ error: error.message });
+      const { limit: limitStr, source, country, status, date_from, date_to } = req.query as Record<string, string>;
+      const limit = parseInt(limitStr || "20");
+      const hasJobFilters = source || country || status || date_from || date_to;
+
+      let skillsData: any[] = [];
+      if (hasJobFilters) {
+        // First get filtered job IDs, then get their skills
+        let jobQuery = supabase.from("jobs").select("id");
+        if (source) jobQuery = jobQuery.eq("source", source);
+        if (country) jobQuery = jobQuery.eq("location_country", country);
+        if (status) jobQuery = jobQuery.eq("enrichment_status", status);
+        if (date_from) jobQuery = jobQuery.gte("created_at", date_from);
+        if (date_to) jobQuery = jobQuery.lte("created_at", date_to);
+        const { data: jobs, error: jobsErr } = await jobQuery;
+        if (jobsErr) return res.status(500).json({ error: jobsErr.message });
+        const jobIds = (jobs || []).map((j: any) => j.id);
+        if (jobIds.length === 0) return res.json([]);
+        const { data, error } = await supabase.from("job_skills").select("skill_name").in("job_id", jobIds);
+        if (error) return res.status(500).json({ error: error.message });
+        skillsData = data || [];
+      } else {
+        const { data, error } = await supabase.from("job_skills").select("skill_name");
+        if (error) return res.status(500).json({ error: error.message });
+        skillsData = data || [];
+      }
 
       const counts: Record<string, number> = {};
-      for (const row of data || []) {
+      for (const row of skillsData) {
         const name = row.skill_name || "Unknown";
         counts[name] = (counts[name] || 0) + 1;
       }
@@ -1151,7 +1195,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/analytics/enrichment-funnel" && req.method === "GET") {
-      const { data, error } = await supabase.from("jobs").select("enrichment_status");
+      const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
+      let query = supabase.from("jobs").select("enrichment_status");
+      if (source) query = query.eq("source", source);
+      if (country) query = query.eq("location_country", country);
+      if (status) query = query.eq("enrichment_status", status);
+      if (date_from) query = query.gte("created_at", date_from);
+      if (date_to) query = query.lte("created_at", date_to);
+      const { data, error } = await query;
       if (error) return res.status(500).json({ error: error.message });
 
       const counts: Record<string, number> = {};
@@ -1167,15 +1218,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/analytics/timeline" && req.method === "GET") {
-      const { granularity = "day", days = "30" } = req.query as Record<string, string>;
+      const { granularity = "day", days = "30", source, country, status, date_from, date_to } = req.query as Record<string, string>;
       const since = new Date();
       since.setDate(since.getDate() - parseInt(days));
 
-      const { data, error } = await supabase
+      let query = supabase
         .from("jobs")
         .select("created_at")
         .gte("created_at", since.toISOString())
         .order("created_at", { ascending: true });
+      if (source) query = query.eq("source", source);
+      if (country) query = query.eq("location_country", country);
+      if (status) query = query.eq("enrichment_status", status);
+      if (date_from) query = query.gte("created_at", date_from);
+      if (date_to) query = query.lte("created_at", date_to);
+      const { data, error } = await query;
       if (error) return res.status(500).json({ error: error.message });
 
       const buckets: Record<string, number> = {};

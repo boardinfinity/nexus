@@ -101,61 +101,70 @@ export default function Analytics() {
   const [tableOrder, setTableOrder] = useState<"asc" | "desc">("desc");
   const tableLimit = 50;
 
-  // Build query params
-  const overviewParams = new URLSearchParams();
-  if (dateFrom) overviewParams.set("date_from", dateFrom);
-  if (dateTo) overviewParams.set("date_to", dateTo);
+  // Build shared global filter params
+  const filterParams = new URLSearchParams();
+  if (dateFrom) filterParams.set("date_from", dateFrom);
+  if (dateTo) filterParams.set("date_to", dateTo);
+  if (filterSource !== "all") filterParams.set("source", filterSource);
+  if (filterCountry !== "all") filterParams.set("country", filterCountry);
+  if (filterStatus !== "all") filterParams.set("status", filterStatus);
+  const filterString = filterParams.toString();
 
-  // Queries
+  // Queries — all include filterString in queryKey so they refetch when global filters change
   const { data: overview, isLoading: overviewLoading } = useQuery<OverviewData>({
-    queryKey: ["/api/analytics/overview", overviewParams.toString()],
+    queryKey: ["/api/analytics/overview", filterString],
     queryFn: async () => {
-      const res = await authFetch(`/api/analytics/overview?${overviewParams.toString()}`);
+      const res = await authFetch(`/api/analytics/overview?${filterString}`);
       if (!res.ok) throw new Error("Failed to fetch overview");
       return res.json();
     },
   });
 
   const { data: bySource, isLoading: sourceLoading } = useQuery<{ source: string; count: number }[]>({
-    queryKey: ["/api/analytics/jobs-by-source"],
+    queryKey: ["/api/analytics/jobs-by-source", filterString],
     queryFn: async () => {
-      const res = await authFetch("/api/analytics/jobs-by-source");
+      const res = await authFetch(`/api/analytics/jobs-by-source?${filterString}`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
   });
 
   const { data: byRegion, isLoading: regionLoading } = useQuery<{ country: string; count: number }[]>({
-    queryKey: ["/api/analytics/jobs-by-region"],
+    queryKey: ["/api/analytics/jobs-by-region", filterString],
     queryFn: async () => {
-      const res = await authFetch("/api/analytics/jobs-by-region");
+      const res = await authFetch(`/api/analytics/jobs-by-region?${filterString}`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
   });
 
   const { data: timeline, isLoading: timelineLoading } = useQuery<{ date: string; count: number }[]>({
-    queryKey: ["/api/analytics/timeline", granularity],
+    queryKey: ["/api/analytics/timeline", granularity, filterString],
     queryFn: async () => {
-      const res = await authFetch(`/api/analytics/timeline?granularity=${granularity}&days=60`);
+      const params = new URLSearchParams(filterParams);
+      params.set("granularity", granularity);
+      params.set("days", "60");
+      const res = await authFetch(`/api/analytics/timeline?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
   });
 
   const { data: topSkills, isLoading: skillsLoading } = useQuery<{ skill_name: string; count: number }[]>({
-    queryKey: ["/api/analytics/top-skills"],
+    queryKey: ["/api/analytics/top-skills", filterString],
     queryFn: async () => {
-      const res = await authFetch("/api/analytics/top-skills?limit=20");
+      const params = new URLSearchParams(filterParams);
+      params.set("limit", "20");
+      const res = await authFetch(`/api/analytics/top-skills?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
   });
 
   const { data: funnel, isLoading: funnelLoading } = useQuery<{ status: string; count: number }[]>({
-    queryKey: ["/api/analytics/enrichment-funnel"],
+    queryKey: ["/api/analytics/enrichment-funnel", filterString],
     queryFn: async () => {
-      const res = await authFetch("/api/analytics/enrichment-funnel");
+      const res = await authFetch(`/api/analytics/enrichment-funnel?${filterString}`);
       if (!res.ok) throw new Error("Failed to fetch");
       return res.json();
     },
@@ -275,13 +284,13 @@ export default function Analytics() {
 
       {/* Row 2: KPI Cards */}
       {overviewLoading ? (
-        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
           {Array.from({ length: 5 }).map((_, i) => (
             <Skeleton key={i} className="h-24" />
           ))}
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-3 lg:grid-cols-5">
+        <div className="grid gap-4 grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
           <KPICard title="Total Jobs" value={overview?.total_jobs ?? 0} icon={Briefcase} subtitle="Across all sources" />
           <KPICard title="JD Coverage" value={`${overview?.jd_coverage_pct ?? 0}%`} icon={FileText} subtitle="Jobs with descriptions" />
           <KPICard title="Skills Extracted" value={overview?.skills_extracted ?? 0} icon={Brain} subtitle="Unique skills found" />
@@ -436,7 +445,7 @@ export default function Analytics() {
                       ))}
                     </Pie>
                     <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Legend />
+                    <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: 16, maxWidth: 150, overflow: "visible" }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
