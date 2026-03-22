@@ -1059,105 +1059,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (path === "/analytics/jobs-by-source" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      let query = supabase.from("jobs").select("source");
-      if (source) query = query.eq("source", source);
-      if (country) query = query.eq("location_country", country);
-      if (status) query = query.eq("enrichment_status", status);
-      if (date_from) query = query.gte("created_at", date_from);
-      if (date_to) query = query.lte("created_at", date_to);
-      const { data, error } = await query;
+      const { data, error } = await supabase.rpc('get_jobs_by_source', {
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
       if (error) return res.status(500).json({ error: error.message });
-
-      const counts: Record<string, number> = {};
-      for (const row of data || []) {
-        const src = row.source || "unknown";
-        counts[src] = (counts[src] || 0) + 1;
-      }
-      const result = Object.entries(counts)
-        .map(([source, count]) => ({ source, count }))
-        .sort((a, b) => b.count - a.count);
-
-      return res.json(result);
+      return res.json(data || []);
     }
 
     if (path === "/analytics/jobs-by-region" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      let query = supabase.from("jobs").select("location_country").not("location_country", "is", null);
-      if (source) query = query.eq("source", source);
-      if (country) query = query.eq("location_country", country);
-      if (status) query = query.eq("enrichment_status", status);
-      if (date_from) query = query.gte("created_at", date_from);
-      if (date_to) query = query.lte("created_at", date_to);
-      const { data, error } = await query;
+      const { data, error } = await supabase.rpc('get_jobs_by_region', {
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
       if (error) return res.status(500).json({ error: error.message });
-
-      const counts: Record<string, number> = {};
-      for (const row of data || []) {
-        const country = row.location_country || "Unknown";
-        counts[country] = (counts[country] || 0) + 1;
-      }
-      const result = Object.entries(counts)
-        .map(([country, count]) => ({ country, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 10);
-
-      return res.json(result);
+      return res.json(data || []);
     }
 
     if (path === "/analytics/jobs-by-role" && req.method === "GET") {
-      const { data, error } = await supabase.from("jobs").select("title").not("title", "is", null);
+      const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
+      const { data, error } = await supabase.rpc('get_jobs_by_role', {
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
       if (error) return res.status(500).json({ error: error.message });
-
-      const counts: Record<string, number> = {};
-      for (const row of data || []) {
-        const title = row.title || "Unknown";
-        counts[title] = (counts[title] || 0) + 1;
-      }
-      const result = Object.entries(counts)
-        .map(([title, count]) => ({ title, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 30);
-
-      return res.json(result);
+      return res.json(data || []);
     }
 
     if (path === "/analytics/top-skills" && req.method === "GET") {
       const { limit: limitStr, source, country, status, date_from, date_to } = req.query as Record<string, string>;
       const limit = parseInt(limitStr || "20");
-      const hasJobFilters = source || country || status || date_from || date_to;
-
-      let skillsData: any[] = [];
-      if (hasJobFilters) {
-        // First get filtered job IDs, then get their skills
-        let jobQuery = supabase.from("jobs").select("id");
-        if (source) jobQuery = jobQuery.eq("source", source);
-        if (country) jobQuery = jobQuery.eq("location_country", country);
-        if (status) jobQuery = jobQuery.eq("enrichment_status", status);
-        if (date_from) jobQuery = jobQuery.gte("created_at", date_from);
-        if (date_to) jobQuery = jobQuery.lte("created_at", date_to);
-        const { data: jobs, error: jobsErr } = await jobQuery;
-        if (jobsErr) return res.status(500).json({ error: jobsErr.message });
-        const jobIds = (jobs || []).map((j: any) => j.id);
-        if (jobIds.length === 0) return res.json([]);
-        const { data, error } = await supabase.from("job_skills").select("skill_name").in("job_id", jobIds);
-        if (error) return res.status(500).json({ error: error.message });
-        skillsData = data || [];
-      } else {
-        const { data, error } = await supabase.from("job_skills").select("skill_name");
-        if (error) return res.status(500).json({ error: error.message });
-        skillsData = data || [];
-      }
-
-      const counts: Record<string, number> = {};
-      for (const row of skillsData) {
-        const name = row.skill_name || "Unknown";
-        counts[name] = (counts[name] || 0) + 1;
-      }
-      const result = Object.entries(counts)
-        .map(([skill_name, count]) => ({ skill_name, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, limit);
-
+      const { data, error } = await supabase.rpc('get_top_skills', {
+        p_limit: limit,
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
+      if (error) return res.status(500).json({ error: error.message });
+      // Map 'skill' key to 'skill_name' to match frontend expectations
+      const result = (data || []).map((row: any) => ({ skill_name: row.skill, count: row.count }));
       return res.json(result);
     }
 
@@ -1196,63 +1148,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (path === "/analytics/enrichment-funnel" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      let query = supabase.from("jobs").select("enrichment_status");
-      if (source) query = query.eq("source", source);
-      if (country) query = query.eq("location_country", country);
-      if (status) query = query.eq("enrichment_status", status);
-      if (date_from) query = query.gte("created_at", date_from);
-      if (date_to) query = query.lte("created_at", date_to);
-      const { data, error } = await query;
+      const { data, error } = await supabase.rpc('get_enrichment_funnel', {
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
       if (error) return res.status(500).json({ error: error.message });
-
-      const counts: Record<string, number> = {};
-      for (const row of data || []) {
-        const status = row.enrichment_status || "pending";
-        counts[status] = (counts[status] || 0) + 1;
-      }
-      const result = Object.entries(counts)
-        .map(([status, count]) => ({ status, count }))
-        .sort((a, b) => b.count - a.count);
-
-      return res.json(result);
+      return res.json(data || []);
     }
 
     if (path === "/analytics/timeline" && req.method === "GET") {
       const { granularity = "day", days = "30", source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const since = new Date();
-      since.setDate(since.getDate() - parseInt(days));
-
-      let query = supabase
-        .from("jobs")
-        .select("created_at")
-        .gte("created_at", since.toISOString())
-        .order("created_at", { ascending: true });
-      if (source) query = query.eq("source", source);
-      if (country) query = query.eq("location_country", country);
-      if (status) query = query.eq("enrichment_status", status);
-      if (date_from) query = query.gte("created_at", date_from);
-      if (date_to) query = query.lte("created_at", date_to);
-      const { data, error } = await query;
+      const { data, error } = await supabase.rpc('get_jobs_timeline', {
+        p_days: parseInt(days),
+        p_granularity: granularity,
+        p_source: source || null,
+        p_country: country || null,
+        p_status: status || null,
+        p_date_from: date_from || null,
+        p_date_to: date_to || null,
+      });
       if (error) return res.status(500).json({ error: error.message });
-
-      const buckets: Record<string, number> = {};
-      for (const row of data || []) {
-        const d = new Date(row.created_at);
-        let key: string;
-        if (granularity === "week") {
-          const weekStart = new Date(d);
-          weekStart.setDate(d.getDate() - d.getDay());
-          key = weekStart.toISOString().split("T")[0];
-        } else {
-          key = d.toISOString().split("T")[0];
-        }
-        buckets[key] = (buckets[key] || 0) + 1;
-      }
-      const result = Object.entries(buckets)
-        .map(([date, count]) => ({ date, count }))
-        .sort((a, b) => a.date.localeCompare(b.date));
-
-      return res.json(result);
+      return res.json(data || []);
     }
 
     if (path === "/analytics/pipeline-health" && req.method === "GET") {
