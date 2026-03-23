@@ -2274,9 +2274,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ success: true });
     }
 
-    // POST /api/reports/:id/process — trigger AI processing
-    if (path.match(/^\/reports\/[^/]+\/process$/) && req.method === "POST") {
+    // POST /api/reports/:id/process-phase — phased AI processing (one phase per call)
+    if (path.match(/^\/reports\/[^/]+\/process-phase$/) && req.method === "POST") {
       const id = path.split("/")[2];
+      const { phase } = req.body || {};
+
+      if (!phase || !["extract_text", "process_chunk", "merge_results", "match_taxonomy"].includes(phase)) {
+        return res.status(400).json({ error: "Invalid phase. Must be: extract_text, process_chunk, merge_results, match_taxonomy" });
+      }
 
       // Get the report
       const { data: report, error: fetchErr } = await supabase
@@ -2285,164 +2290,221 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .eq("id", id)
         .single();
       if (fetchErr || !report) return res.status(404).json({ error: "Report not found" });
-      if (report.processing_status === "completed") return res.status(400).json({ error: "Report already processed" });
-
-      // Mark as processing
-      await supabase.from("secondary_reports").update({ processing_status: "processing", error_message: null }).eq("id", id);
 
       try {
-        // Download file
-        const fileResponse = await fetch(report.file_url);
-        if (!fileResponse.ok) throw new Error("Failed to download file from storage");
-        const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+        // Phase 1: Extract text, chunk it, store chunk count
+        if (phase === "extract_text") {
+          if (report.processing_status === "completed") return res.status(400).json({ error: "Report already processed" });
 
-        // Extract text
-        let fullText = "";
-        if (report.file_type === "pdf") {
-          const pdfParse = require("pdf-parse");
-          const pdf = await pdfParse(fileBuffer);
-          fullText = pdf.text;
-        } else if (report.file_type === "docx") {
-          const mammoth = require("mammoth");
-          const result = await mammoth.extractRawText({ buffer: fileBuffer });
-          fullText = result.value;
-        } else {
-          throw new Error("Unsupported file type: " + report.file_type);
+          await supabase.from("secondary_reports").update({
+            processing_status: "processing",
+            error_message: null,
+            extracted_data: { _chunk_results: [] },
+          }).eq("id", id);
+
+          const fileResponse = await fetch(report.file_url);
+          if (!fileResponse.ok) throw new Error("Failed to download file from storage");
+          const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+
+          let fullText = "";
+          if (report.file_type === "pdf") {
+            const pdfParse = require("pdf-parse");
+            const pdf = await pdfParse(fileBuffer);
+            fullText = pdf.text;
+          } else if (report.file_type === "docx") {
+            const mammoth = require("mammoth");
+            const result = await mammoth.extractRawText({ buffer: fileBuffer });
+            fullText = result.value;
+          } else {
+            throw new Error("Unsupported file type: " + report.file_type);
+          }
+
+          const chunks = chunkText(fullText, 80000);
+          await supabase.from("secondary_reports").update({
+            total_chunks: chunks.length,
+            processed_chunks: 0,
+          }).eq("id", id);
+
+          return res.json({ next_phase: "process_chunk", total_chunks: chunks.length, chunk: 0 });
         }
 
-        // Chunk text
-        const chunks = chunkText(fullText, 80000);
-        await supabase.from("secondary_reports").update({ total_chunks: chunks.length, processed_chunks: 0 }).eq("id", id);
+        // Phase 2: Process ONE chunk with Claude
+        if (phase === "process_chunk") {
+          const chunkIndex = report.processed_chunks || 0;
+          const totalChunks = report.total_chunks || 1;
 
-        // Process each chunk with GPT
-        const allResults: any[] = [];
-        for (let i = 0; i < chunks.length; i++) {
+          if (chunkIndex >= totalChunks) {
+            return res.json({ next_phase: "merge_results" });
+          }
+
+          // Re-download and re-parse PDF to get the chunk
+          const fileResponse = await fetch(report.file_url);
+          if (!fileResponse.ok) throw new Error("Failed to download file from storage");
+          const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
+
+          let fullText = "";
+          if (report.file_type === "pdf") {
+            const pdfParse = require("pdf-parse");
+            const pdf = await pdfParse(fileBuffer);
+            fullText = pdf.text;
+          } else if (report.file_type === "docx") {
+            const mammoth = require("mammoth");
+            const result = await mammoth.extractRawText({ buffer: fileBuffer });
+            fullText = result.value;
+          } else {
+            throw new Error("Unsupported file type: " + report.file_type);
+          }
+
+          const chunks = chunkText(fullText, 80000);
           const chunkResult = await processReportChunk(
-            chunks[i],
+            chunks[chunkIndex],
             report.title,
             report.source_org || "Unknown",
             report.report_year || 0,
             report.region || "Global",
-            i + 1,
-            chunks.length
+            chunkIndex + 1,
+            totalChunks
           );
-          allResults.push(chunkResult);
 
-          // Update progress
-          await supabase.from("secondary_reports").update({ processed_chunks: i + 1 }).eq("id", id);
-        }
+          // Append to _chunk_results in extracted_data
+          const existingData = report.extracted_data || {};
+          const chunkResults = existingData._chunk_results || [];
+          chunkResults.push(chunkResult);
 
-        // Merge results from all chunks
-        const mergedFindings: any[] = [];
-        const mergedSkills: any[] = [];
-        const mergedTables: any[] = [];
-        const mergedStats: any[] = [];
-        const summaryParts: string[] = [];
+          await supabase.from("secondary_reports").update({
+            processed_chunks: chunkIndex + 1,
+            extracted_data: { ...existingData, _chunk_results: chunkResults },
+          }).eq("id", id);
 
-        for (const result of allResults) {
-          if (result.section_summary) summaryParts.push(result.section_summary);
-          if (result.key_findings) mergedFindings.push(...result.key_findings);
-          if (result.skill_mentions) mergedSkills.push(...result.skill_mentions);
-          if (result.extracted_tables) mergedTables.push(...result.extracted_tables);
-          if (result.stats) mergedStats.push(...result.stats);
-        }
-
-        // Deduplicate skills by name — keep the one with more data
-        const skillMap = new Map<string, any>();
-        for (const skill of mergedSkills) {
-          const key = skill.skill_name?.toLowerCase();
-          if (!key) continue;
-          const existing = skillMap.get(key);
-          if (!existing || (skill.data_point && !existing.data_point) || (skill.ranking && !existing.ranking)) {
-            skillMap.set(key, skill);
+          const nextChunk = chunkIndex + 1;
+          if (nextChunk >= totalChunks) {
+            return res.json({ next_phase: "merge_results", chunk: nextChunk, total_chunks: totalChunks });
           }
+          return res.json({ next_phase: "process_chunk", chunk: nextChunk, total_chunks: totalChunks });
         }
-        const dedupedSkills = Array.from(skillMap.values());
 
-        // Generate overall summary if multiple chunks
-        let summary = summaryParts.join(" ");
-        if (summaryParts.length > 1 && ANTHROPIC_API_KEY) {
-          try {
-            const summaryPrompt = `Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences).\n\n${summaryParts.join("\n\n")}`;
-            summary = await callClaude(summaryPrompt) || summary;
-          } catch {
-            // Keep concatenated summary
+        // Phase 3: Merge all chunk results, generate summary, deduplicate skills
+        if (phase === "merge_results") {
+          const existingData = report.extracted_data || {};
+          const allResults = existingData._chunk_results || [];
+
+          const mergedFindings: any[] = [];
+          const mergedSkills: any[] = [];
+          const mergedTables: any[] = [];
+          const mergedStats: any[] = [];
+          const summaryParts: string[] = [];
+
+          for (const result of allResults) {
+            if (result.section_summary) summaryParts.push(result.section_summary);
+            if (result.key_findings) mergedFindings.push(...result.key_findings);
+            if (result.skill_mentions) mergedSkills.push(...result.skill_mentions);
+            if (result.extracted_tables) mergedTables.push(...result.extracted_tables);
+            if (result.stats) mergedStats.push(...result.stats);
           }
-        }
 
-        // Match skills against taxonomy
-        const skillMentionsToInsert: any[] = [];
-        for (const skill of dedupedSkills) {
-          let taxonomySkillId: string | null = null;
+          // Deduplicate skills by name — keep the one with more data
+          const skillMap = new Map<string, any>();
+          for (const skill of mergedSkills) {
+            const key = skill.skill_name?.toLowerCase();
+            if (!key) continue;
+            const existing = skillMap.get(key);
+            if (!existing || (skill.data_point && !existing.data_point) || (skill.ranking && !existing.ranking)) {
+              skillMap.set(key, skill);
+            }
+          }
+          const dedupedSkills = Array.from(skillMap.values());
 
-          // Exact match
-          const { data: exactMatch } = await supabase
-            .from("taxonomy_skills")
-            .select("id")
-            .ilike("name", skill.skill_name)
-            .limit(1)
-            .maybeSingle();
-
-          if (exactMatch) {
-            taxonomySkillId = exactMatch.id;
-          } else {
-            // Fuzzy match
+          // Generate overall summary if multiple chunks
+          let summary = summaryParts.join(" ");
+          if (summaryParts.length > 1 && ANTHROPIC_API_KEY) {
             try {
-              const { data: fuzzyMatch } = await supabase
-                .rpc("find_similar_skill", { search_term: skill.skill_name })
-                .limit(1)
-                .maybeSingle();
-              if ((fuzzyMatch as any)?.id) {
-                taxonomySkillId = (fuzzyMatch as any).id;
-              }
+              const summaryPrompt = `Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences).\n\n${summaryParts.join("\n\n")}`;
+              summary = await callClaude(summaryPrompt) || summary;
             } catch {
-              // RPC may not exist
+              // Keep concatenated summary
             }
           }
 
-          skillMentionsToInsert.push({
-            report_id: id,
-            taxonomy_skill_id: taxonomySkillId,
-            skill_name: skill.skill_name,
-            mention_context: skill.mention_context || null,
-            ranking: skill.ranking || null,
-            growth_indicator: skill.growth_indicator || null,
-            data_point: skill.data_point || null,
-          });
+          // Store merged results, clear _chunk_results
+          await supabase.from("secondary_reports").update({
+            summary,
+            key_findings: mergedFindings,
+            extracted_data: { tables: mergedTables, stats: mergedStats, _deduped_skills: dedupedSkills },
+          }).eq("id", id);
+
+          return res.json({ next_phase: "match_taxonomy", skills_count: dedupedSkills.length });
         }
 
-        // Insert skill mentions
-        if (skillMentionsToInsert.length > 0) {
-          // Delete existing mentions first (in case of reprocessing)
-          await supabase.from("report_skill_mentions").delete().eq("report_id", id);
-          // Insert in batches of 50
-          for (let i = 0; i < skillMentionsToInsert.length; i += 50) {
-            await supabase.from("report_skill_mentions").insert(skillMentionsToInsert.slice(i, i + 50));
+        // Phase 4: Match skills to taxonomy, insert report_skill_mentions
+        if (phase === "match_taxonomy") {
+          const existingData = report.extracted_data || {};
+          const dedupedSkills = existingData._deduped_skills || [];
+
+          const skillMentionsToInsert: any[] = [];
+          for (const skill of dedupedSkills) {
+            let taxonomySkillId: string | null = null;
+
+            // Exact match
+            const { data: exactMatch } = await supabase
+              .from("taxonomy_skills")
+              .select("id")
+              .ilike("name", skill.skill_name)
+              .limit(1)
+              .maybeSingle();
+
+            if (exactMatch) {
+              taxonomySkillId = exactMatch.id;
+            } else {
+              // Fuzzy match
+              try {
+                const { data: fuzzyMatch } = await supabase
+                  .rpc("find_similar_skill", { search_term: skill.skill_name })
+                  .limit(1)
+                  .maybeSingle();
+                if ((fuzzyMatch as any)?.id) {
+                  taxonomySkillId = (fuzzyMatch as any).id;
+                }
+              } catch {
+                // RPC may not exist
+              }
+            }
+
+            skillMentionsToInsert.push({
+              report_id: id,
+              taxonomy_skill_id: taxonomySkillId,
+              skill_name: skill.skill_name,
+              mention_context: skill.mention_context || null,
+              ranking: skill.ranking || null,
+              growth_indicator: skill.growth_indicator || null,
+              data_point: skill.data_point || null,
+            });
           }
+
+          // Insert skill mentions
+          if (skillMentionsToInsert.length > 0) {
+            await supabase.from("report_skill_mentions").delete().eq("report_id", id);
+            for (let i = 0; i < skillMentionsToInsert.length; i += 50) {
+              await supabase.from("report_skill_mentions").insert(skillMentionsToInsert.slice(i, i + 50));
+            }
+          }
+
+          // Clean up _deduped_skills from extracted_data and mark complete
+          const { _deduped_skills, ...cleanData } = existingData;
+          await supabase.from("secondary_reports").update({
+            extracted_data: cleanData,
+            processing_status: "completed",
+            processed_at: new Date().toISOString(),
+          }).eq("id", id);
+
+          return res.json({ done: true, skills_matched: skillMentionsToInsert.length });
         }
-
-        // Update report with results
-        await supabase.from("secondary_reports").update({
-          summary,
-          key_findings: mergedFindings,
-          extracted_data: { tables: mergedTables, stats: mergedStats },
-          processing_status: "completed",
-          processed_at: new Date().toISOString(),
-        }).eq("id", id);
-
-        return res.json({
-          success: true,
-          chunks_processed: chunks.length,
-          skills_extracted: dedupedSkills.length,
-          findings_count: mergedFindings.length,
-        });
       } catch (err: any) {
-        console.error("Report processing error:", err);
+        console.error("Report phase processing error:", err);
         await supabase.from("secondary_reports").update({
           processing_status: "error",
-          error_message: err.message || "Processing failed",
+          error_message: `Phase ${phase} failed: ${err.message || "Processing failed"}`,
         }).eq("id", id);
-        return res.status(500).json({ error: err.message || "Processing failed" });
+        return res.status(500).json({ error: err.message || "Processing failed", phase });
       }
     }
 

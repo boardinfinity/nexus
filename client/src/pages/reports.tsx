@@ -480,6 +480,13 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  // Phase processing state
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [phaseLabel, setPhaseLabel] = useState("");
+  const [processedChunks, setProcessedChunks] = useState(0);
+  const [totalChunks, setTotalChunks] = useState(0);
+  const [failedPhase, setFailedPhase] = useState<string | null>(null);
+
   const { data: report, isLoading } = useQuery<Report>({
     queryKey: ["/api/reports", reportId],
     queryFn: async () => {
@@ -487,10 +494,7 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
       if (!res.ok) throw new Error("Failed to fetch report");
       return res.json();
     },
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      return data?.processing_status === "processing" ? 3000 : false;
-    },
+    refetchInterval: false,
   });
 
   const { data: skills } = useQuery<SkillMention[]>({
@@ -503,19 +507,70 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
     enabled: report?.processing_status === "completed",
   });
 
-  const processMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", `/api/reports/${reportId}/process`);
-      return res.json();
-    },
-    onSuccess: () => {
-      toast({ title: "Processing started", description: "The report is being analyzed." });
+  const callPhase = async (phase: string): Promise<any> => {
+    const res = await apiRequest("POST", `/api/reports/${reportId}/process-phase`, { phase });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: "Request failed" }));
+      throw new Error(err.error || "Phase failed");
+    }
+    return res.json();
+  };
+
+  const runProcessing = async (startPhase?: string) => {
+    setIsProcessing(true);
+    setFailedPhase(null);
+
+    try {
+      let currentPhase = startPhase || "extract_text";
+
+      let chunks = report?.processed_chunks || 0;
+      let total = report?.total_chunks || 0;
+      setProcessedChunks(chunks);
+      setTotalChunks(total);
+
+      // Phase 1: extract_text
+      if (currentPhase === "extract_text") {
+        setPhaseLabel("Extracting text from document...");
+        const result = await callPhase("extract_text");
+        total = result.total_chunks;
+        setTotalChunks(total);
+        setProcessedChunks(0);
+        currentPhase = result.next_phase;
+      }
+
+      // Phase 2: process_chunk (loop)
+      while (currentPhase === "process_chunk") {
+        setPhaseLabel(`Processing chunk ${chunks + 1} of ${total || "?"}...`);
+        const result = await callPhase("process_chunk");
+        if (result.total_chunks) { total = result.total_chunks; setTotalChunks(total); }
+        chunks = result.chunk || 0;
+        setProcessedChunks(chunks);
+        currentPhase = result.next_phase;
+      }
+
+      // Phase 3: merge_results
+      if (currentPhase === "merge_results") {
+        setPhaseLabel("Merging results and generating summary...");
+        const result = await callPhase("merge_results");
+        currentPhase = result.next_phase;
+      }
+
+      // Phase 4: match_taxonomy
+      if (currentPhase === "match_taxonomy") {
+        setPhaseLabel("Matching skills to taxonomy...");
+        await callPhase("match_taxonomy");
+      }
+
+      toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
       queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
-    },
-    onError: (err: any) => {
+    } catch (err: any) {
       toast({ title: "Processing failed", description: err.message, variant: "destructive" });
-    },
-  });
+      setFailedPhase(phaseLabel);
+      queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
 
   const deleteMutation = useMutation({
     mutationFn: async () => {
@@ -546,6 +601,14 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
   const tables = report.extracted_data?.tables || [];
   const stats = report.extracted_data?.stats || [];
 
+  // Determine which phase to resume from on retry
+  const getResumePhase = (): string => {
+    if (!report.total_chunks || report.total_chunks === 0) return "extract_text";
+    if ((report.processed_chunks || 0) < report.total_chunks) return "process_chunk";
+    if (!report.summary) return "merge_results";
+    return "match_taxonomy";
+  };
+
   return (
     <div className="space-y-4" data-testid="report-detail">
       <div className="flex items-center justify-between">
@@ -560,31 +623,31 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
               {report.report_year && <span>{report.report_year}</span>}
               <span>{typeLabel}</span>
               {report.region && <span>{report.region}</span>}
-              <Badge variant="outline" className={statusConf.color}>
-                <StatusIcon className={`h-3 w-3 mr-1 ${report.processing_status === "processing" ? "animate-spin" : ""}`} />
-                {statusConf.label}
+              <Badge variant="outline" className={isProcessing ? STATUS_CONFIG.processing.color : statusConf.color}>
+                {isProcessing ? (
+                  <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                ) : (
+                  <StatusIcon className={`h-3 w-3 mr-1 ${report.processing_status === "processing" ? "animate-spin" : ""}`} />
+                )}
+                {isProcessing ? "Processing" : statusConf.label}
               </Badge>
             </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {(report.processing_status === "pending" || report.processing_status === "error") && (
+          {!isProcessing && (report.processing_status === "pending" || report.processing_status === "error") && (
             <Button
-              onClick={() => processMutation.mutate()}
-              disabled={processMutation.isPending}
+              onClick={() => runProcessing(report.processing_status === "error" ? getResumePhase() : undefined)}
               data-testid="btn-process"
             >
-              {processMutation.isPending ? (
-                <Loader2 className="h-4 w-4 animate-spin mr-2" />
-              ) : (
-                <Play className="h-4 w-4 mr-2" />
-              )}
-              Process Report
+              <Play className="h-4 w-4 mr-2" />
+              {report.processing_status === "error" ? "Retry Processing" : "Process Report"}
             </Button>
           )}
           <Button
             variant="outline"
             size="icon"
+            disabled={isProcessing}
             onClick={() => {
               if (confirm("Delete this report? This cannot be undone.")) {
                 deleteMutation.mutate();
@@ -597,22 +660,26 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
       </div>
 
       {/* Processing Progress */}
-      {report.processing_status === "processing" && report.total_chunks && (
+      {isProcessing && (
         <Card>
           <CardContent className="py-4">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-medium">Processing...</span>
-              <span className="text-sm text-muted-foreground">
-                Chunk {report.processed_chunks} of {report.total_chunks}
-              </span>
+              <span className="text-sm font-medium">{phaseLabel}</span>
+              {totalChunks > 0 && (
+                <span className="text-sm text-muted-foreground">
+                  Chunk {processedChunks} of {totalChunks}
+                </span>
+              )}
             </div>
-            <Progress value={(report.processed_chunks / report.total_chunks) * 100} className="h-2" />
+            {totalChunks > 0 && (
+              <Progress value={(processedChunks / totalChunks) * 100} className="h-2" />
+            )}
           </CardContent>
         </Card>
       )}
 
       {/* Error */}
-      {report.processing_status === "error" && report.error_message && (
+      {!isProcessing && report.processing_status === "error" && report.error_message && (
         <Card className="border-destructive">
           <CardContent className="py-4 flex items-center gap-2 text-destructive">
             <AlertTriangle className="h-4 w-4" />
@@ -771,7 +838,7 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
       )}
 
       {/* Pending state */}
-      {report.processing_status === "pending" && (
+      {!isProcessing && report.processing_status === "pending" && (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <FileText className="h-12 w-12 text-muted-foreground mb-4" />
