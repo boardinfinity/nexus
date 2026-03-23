@@ -2182,7 +2182,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json(upload);
     }
 
-    // POST /api/college/process-catalog — Trigger processing pipeline
+    // POST /api/college/process-catalog — Synchronous processing pipeline
     if (path === "/college/process-catalog" && req.method === "POST") {
       const { upload_id, college_name, college_short_name, catalog_year } = req.body || {};
       if (!upload_id) return res.status(400).json({ error: "upload_id is required" });
@@ -2194,18 +2194,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .single();
       if (fetchErr || !upload) return res.status(404).json({ error: "Upload not found" });
 
-      // Start processing in background (non-blocking response)
-      processCatalog(upload, college_name, college_short_name, catalog_year).catch((err) => {
-        console.error("Catalog processing error:", err);
-      });
-
       await supabase.from("catalog_uploads").update({
         status: "extracting",
         progress: { current_step: "starting", pages_processed: 0 },
         updated_at: new Date().toISOString(),
       }).eq("id", upload_id);
 
-      return res.json({ processing: true, upload_id });
+      // Run processing synchronously — Vercel Pro allows 5 min timeout
+      try {
+        await processCatalog(upload, college_name, college_short_name, catalog_year);
+        return res.json({ processing: false, upload_id, status: "completed" });
+      } catch (err: any) {
+        console.error("Catalog processing error:", err);
+        return res.status(500).json({ processing: false, upload_id, status: "failed", error: err.message });
+      }
     }
 
     // GET /api/college/processing-status/:upload_id

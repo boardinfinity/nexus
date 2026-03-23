@@ -112,6 +112,8 @@ export default function Colleges() {
 
   const processMutation = useMutation({
     mutationFn: async () => {
+      // Start polling immediately, don't wait for response
+      setUploadStep(3);
       const res = await apiRequest("POST", "/api/college/process-catalog", {
         upload_id: uploadId,
         college_name: collegeName || undefined,
@@ -119,8 +121,12 @@ export default function Colleges() {
       });
       return res.json();
     },
-    onSuccess: () => {
-      setUploadStep(3);
+    onSuccess: (data) => {
+      // Processing completed synchronously
+      if (data.status === "completed") {
+        queryClient.invalidateQueries({ queryKey: ["/api/colleges"] });
+        queryClient.invalidateQueries({ queryKey: ["/api/college/processing-status", uploadId] });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Processing failed", description: err.message, variant: "destructive" });
