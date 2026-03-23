@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import {
   GraduationCap, Mail, Download, RefreshCw, Search, CheckCircle2, Clock,
-  Send, Eye, ShieldCheck, XCircle, Loader2, Building2, Users, BarChart3,
+  Send, Eye, ExternalLink, ShieldCheck, XCircle, Loader2, Building2, Users, BarChart3,
 } from "lucide-react";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
@@ -311,6 +311,10 @@ export default function PlaceIntelAdmin() {
                             )}
                           </SheetContent>
                         </Sheet>
+                        {/* Preview Form */}
+                        <Button variant="ghost" size="icon" className="h-8 w-8" title="Preview Form" onClick={() => window.open(`/#/placement-form/${c.id}?preview=true`, "_blank")}>
+                          <ExternalLink className="h-4 w-4" />
+                        </Button>
                         {/* Invite */}
                         {(c.placeintel_status === "not_invited" || c.placeintel_status === "invited") && (
                           <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => {

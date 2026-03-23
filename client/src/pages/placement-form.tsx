@@ -119,7 +119,9 @@ export default function PlacementForm({ params }: { params: { college_id: string
   const { toast } = useToast();
 
   // Auth state
-  const [isAuthenticated, setIsAuthenticated] = useState(hasPlaceIntelToken());
+  // Allow preview mode for admins (bypass OTP)
+  const isPreview = typeof window !== "undefined" && new URLSearchParams(window.location.hash.split("?")[1] || "").get("preview") === "true";
+  const [isAuthenticated, setIsAuthenticated] = useState(isPreview || hasPlaceIntelToken());
   const [authEmail, setAuthEmail] = useState("");
   const [authName, setAuthName] = useState("");
   const [authDesignation, setAuthDesignation] = useState("");
@@ -440,6 +442,12 @@ export default function PlacementForm({ params }: { params: { college_id: string
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-blue-50 to-white">
+      {/* Preview Banner */}
+      {isPreview && (
+        <div className="bg-amber-500 text-white text-center py-2 text-sm font-medium">
+          Preview Mode — form data will not be saved
+        </div>
+      )}
       {/* Header */}
       <div className="bg-white border-b sticky top-0 z-10">
         <div className="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
