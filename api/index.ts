@@ -2160,28 +2160,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ==================== COLLEGE INTELLIGENCE ENGINE ROUTES ====================
 
-    // POST /api/college/upload-catalog — Upload PDF to Supabase Storage
+    // POST /api/college/upload-catalog — Register a catalog upload (file already in Supabase Storage)
     if (path === "/college/upload-catalog" && req.method === "POST") {
-      const { file_name, file_data, file_size_bytes } = req.body || {};
-      if (!file_name || !file_data) {
-        return res.status(400).json({ error: "file_name and file_data (base64) are required" });
+      const { file_name, file_path, file_size_bytes } = req.body || {};
+      if (!file_name || !file_path) {
+        return res.status(400).json({ error: "file_name and file_path are required" });
       }
-
-      const filePath = `catalogs/${Date.now()}_${file_name}`;
-      const buffer = Buffer.from(file_data, "base64");
-
-      const { error: uploadErr } = await supabase.storage
-        .from("college-catalogs")
-        .upload(filePath, buffer, { contentType: "application/pdf" });
-
-      if (uploadErr) return res.status(500).json({ error: uploadErr.message });
 
       const { data: upload, error: insertErr } = await supabase
         .from("catalog_uploads")
         .insert({
           file_name,
-          file_path: filePath,
-          file_size_bytes: file_size_bytes || buffer.length,
+          file_path,
+          file_size_bytes: file_size_bytes || 0,
           status: "uploaded",
         })
         .select()

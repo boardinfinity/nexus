@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
+import { supabase } from "@/lib/supabase";
 import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -84,19 +85,18 @@ export default function Colleges() {
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (!selectedFile) throw new Error("No file selected");
-      const reader = new FileReader();
-      const base64 = await new Promise<string>((resolve, reject) => {
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(",")[1]);
-        };
-        reader.onerror = reject;
-        reader.readAsDataURL(selectedFile);
-      });
 
+      // Upload directly to Supabase Storage (bypasses Vercel body size limit)
+      const filePath = `catalogs/${Date.now()}_${selectedFile.name}`;
+      const { error: uploadErr } = await supabase.storage
+        .from("college-catalogs")
+        .upload(filePath, selectedFile, { contentType: "application/pdf" });
+      if (uploadErr) throw new Error(uploadErr.message);
+
+      // Register the upload in the database via API
       const res = await apiRequest("POST", "/api/college/upload-catalog", {
         file_name: selectedFile.name,
-        file_data: base64,
+        file_path: filePath,
         file_size_bytes: selectedFile.size,
       });
       return res.json();
