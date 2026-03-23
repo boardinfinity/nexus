@@ -2635,10 +2635,10 @@ Only include information clearly stated in the text.`);
       if (!collegeId) throw new Error("No college_id in progress — run extract_info first");
 
       const { text: fullText } = await downloadAndParsePDF(sb, upload.file_path);
-      const programChunks = chunkTextForCatalog(fullText, 20000);
-      const maxChunks = Math.min(programChunks.length, 8);
+      const programChunks = chunkTextForCatalog(fullText, 15000);
+      const maxChunks = Math.min(programChunks.length, 10);
       const batchIndex = progress.programs_batch_index || 0;
-      const chunksPerCall = 2;
+      const chunksPerCall = 1;
       const endIndex = Math.min(batchIndex + chunksPerCall, maxChunks);
 
       const allPrograms: any[] = [];
@@ -2718,9 +2718,9 @@ Only include programs clearly described. Skip duplicates.`);
       if (!collegeId) throw new Error("No college_id in progress");
 
       const { text: fullText } = await downloadAndParsePDF(sb, upload.file_path);
-      const courseChunks = chunkTextForCatalog(fullText, 25000);
+      const courseChunks = chunkTextForCatalog(fullText, 15000);
       const batchIndex = progress.courses_batch_index || 0;
-      const chunksPerCall = 2;
+      const chunksPerCall = 1;
       const endIndex = Math.min(batchIndex + chunksPerCall, courseChunks.length);
 
       for (let i = batchIndex; i < endIndex; i++) {
