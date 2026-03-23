@@ -405,6 +405,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json(data);
     }
 
+    // Deduplicate companies by normalized name
+    if (path === "/companies/deduplicate" && req.method === "POST") {
+      const { data: companies, error: fetchErr } = await supabase
+        .from("companies")
+        .select("id, name, name_normalized, domain, website, linkedin_url, logo_url, industry, sub_industry, company_type, founded_year, size_range, employee_count, headquarters_city, headquarters_state, headquarters_country, description, specialities, enrichment_score");
+      if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+
+      // First backfill any companies missing name_normalized
+      for (const c of companies || []) {
+        if (!c.name_normalized && c.name) {
+          const norm = c.name.toLowerCase()
+            .replace(/\s*(pvt\.?\s*ltd\.?|ltd\.?|inc\.?|llc|corp\.?|corporation|private\s+limited|limited|india)\s*$/gi, "")
+            .replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+          c.name_normalized = norm;
+          await supabase.from("companies").update({ name_normalized: norm }).eq("id", c.id);
+        }
+      }
+
+      // Group by normalized name
+      const groups: Record<string, typeof companies> = {};
+      for (const c of companies || []) {
+        const key = c.name_normalized || c.name?.toLowerCase() || c.id;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(c);
+      }
+
+      let merged = 0;
+      for (const [, group] of Object.entries(groups)) {
+        if (group.length <= 1) continue;
+
+        // Keep the company with the highest enrichment_score (most data)
+        group.sort((a: any, b: any) => (b.enrichment_score || 0) - (a.enrichment_score || 0));
+        const keeper = group[0];
+        const duplicates = group.slice(1);
+
+        // Merge: fill in any missing fields on keeper from duplicates
+        const fillFields = ["domain", "website", "linkedin_url", "logo_url", "industry", "sub_industry", "company_type", "founded_year", "size_range", "employee_count", "headquarters_city", "headquarters_state", "headquarters_country", "description"];
+        const updates: Record<string, any> = {};
+        for (const field of fillFields) {
+          if (!keeper[field]) {
+            for (const dup of duplicates) {
+              if (dup[field]) { updates[field] = dup[field]; break; }
+            }
+          }
+        }
+        if (Object.keys(updates).length > 0) {
+          updates.updated_at = new Date().toISOString();
+          await supabase.from("companies").update(updates).eq("id", keeper.id);
+        }
+
+        // Redirect all job references from duplicates to keeper
+        for (const dup of duplicates) {
+          await supabase.from("jobs").update({ company_id: keeper.id }).eq("company_id", dup.id);
+          await supabase.from("companies").delete().eq("id", dup.id);
+        }
+
+        merged += duplicates.length;
+      }
+
+      return res.json({ success: true, merged, groups_found: Object.values(groups).filter((g: any) => g.length > 1).length });
+    }
+
     // ==================== PEOPLE ====================
     if (path.match(/^\/people\/?$/) && req.method === "GET") {
       const { search, seniority, function: fn, is_recruiter, is_hiring_manager, page = "1", limit = "50" } = req.query as Record<string, string>;
@@ -988,6 +1050,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ message: "Migration attempted", results });
     }
 
+    // Migration: company name normalization for dedup
+    if (path === "/migrate/company-dedup" && req.method === "POST") {
+      const statements = [
+        `ALTER TABLE companies ADD COLUMN IF NOT EXISTS name_normalized TEXT`,
+        `CREATE INDEX IF NOT EXISTS idx_companies_name_normalized ON companies(name_normalized)`,
+        `UPDATE companies SET name_normalized = TRIM(REGEXP_REPLACE(REGEXP_REPLACE(LOWER(name), '\\s*(pvt\\.?\\s*ltd\\.?|ltd\\.?|inc\\.?|llc|corp\\.?|corporation|private\\s+limited|limited|india)\\s*$', '', 'gi'), '\\s+', ' ', 'g')) WHERE name_normalized IS NULL`,
+      ];
+      const results: Array<{ sql: string; ok: boolean; error?: string }> = [];
+      for (const sql of statements) {
+        const { error } = await supabase.rpc("exec_sql", { query: sql }).maybeSingle();
+        results.push({ sql: sql.slice(0, 80), ok: !error, error: error?.message });
+      }
+      return res.json({ message: "Company dedup migration attempted", results });
+    }
+
     // ==================== CSV UPLOAD ====================
     if (path === "/upload/start" && req.method === "POST") {
       const { filename, source_type, total_rows } = req.body || {};
@@ -1045,6 +1122,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const { data, error } = await supabase
         .from("csv_uploads")
         .select("*")
+        .eq("id", id)
+        .single();
+      if (error) return res.status(404).json({ error: "Upload not found" });
+      return res.json(data);
+    }
+
+    // List csv uploads
+    if (path.match(/^\/csv-uploads\/?$/) && req.method === "GET") {
+      const { limit = "20", page = "1" } = req.query as Record<string, string>;
+      const offset = (parseInt(page) - 1) * parseInt(limit);
+      const { data, error, count } = await supabase
+        .from("csv_uploads")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range(offset, offset + parseInt(limit) - 1);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ data: data || [], total: count || 0 });
+    }
+
+    // Get error details for a specific upload
+    if (path.match(/^\/csv-uploads\/[0-9a-f-]+\/errors$/) && req.method === "GET") {
+      const id = path.split("/")[2];
+      const { data, error } = await supabase
+        .from("csv_uploads")
+        .select("id, filename, source_type, total_rows, processed_rows, skipped_rows, failed_rows, error_log, status, uploaded_by, created_at, completed_at")
         .eq("id", id)
         .single();
       if (error) return res.status(404).json({ error: "Upload not found" });
@@ -5336,7 +5438,17 @@ function parseDomain(url: string | null): string | null {
   }
 }
 
+function normalizeCompanyName(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/\s*(pvt\.?\s*ltd\.?|ltd\.?|inc\.?|llc|corp\.?|corporation|private\s+limited|limited|india)\s*$/gi, "")
+    .replace(/[^a-z0-9 ]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function upsertCompanyByName(name: string, website?: string | null, logoUrl?: string | null): Promise<string | null> {
+  // Step 1: Try exact match (fast)
   const { data: existing } = await supabase
     .from("companies")
     .select("id")
@@ -5344,9 +5456,23 @@ async function upsertCompanyByName(name: string, website?: string | null, logoUr
     .maybeSingle();
   if (existing) return existing.id;
 
+  // Step 2: Try normalized name match
+  const normalized = normalizeCompanyName(name);
+  if (normalized) {
+    const { data: normalizedMatch } = await supabase
+      .from("companies")
+      .select("id")
+      .eq("name_normalized", normalized)
+      .limit(1)
+      .maybeSingle();
+    if (normalizedMatch) return normalizedMatch.id;
+  }
+
+  // Step 3: No match — create new company
   const domain = parseDomain(website);
   const insertData: Record<string, any> = {
     name,
+    name_normalized: normalized || null,
     enrichment_status: "pending",
   };
   if (domain) insertData.domain = domain;

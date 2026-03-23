@@ -20,6 +20,7 @@ export interface Company {
   id: string;
   external_ids: Record<string, unknown>;
   name: string;
+  name_normalized: string | null;
   domain: string | null;
   website: string | null;
   linkedin_url: string | null;

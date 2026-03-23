@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Search, Sparkles, Loader2, Save } from "lucide-react";
+import { Search, Sparkles, Loader2, Save, Merge } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Company } from "@shared/schema";
 
@@ -60,6 +60,20 @@ export default function Companies() {
     },
     onError: (err: Error) => {
       toast({ title: "Enrichment failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const dedupMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/companies/deduplicate", {});
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({ title: "Deduplication complete", description: `Merged ${data.merged} duplicate companies across ${data.groups_found} groups.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Deduplication failed", description: err.message, variant: "destructive" });
     },
   });
 
@@ -127,20 +141,36 @@ export default function Companies() {
           <h1 className="text-2xl font-bold tracking-tight">Companies</h1>
           <p className="text-sm text-muted-foreground">Browse and manage company profiles</p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          className="gap-1.5"
-          onClick={() => enrichMutation.mutate()}
-          disabled={enrichMutation.isPending}
-        >
-          {enrichMutation.isPending ? (
-            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-          ) : (
-            <Sparkles className="h-3.5 w-3.5" />
-          )}
-          Auto Enrich
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => dedupMutation.mutate()}
+            disabled={dedupMutation.isPending}
+          >
+            {dedupMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Merge className="h-3.5 w-3.5" />
+            )}
+            Deduplicate
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1.5"
+            onClick={() => enrichMutation.mutate()}
+            disabled={enrichMutation.isPending}
+          >
+            {enrichMutation.isPending ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <Sparkles className="h-3.5 w-3.5" />
+            )}
+            Auto Enrich
+          </Button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-3">

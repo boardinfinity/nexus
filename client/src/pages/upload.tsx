@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Papa from "papaparse";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2, History } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2, History, Eye } from "lucide-react";
 import { apiRequest, authFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { CsvUpload } from "@shared/schema";
@@ -75,7 +81,7 @@ const REQUIRED_COLUMNS: Record<SourceType, string[]> = {
   custom: ["title", "external_id"],
 };
 
-const CHUNK_SIZE = 500;
+const CHUNK_SIZE = 100;
 
 interface UploadStats {
   processed: number;
@@ -85,7 +91,23 @@ interface UploadStats {
   errors: Array<{ row_index: number; error: string; raw?: Record<string, unknown> }>;
 }
 
+interface UploadDetailData {
+  id: string;
+  filename: string;
+  source_type: string;
+  total_rows: number;
+  processed_rows: number;
+  skipped_rows: number;
+  failed_rows: number;
+  error_log: Array<{ row_index: number; error: string; raw?: Record<string, unknown> }>;
+  status: string;
+  uploaded_by: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
 export default function UploadPage() {
+  const queryClient = useQueryClient();
   const { data: uploadHistory, isLoading: historyLoading } = useQuery<{ data: CsvUpload[]; total: number }>({
     queryKey: ["/api/csv-uploads"],
     queryFn: async () => {
@@ -102,8 +124,15 @@ export default function UploadPage() {
   const [headers, setHeaders] = useState<string[]>([]);
   const [stats, setStats] = useState<UploadStats>({ processed: 0, skipped: 0, failed: 0, total: 0, errors: [] });
   const [uploadId, setUploadId] = useState<string | null>(null);
+  const [currentBatch, setCurrentBatch] = useState(0);
+  const [totalBatches, setTotalBatches] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { toast } = useToast();
+
+  // Upload detail dialog state
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailData, setDetailData] = useState<UploadDetailData | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
 
   const handleFileSelect = useCallback((selectedFile: File) => {
     setFile(selectedFile);
@@ -174,6 +203,9 @@ export default function UploadPage() {
   const startUpload = async () => {
     if (parsedData.length === 0) return;
     setState("uploading");
+    const batches = Math.ceil(parsedData.length / CHUNK_SIZE);
+    setTotalBatches(batches);
+    setCurrentBatch(0);
     setStats({ processed: 0, skipped: 0, failed: 0, total: parsedData.length, errors: [] });
 
     try {
@@ -186,46 +218,83 @@ export default function UploadPage() {
       const { upload_id } = await startRes.json();
       setUploadId(upload_id);
 
-      // Process chunks sequentially
-      let totalProcessed = 0;
-      let totalSkipped = 0;
-      let totalFailed = 0;
-      const allErrors: any[] = [];
-
-      for (let i = 0; i < parsedData.length; i += CHUNK_SIZE) {
-        const chunk = parsedData.slice(i, i + CHUNK_SIZE);
-
-        const batchRes = await apiRequest("POST", "/api/upload/batch", {
-          upload_id,
-          source_type: sourceType,
-          rows: chunk,
-        });
-
-        const { batch_result } = await batchRes.json();
-        totalProcessed += batch_result.processed;
-        totalSkipped += batch_result.skipped;
-        totalFailed += batch_result.failed;
-        allErrors.push(...(batch_result.errors || []));
-
-        setStats({
-          processed: totalProcessed,
-          skipped: totalSkipped,
-          failed: totalFailed,
-          total: parsedData.length,
-          errors: allErrors,
-        });
-      }
-
-      setState(totalFailed > totalProcessed ? "failed" : "completed");
-      toast({
-        title: totalFailed > totalProcessed ? "Upload completed with errors" : "Upload completed",
-        description: `${totalProcessed} processed, ${totalSkipped} skipped, ${totalFailed} failed`,
-        variant: totalFailed > totalProcessed ? "destructive" : "default",
-      });
+      // Send batches in background — sequential loop, non-blocking UI updates
+      sendBatchesInBackground(upload_id, parsedData, sourceType, batches);
     } catch (err: any) {
       setState("failed");
       toast({ title: "Upload failed", description: err.message, variant: "destructive" });
     }
+  };
+
+  const sendBatchesInBackground = async (
+    uploadIdVal: string,
+    data: any[],
+    source: SourceType,
+    batches: number,
+  ) => {
+    let totalProcessed = 0;
+    let totalSkipped = 0;
+    let totalFailed = 0;
+    const allErrors: any[] = [];
+
+    for (let i = 0; i < data.length; i += CHUNK_SIZE) {
+      const batchNum = Math.floor(i / CHUNK_SIZE) + 1;
+      setCurrentBatch(batchNum);
+      const chunk = data.slice(i, i + CHUNK_SIZE);
+
+      let batchResult: any = null;
+      let retried = false;
+
+      // Try sending batch, retry once on failure
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const batchRes = await apiRequest("POST", "/api/upload/batch", {
+            upload_id: uploadIdVal,
+            source_type: source,
+            rows: chunk,
+          });
+          batchResult = (await batchRes.json()).batch_result;
+          break;
+        } catch (err: any) {
+          if (attempt === 0) {
+            retried = true;
+            continue;
+          }
+          // Second attempt failed — count all rows in batch as failed
+          batchResult = {
+            processed: 0,
+            skipped: 0,
+            failed: chunk.length,
+            errors: chunk.map((_, idx) => ({
+              row_index: i + idx,
+              error: `Batch failed: ${err.message}`,
+            })),
+          };
+        }
+      }
+
+      totalProcessed += batchResult.processed;
+      totalSkipped += batchResult.skipped;
+      totalFailed += batchResult.failed;
+      allErrors.push(...(batchResult.errors || []));
+
+      setStats({
+        processed: totalProcessed,
+        skipped: totalSkipped,
+        failed: totalFailed,
+        total: data.length,
+        errors: allErrors,
+      });
+    }
+
+    // Upload complete
+    setState(totalFailed > totalProcessed ? "failed" : "completed");
+    queryClient.invalidateQueries({ queryKey: ["/api/csv-uploads"] });
+    toast({
+      title: totalFailed > totalProcessed ? "Upload completed with errors" : "Upload completed",
+      description: `${totalProcessed} processed, ${totalSkipped} skipped, ${totalFailed} failed`,
+      variant: totalFailed > totalProcessed ? "destructive" : "default",
+    });
   };
 
   const reset = () => {
@@ -235,7 +304,48 @@ export default function UploadPage() {
     setHeaders([]);
     setStats({ processed: 0, skipped: 0, failed: 0, total: 0, errors: [] });
     setUploadId(null);
+    setCurrentBatch(0);
+    setTotalBatches(0);
     if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  // Open upload detail dialog
+  const openUploadDetail = async (uploadIdVal: string) => {
+    setDetailOpen(true);
+    setDetailLoading(true);
+    try {
+      const res = await authFetch(`/api/csv-uploads/${uploadIdVal}/errors`);
+      if (!res.ok) throw new Error("Failed to fetch upload details");
+      setDetailData(await res.json());
+    } catch (err: any) {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+      setDetailOpen(false);
+    } finally {
+      setDetailLoading(false);
+    }
+  };
+
+  // Download failed rows as CSV
+  const downloadFailedRows = () => {
+    if (!detailData?.error_log?.length) return;
+    const rows = detailData.error_log.map((err) => {
+      const raw = err.raw || {};
+      return {
+        row_number: err.row_index,
+        error: err.error,
+        title: (raw as any).title || (raw as any)["Job Title"] || (raw as any).job_title || "",
+        company: (raw as any).company_name || (raw as any)["Company Name"] || (raw as any).employer_name || "",
+        external_id: (raw as any).external_id || (raw as any)["Job Id"] || (raw as any).job_id || "",
+      };
+    });
+    const csv = Papa.unparse(rows);
+    const blob = new Blob([csv], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `failed_rows_${detailData.filename || "upload"}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
   const mapping = COLUMN_MAPPINGS[sourceType];
@@ -389,7 +499,11 @@ export default function UploadPage() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <div className="flex justify-between text-xs text-muted-foreground">
-                <span>Progress</span>
+                <span>
+                  {state === "uploading" && totalBatches > 0
+                    ? `Processing batch ${currentBatch}/${totalBatches} — ${(stats.processed + stats.skipped + stats.failed).toLocaleString()}/${stats.total.toLocaleString()} rows processed`
+                    : "Progress"}
+                </span>
                 <span>{(stats.processed + stats.skipped + stats.failed).toLocaleString()} / {stats.total.toLocaleString()} rows</span>
               </div>
               <Progress value={progressPct} className="h-3" />
@@ -493,11 +607,16 @@ export default function UploadPage() {
                     <TableHead className="text-xs">Imported</TableHead>
                     <TableHead className="text-xs">Failed</TableHead>
                     <TableHead className="text-xs">Status</TableHead>
+                    <TableHead className="text-xs w-[60px]"></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {uploadHistory.data.map((upload) => (
-                    <TableRow key={upload.id}>
+                    <TableRow
+                      key={upload.id}
+                      className="cursor-pointer hover:bg-muted/50"
+                      onClick={() => openUploadDetail(upload.id)}
+                    >
                       <TableCell className="text-xs font-medium max-w-[200px] truncate">{upload.filename}</TableCell>
                       <TableCell className="text-xs">{upload.source_type?.replace(/_/g, " ")}</TableCell>
                       <TableCell className="text-xs text-muted-foreground">
@@ -523,6 +642,9 @@ export default function UploadPage() {
                           {upload.status}
                         </Badge>
                       </TableCell>
+                      <TableCell>
+                        <Eye className="h-3.5 w-3.5 text-muted-foreground" />
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>
@@ -531,6 +653,129 @@ export default function UploadPage() {
           )}
         </CardContent>
       </Card>
+
+      {/* Upload Detail Dialog */}
+      <Dialog open={detailOpen} onOpenChange={setDetailOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-sm">
+              Upload Details — {detailData?.filename || "Loading..."}
+            </DialogTitle>
+          </DialogHeader>
+          {detailLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : detailData ? (
+            <div className="space-y-4">
+              {/* Summary info */}
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div><span className="text-muted-foreground">Source:</span> {detailData.source_type?.replace(/_/g, " ")}</div>
+                <div><span className="text-muted-foreground">Status:</span> <Badge variant={detailData.status === "completed" ? "default" : detailData.status === "failed" ? "destructive" : "outline"} className="text-[10px] ml-1">{detailData.status}</Badge></div>
+                <div><span className="text-muted-foreground">Uploaded:</span> {detailData.created_at ? new Date(detailData.created_at).toLocaleString() : "—"}</div>
+                {detailData.uploaded_by && <div><span className="text-muted-foreground">By:</span> {detailData.uploaded_by}</div>}
+              </div>
+
+              {/* Progress bar with green/yellow/red breakdown */}
+              {(() => {
+                const total = detailData.total_rows || 1;
+                const greenPct = ((detailData.processed_rows || 0) / total) * 100;
+                const yellowPct = ((detailData.skipped_rows || 0) / total) * 100;
+                const redPct = ((detailData.failed_rows || 0) / total) * 100;
+                const successRate = Math.round(((detailData.processed_rows || 0) / total) * 100);
+                return (
+                  <div className="space-y-2">
+                    <div className="flex justify-between text-xs">
+                      <span className="text-muted-foreground">Success rate: {successRate}%</span>
+                      <span className="text-muted-foreground">{detailData.total_rows?.toLocaleString()} total rows</span>
+                    </div>
+                    <div className="h-4 rounded-full overflow-hidden bg-muted flex">
+                      {greenPct > 0 && <div className="bg-green-500 h-full" style={{ width: `${greenPct}%` }} />}
+                      {yellowPct > 0 && <div className="bg-yellow-500 h-full" style={{ width: `${yellowPct}%` }} />}
+                      {redPct > 0 && <div className="bg-red-500 h-full" style={{ width: `${redPct}%` }} />}
+                    </div>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs">
+                      <div className="flex items-center justify-center gap-1">
+                        <div className="h-2 w-2 rounded-full bg-green-500" />
+                        <span>{(detailData.processed_rows || 0).toLocaleString()} processed</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-1">
+                        <div className="h-2 w-2 rounded-full bg-yellow-500" />
+                        <span>{(detailData.skipped_rows || 0).toLocaleString()} skipped</span>
+                      </div>
+                      <div className="flex items-center justify-center gap-1">
+                        <div className="h-2 w-2 rounded-full bg-red-500" />
+                        <span>{(detailData.failed_rows || 0).toLocaleString()} failed</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Skipped rows explanation */}
+              {(detailData.skipped_rows || 0) > 0 && (
+                <p className="text-xs text-yellow-700 bg-yellow-50 dark:bg-yellow-950/30 dark:text-yellow-400 rounded-md px-3 py-2">
+                  {detailData.skipped_rows} rows skipped as duplicates (already exist in database)
+                </p>
+              )}
+
+              {/* Failed rows table */}
+              {detailData.error_log && detailData.error_log.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-medium text-red-600">
+                      Failed Rows ({detailData.error_log.length})
+                    </h4>
+                    <Button variant="outline" size="sm" onClick={downloadFailedRows} className="text-xs h-7 gap-1">
+                      <Download className="h-3 w-3" />
+                      Download Failed Rows as CSV
+                    </Button>
+                  </div>
+                  <div className="rounded-md border overflow-x-auto max-h-[300px]">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-xs w-[60px]">Row</TableHead>
+                          <TableHead className="text-xs">Error</TableHead>
+                          <TableHead className="text-xs">Title</TableHead>
+                          <TableHead className="text-xs">Company</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {detailData.error_log.slice(0, 100).map((err, i) => {
+                          const raw = (err.raw || {}) as Record<string, any>;
+                          return (
+                            <TableRow key={i}>
+                              <TableCell className="text-xs font-mono">{err.row_index}</TableCell>
+                              <TableCell className="text-xs text-red-600 max-w-[200px] truncate">{err.error}</TableCell>
+                              <TableCell className="text-xs max-w-[120px] truncate">
+                                {raw.title || raw["Job Title"] || raw.job_title || "—"}
+                              </TableCell>
+                              <TableCell className="text-xs max-w-[120px] truncate">
+                                {raw.company_name || raw["Company Name"] || raw.employer_name || "—"}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                  {detailData.error_log.length > 100 && (
+                    <p className="text-xs text-muted-foreground">
+                      Showing first 100 of {detailData.error_log.length} errors
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* No errors message */}
+              {(!detailData.error_log || detailData.error_log.length === 0) && (detailData.failed_rows || 0) === 0 && (
+                <p className="text-xs text-green-600 text-center py-4">No errors — all rows processed successfully</p>
+              )}
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
