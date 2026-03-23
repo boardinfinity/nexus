@@ -2066,13 +2066,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               method: "POST",
               headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
               body: JSON.stringify({
-                model: "gpt-4o-mini",
+                model: "gpt-5.4",
                 messages: [
                   { role: "system", content: "Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences)." },
                   { role: "user", content: summaryParts.join("\n\n") },
                 ],
                 temperature: 0.3,
-                max_tokens: 500,
+                max_completion_tokens: 500,
               }),
             });
             const summaryData = await summaryResponse.json();
@@ -3271,7 +3271,7 @@ async function callGPT(prompt: string, retries = 2): Promise<string> {
           "Authorization": `Bearer ${OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-5.2",
+          model: "gpt-5.4",
           messages: [{ role: "user", content: truncatedPrompt }],
           temperature: 0.2,
           max_completion_tokens: 4096,
@@ -3353,7 +3353,7 @@ async function processReportChunk(
       "Authorization": `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4",
       messages: [
         {
           role: "system",
@@ -3382,7 +3382,7 @@ Extract structured information. Return valid JSON only.
         },
       ],
       temperature: 0.3,
-      max_tokens: 4000,
+      max_completion_tokens: 4000,
       response_format: { type: "json_object" },
     }),
   });
@@ -3903,7 +3903,7 @@ async function extractSkillsWithAI(text: string): Promise<Array<{ name: string; 
       "Authorization": `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-4o-mini",
+      model: "gpt-5.4",
       messages: [
         {
           role: "system",
@@ -3918,7 +3918,7 @@ Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over
         },
       ],
       temperature: 0.3,
-      max_tokens: 2000,
+      max_completion_tokens: 2000,
       response_format: { type: "json_object" },
     }),
   });
@@ -4014,13 +4014,13 @@ async function executeJDFetch(runId: string, config: any) {
               "Authorization": `Bearer ${OPENAI_API_KEY}`,
             },
             body: JSON.stringify({
-              model: "gpt-4o-mini",
+              model: "gpt-5.4",
               messages: [{
                 role: "user",
                 content: `Find or reconstruct the full job description for the role "${job.title}" at ${job.company_name || "unknown company"}. ${job.source_url ? `Original posting: ${job.source_url}` : ""}\n\nReturn ONLY the full job description text. If you cannot find it, construct a realistic job description based on the role title and company. Start directly with the job description content.`,
               }],
               temperature: 0.3,
-              max_tokens: 2000,
+              max_completion_tokens: 2000,
             }),
           });
           if (openaiRes.ok) {
@@ -4126,7 +4126,7 @@ async function extractImplicitData(description: string, title: string, companyNa
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model: "gpt-5.4",
         messages: [
           {
             role: "system",
@@ -4150,7 +4150,7 @@ async function extractImplicitData(description: string, title: string, companyNa
           },
         ],
         temperature: 0.2,
-        max_tokens: 1000,
+        max_completion_tokens: 1000,
         response_format: { type: "json_object" },
       }),
     });
@@ -4208,7 +4208,7 @@ async function executeJDEnrichment(runId: string, config: any) {
             "Authorization": `Bearer ${OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: "gpt-4o-mini",
+            model: "gpt-5.4",
             messages: [
               {
                 role: "system",
@@ -4233,7 +4233,7 @@ Return a JSON object with:
               },
             ],
             temperature: 0.2,
-            max_tokens: 3000,
+            max_completion_tokens: 3000,
             response_format: { type: "json_object" },
           }),
         });
@@ -4314,7 +4314,7 @@ Return a JSON object with:
           operation: "jd_analysis",
           status: "success",
           credits_used: tokenUsage.total_tokens || 0,
-          details: { skills_extracted: skills.length, model: "gpt-4o-mini", tokens: tokenUsage },
+          details: { skills_extracted: skills.length, model: "gpt-5.4", tokens: tokenUsage },
         });
       })
     );
