@@ -160,7 +160,7 @@ RETURNS TABLE(program_name TEXT, skill_category TEXT, skill_count BIGINT) AS $$
   JOIN course_skills cs ON cs.course_id = pc.course_id
   WHERE cp.college_id = p_college_id
   GROUP BY cp.name, cs.skill_category
-  ORDER BY cp.name, skill_count DESC;
+  ORDER BY cp.name, COUNT(DISTINCT cs.id) DESC;
 $$ LANGUAGE sql SECURITY DEFINER;
 
 -- Program skill comparison: side-by-side skill comparison across programs
@@ -181,7 +181,7 @@ RETURNS TABLE(
   JOIN college_programs cp ON cp.id = pc.program_id
   WHERE cp.id = ANY(p_program_ids)
   GROUP BY cs.skill_name, cs.skill_category
-  ORDER BY program_count DESC, cs.skill_name;
+  ORDER BY COUNT(DISTINCT cp.id) DESC, cs.skill_name;
 $$ LANGUAGE sql SECURITY DEFINER;
 
 -- Skill gaps: taxonomy skills not covered by any course at a college
