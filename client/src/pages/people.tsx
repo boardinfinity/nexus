@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search } from "lucide-react";
+import { Search, GraduationCap, Briefcase } from "lucide-react";
 import type { Person } from "@shared/schema";
 import { authFetch } from "@/lib/queryClient";
 
@@ -174,6 +174,74 @@ export default function People() {
                   </div>
                 </CardContent>
               </Card>
+              {(() => {
+                const experience = (p.experience || []) as any[];
+                const education = (p.education || []) as any[];
+                type TimelineEntry = { type: "experience" | "education"; title: string; subtitle: string; extra?: string; dateRange: string; logo?: string; sortKey: number };
+                const entries: TimelineEntry[] = [];
+                for (const e of experience) {
+                  if (!e.position || !e.startDate?.year) continue;
+                  const start = e.startDate.text || `${e.startDate.year}`;
+                  const end = e.endDate?.text || "Present";
+                  const parts = [start, end].join(" - ");
+                  const extras = [e.duration, e.location].filter(Boolean).join(" · ");
+                  entries.push({
+                    type: "experience",
+                    title: e.position,
+                    subtitle: e.companyName || "",
+                    extra: extras || undefined,
+                    dateRange: parts,
+                    logo: e.companyLogo || undefined,
+                    sortKey: (e.startDate.year * 100) + (e.startDate.month || 0),
+                  });
+                }
+                for (const e of education) {
+                  if (!e.degree || !e.startDate?.year) continue;
+                  const start = e.startDate.text || `${e.startDate.year}`;
+                  const end = e.endDate?.text || e.endDate?.year?.toString() || "";
+                  const parts = [start, end].filter(Boolean).join(" - ");
+                  entries.push({
+                    type: "education",
+                    title: e.degree,
+                    subtitle: e.schoolName || "",
+                    extra: e.fieldOfStudy || undefined,
+                    dateRange: e.period || parts,
+                    logo: e.schoolLogo || undefined,
+                    sortKey: (e.startDate.year * 100),
+                  });
+                }
+                entries.sort((a, b) => b.sortKey - a.sortKey);
+                if (entries.length === 0) return null;
+                return (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs text-muted-foreground uppercase">Career Journey</CardTitle>
+                    </CardHeader>
+                    <CardContent className="text-sm">
+                      <div className="relative pl-6">
+                        <div className="absolute left-[9px] top-1 bottom-1 w-px bg-border" />
+                        {entries.map((entry, i) => (
+                          <div key={i} className="relative pb-4 last:pb-0">
+                            <div className={`absolute left-[-18px] top-0.5 flex items-center justify-center w-5 h-5 rounded-full ${entry.type === "education" ? "bg-blue-100 text-blue-600" : "bg-green-100 text-green-600"}`}>
+                              {entry.type === "education" ? <GraduationCap className="w-3 h-3" /> : <Briefcase className="w-3 h-3" />}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-1.5">
+                                {entry.logo && <img src={entry.logo} alt="" className="w-6 h-6 rounded object-cover flex-shrink-0" />}
+                                <div>
+                                  <div className="font-medium text-xs">{entry.title}</div>
+                                  {entry.subtitle && <div className="text-xs text-muted-foreground">{entry.subtitle}{entry.extra ? ` · ${entry.extra}` : ""}</div>}
+                                </div>
+                              </div>
+                              <div className="text-[11px] text-muted-foreground mt-0.5">{entry.dateRange}</div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                );
+              })()}
               {transitions.length > 0 && (
                 <Card>
                   <CardHeader className="pb-2">
