@@ -2158,11 +2158,796 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
+    // ==================== COLLEGE INTELLIGENCE ENGINE ROUTES ====================
+
+    // POST /api/college/upload-catalog — Upload PDF to Supabase Storage
+    if (path === "/college/upload-catalog" && req.method === "POST") {
+      const { file_name, file_data, file_size_bytes } = req.body || {};
+      if (!file_name || !file_data) {
+        return res.status(400).json({ error: "file_name and file_data (base64) are required" });
+      }
+
+      const filePath = `catalogs/${Date.now()}_${file_name}`;
+      const buffer = Buffer.from(file_data, "base64");
+
+      const { error: uploadErr } = await supabase.storage
+        .from("college-catalogs")
+        .upload(filePath, buffer, { contentType: "application/pdf" });
+
+      if (uploadErr) return res.status(500).json({ error: uploadErr.message });
+
+      const { data: upload, error: insertErr } = await supabase
+        .from("catalog_uploads")
+        .insert({
+          file_name,
+          file_path: filePath,
+          file_size_bytes: file_size_bytes || buffer.length,
+          status: "uploaded",
+        })
+        .select()
+        .single();
+
+      if (insertErr) return res.status(500).json({ error: insertErr.message });
+      return res.json(upload);
+    }
+
+    // POST /api/college/process-catalog — Trigger processing pipeline
+    if (path === "/college/process-catalog" && req.method === "POST") {
+      const { upload_id, college_name, college_short_name, catalog_year } = req.body || {};
+      if (!upload_id) return res.status(400).json({ error: "upload_id is required" });
+
+      const { data: upload, error: fetchErr } = await supabase
+        .from("catalog_uploads")
+        .select("*")
+        .eq("id", upload_id)
+        .single();
+      if (fetchErr || !upload) return res.status(404).json({ error: "Upload not found" });
+
+      // Start processing in background (non-blocking response)
+      processCatalog(upload, college_name, college_short_name, catalog_year).catch((err) => {
+        console.error("Catalog processing error:", err);
+      });
+
+      await supabase.from("catalog_uploads").update({
+        status: "extracting",
+        progress: { current_step: "starting", pages_processed: 0 },
+        updated_at: new Date().toISOString(),
+      }).eq("id", upload_id);
+
+      return res.json({ processing: true, upload_id });
+    }
+
+    // GET /api/college/processing-status/:upload_id
+    if (path.match(/^\/college\/processing-status\/[^/]+$/) && req.method === "GET") {
+      const uploadId = path.split("/").pop()!;
+      const { data, error } = await supabase
+        .from("catalog_uploads")
+        .select("id, status, progress, extraction_results, error_message, college_id, updated_at")
+        .eq("id", uploadId)
+        .single();
+      if (error) return res.status(404).json({ error: "Upload not found" });
+      return res.json(data);
+    }
+
+    // GET /api/colleges — List all colleges with stats
+    if (path === "/colleges" && req.method === "GET") {
+      const { data: colleges, error } = await supabase
+        .from("colleges")
+        .select("*")
+        .order("created_at", { ascending: false });
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Fetch counts for each college
+      const enriched = await Promise.all((colleges || []).map(async (c: any) => {
+        const [programs, courses, skills] = await Promise.all([
+          supabase.from("college_programs").select("id", { count: "exact", head: true }).eq("college_id", c.id),
+          supabase.from("college_courses").select("id", { count: "exact", head: true }).eq("college_id", c.id),
+          supabase.from("course_skills").select("id", { count: "exact", head: true })
+            .in("course_id", (await supabase.from("college_courses").select("id").eq("college_id", c.id)).data?.map((r: any) => r.id) || []),
+        ]);
+        return {
+          ...c,
+          program_count: programs.count || 0,
+          course_count: courses.count || 0,
+          skill_count: skills.count || 0,
+        };
+      }));
+
+      return res.json(enriched);
+    }
+
+    // GET /api/colleges/:id — College detail with schools and programs
+    if (path.match(/^\/colleges\/[^/]+$/) && !path.includes("/programs") && !path.includes("/courses") && req.method === "GET") {
+      const collegeId = path.split("/")[2];
+      const [collegeRes, schoolsRes, programsRes, coursesRes] = await Promise.all([
+        supabase.from("colleges").select("*").eq("id", collegeId).single(),
+        supabase.from("college_schools").select("*").eq("college_id", collegeId).order("name"),
+        supabase.from("college_programs").select("*").eq("college_id", collegeId).order("name"),
+        supabase.from("college_courses").select("id", { count: "exact", head: true }).eq("college_id", collegeId),
+      ]);
+      if (collegeRes.error) return res.status(404).json({ error: "College not found" });
+
+      return res.json({
+        ...collegeRes.data,
+        schools: schoolsRes.data || [],
+        programs: programsRes.data || [],
+        course_count: coursesRes.count || 0,
+      });
+    }
+
+    // GET /api/colleges/:id/programs — All programs for a college
+    if (path.match(/^\/colleges\/[^/]+\/programs$/) && req.method === "GET") {
+      const collegeId = path.split("/")[2];
+      const { data: programs, error } = await supabase
+        .from("college_programs")
+        .select("*, college_schools(name)")
+        .eq("college_id", collegeId)
+        .order("name");
+      if (error) return res.status(500).json({ error: error.message });
+
+      const enriched = await Promise.all((programs || []).map(async (p: any) => {
+        const [courseCount, skillCount] = await Promise.all([
+          supabase.from("program_courses").select("id", { count: "exact", head: true }).eq("program_id", p.id),
+          supabase.from("course_skills").select("id", { count: "exact", head: true })
+            .in("course_id", (await supabase.from("program_courses").select("course_id").eq("program_id", p.id)).data?.map((r: any) => r.course_id) || []),
+        ]);
+        return {
+          ...p,
+          school_name: p.college_schools?.name || null,
+          course_count: courseCount.count || 0,
+          skill_count: skillCount.count || 0,
+        };
+      }));
+
+      return res.json(enriched);
+    }
+
+    // GET /api/colleges/:id/programs/:program_id — Program detail with courses and skills
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+$/) && req.method === "GET") {
+      const parts = path.split("/");
+      const programId = parts[4];
+
+      const [programRes, coursesRes] = await Promise.all([
+        supabase.from("college_programs").select("*, college_schools(name)").eq("id", programId).single(),
+        supabase.from("program_courses")
+          .select("*, college_courses(*)")
+          .eq("program_id", programId)
+          .order("year_of_study")
+          .order("sort_order"),
+      ]);
+
+      if (programRes.error) return res.status(404).json({ error: "Program not found" });
+
+      // Fetch skills for each course
+      const courseIds = (coursesRes.data || []).map((pc: any) => pc.course_id);
+      const { data: skills } = await supabase
+        .from("course_skills")
+        .select("*")
+        .in("course_id", courseIds.length > 0 ? courseIds : ["00000000-0000-0000-0000-000000000000"]);
+
+      return res.json({
+        ...programRes.data,
+        school_name: programRes.data.college_schools?.name || null,
+        courses: coursesRes.data || [],
+        skills: skills || [],
+      });
+    }
+
+    // GET /api/colleges/:id/courses — All courses for a college with filtering
+    if (path.match(/^\/colleges\/[^/]+\/courses$/) && req.method === "GET") {
+      const collegeId = path.split("/")[2];
+      const { prefix, level, search } = req.query as Record<string, string>;
+
+      let query = supabase
+        .from("college_courses")
+        .select("*")
+        .eq("college_id", collegeId)
+        .order("code");
+
+      if (prefix) query = query.eq("department_prefix", prefix);
+      if (level) query = query.eq("level", parseInt(level));
+      if (search) query = query.or(`name.ilike.%${search}%,code.ilike.%${search}%`);
+
+      const { data: courses, error } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Get skill counts for each course
+      const courseIds = (courses || []).map((c: any) => c.id);
+      const { data: skillCounts } = await supabase
+        .from("course_skills")
+        .select("course_id")
+        .in("course_id", courseIds.length > 0 ? courseIds : ["00000000-0000-0000-0000-000000000000"]);
+
+      const countMap: Record<string, number> = {};
+      for (const s of skillCounts || []) {
+        countMap[s.course_id] = (countMap[s.course_id] || 0) + 1;
+      }
+
+      return res.json((courses || []).map((c: any) => ({
+        ...c,
+        skill_count: countMap[c.id] || 0,
+      })));
+    }
+
+    // GET /api/colleges/:id/courses/:course_id — Course detail
+    if (path.match(/^\/colleges\/[^/]+\/courses\/[^/]+$/) && req.method === "GET") {
+      const parts = path.split("/");
+      const courseId = parts[4];
+
+      const [courseRes, skillsRes, programsRes] = await Promise.all([
+        supabase.from("college_courses").select("*").eq("id", courseId).single(),
+        supabase.from("course_skills").select("*").eq("course_id", courseId).order("confidence", { ascending: false }),
+        supabase.from("program_courses")
+          .select("course_type, year_of_study, college_programs(id, name, degree_type)")
+          .eq("course_id", courseId),
+      ]);
+
+      if (courseRes.error) return res.status(404).json({ error: "Course not found" });
+
+      return res.json({
+        ...courseRes.data,
+        skills: skillsRes.data || [],
+        programs: (programsRes.data || []).map((pc: any) => ({
+          ...pc.college_programs,
+          course_type: pc.course_type,
+          year_of_study: pc.year_of_study,
+        })),
+      });
+    }
+
+    // GET /api/college/skill-coverage/:program_id — Skill category breakdown
+    if (path.match(/^\/college\/skill-coverage\/[^/]+$/) && req.method === "GET") {
+      const programId = path.split("/").pop()!;
+
+      const { data: programCourses } = await supabase
+        .from("program_courses")
+        .select("course_id, course_type, college_courses(code, name)")
+        .eq("program_id", programId);
+
+      const courseIds = (programCourses || []).map((pc: any) => pc.course_id);
+      const { data: skills } = await supabase
+        .from("course_skills")
+        .select("*")
+        .in("course_id", courseIds.length > 0 ? courseIds : ["00000000-0000-0000-0000-000000000000"]);
+
+      // Group by category
+      const categories: Record<string, { skill_count: number; skills: any[]; courses: string[] }> = {};
+      for (const s of skills || []) {
+        const cat = s.skill_category || "Other";
+        if (!categories[cat]) categories[cat] = { skill_count: 0, skills: [], courses: [] };
+        categories[cat].skill_count++;
+        categories[cat].skills.push(s);
+        const course = (programCourses || []).find((pc: any) => pc.course_id === s.course_id);
+        if (course?.college_courses) {
+          const courseLabel = `${(course.college_courses as any).code} - ${(course.college_courses as any).name}`;
+          if (!categories[cat].courses.includes(courseLabel)) {
+            categories[cat].courses.push(courseLabel);
+          }
+        }
+      }
+
+      return res.json({
+        categories: Object.entries(categories).map(([name, data]) => ({ name, ...data }))
+          .sort((a, b) => b.skill_count - a.skill_count),
+      });
+    }
+
+    // GET /api/college/compare-programs?program_ids=uuid1,uuid2,...
+    if (path === "/college/compare-programs" && req.method === "GET") {
+      const { program_ids } = req.query as Record<string, string>;
+      if (!program_ids) return res.status(400).json({ error: "program_ids query param required" });
+
+      const ids = program_ids.split(",").filter(Boolean);
+      if (ids.length < 2 || ids.length > 4) {
+        return res.status(400).json({ error: "Provide 2-4 program IDs" });
+      }
+
+      const { data, error } = await supabase.rpc("get_program_skill_comparison", { p_program_ids: ids });
+      if (error) return res.status(500).json({ error: error.message });
+
+      // Also fetch program names
+      const { data: programs } = await supabase
+        .from("college_programs")
+        .select("id, name, degree_type, major")
+        .in("id", ids);
+
+      return res.json({ programs: programs || [], skills: data || [] });
+    }
+
+    // GET /api/college/skill-gaps/:college_id
+    if (path.match(/^\/college\/skill-gaps\/[^/]+$/) && req.method === "GET") {
+      const collegeId = path.split("/").pop()!;
+      const { taxonomy_category } = req.query as Record<string, string>;
+
+      const { data, error } = await supabase.rpc("get_skill_gaps", { p_college_id: collegeId });
+      if (error) return res.status(500).json({ error: error.message });
+
+      let filtered = data || [];
+      if (taxonomy_category) {
+        filtered = filtered.filter((s: any) => s.taxonomy_category === taxonomy_category);
+      }
+
+      // Group by category
+      const grouped: Record<string, string[]> = {};
+      for (const s of filtered) {
+        if (!grouped[s.taxonomy_category]) grouped[s.taxonomy_category] = [];
+        grouped[s.taxonomy_category].push(s.taxonomy_skill_name);
+      }
+
+      return res.json({ gaps: grouped, total: filtered.length });
+    }
+
+    // GET /api/college/program-skill-heatmap/:college_id
+    if (path.match(/^\/college\/program-skill-heatmap\/[^/]+$/) && req.method === "GET") {
+      const collegeId = path.split("/").pop()!;
+
+      const { data, error } = await supabase.rpc("get_program_skill_heatmap", { p_college_id: collegeId });
+      if (error) return res.status(500).json({ error: error.message });
+
+      return res.json(data || []);
+    }
+
+    // GET /api/college/course-prerequisites/:college_id
+    if (path.match(/^\/college\/course-prerequisites\/[^/]+$/) && req.method === "GET") {
+      const collegeId = path.split("/").pop()!;
+
+      const { data: courses } = await supabase
+        .from("college_courses")
+        .select("id, code, name, prerequisite_codes, level, department_prefix")
+        .eq("college_id", collegeId);
+
+      const codeToId: Record<string, string> = {};
+      for (const c of courses || []) codeToId[c.code] = c.id;
+
+      const nodes = (courses || []).map((c: any) => ({
+        id: c.id,
+        code: c.code,
+        name: c.name,
+        level: c.level,
+        prefix: c.department_prefix,
+      }));
+
+      const edges: { from: string; to: string }[] = [];
+      for (const c of courses || []) {
+        for (const prereqCode of c.prerequisite_codes || []) {
+          if (codeToId[prereqCode]) {
+            edges.push({ from: codeToId[prereqCode], to: c.id });
+          }
+        }
+      }
+
+      return res.json({ nodes, edges });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
     return res.status(500).json({ error: err.message || "Internal server error" });
   }
+}
+
+// ==================== COLLEGE CATALOG PROCESSING PIPELINE ====================
+
+async function processCatalog(
+  upload: any,
+  collegeName?: string,
+  collegeShortName?: string,
+  catalogYear?: string
+) {
+  const supabaseUrl = process.env.SUPABASE_URL!;
+  const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!;
+  const sb = createClient(supabaseUrl, supabaseServiceKey);
+
+  const updateProgress = async (step: string, detail?: Record<string, any>) => {
+    await sb.from("catalog_uploads").update({
+      progress: { current_step: step, ...detail },
+      updated_at: new Date().toISOString(),
+    }).eq("id", upload.id);
+  };
+
+  try {
+    // Download PDF from storage
+    const { data: fileData, error: dlErr } = await sb.storage
+      .from("college-catalogs")
+      .download(upload.file_path);
+    if (dlErr || !fileData) throw new Error("Failed to download catalog PDF");
+
+    const pdfParse = require("pdf-parse");
+    const buffer = Buffer.from(await fileData.arrayBuffer());
+    const pdf = await pdfParse(buffer);
+    const fullText = pdf.text;
+    const totalPages = pdf.numpages;
+
+    await sb.from("catalog_uploads").update({ total_pages: totalPages }).eq("id", upload.id);
+    await updateProgress("extracting_college_info", { total_pages: totalPages, pages_processed: 0 });
+
+    // Phase 1: Extract college and schools info from first pages
+    const firstSection = fullText.slice(0, 15000);
+    const phase1 = await callGPT(`You are analyzing a university academic catalog. Extract the following information from this text.
+
+Text (first pages of catalog):
+${firstSection}
+
+Return JSON:
+{
+  "college_name": "Full official name of the university",
+  "short_name": "Abbreviation (e.g. UOWD)",
+  "country": "Country",
+  "city": "City",
+  "website": "Website URL if found",
+  "catalog_year": "Academic year e.g. 2025-2026",
+  "schools": [
+    { "name": "Full school/faculty name", "short_name": "Short name" }
+  ]
+}
+
+Only include information clearly stated in the text.`);
+
+    const collegeInfo = JSON.parse(phase1);
+
+    // Create or update college record
+    const { data: college, error: collegeErr } = await sb
+      .from("colleges")
+      .upsert({
+        name: collegeName || collegeInfo.college_name,
+        short_name: collegeShortName || collegeInfo.short_name,
+        country: collegeInfo.country,
+        city: collegeInfo.city,
+        website: collegeInfo.website,
+        catalog_year: catalogYear || collegeInfo.catalog_year,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "name" })
+      .select()
+      .single();
+
+    if (collegeErr) throw new Error(`Failed to create college: ${collegeErr.message}`);
+    const collegeId = college.id;
+
+    await sb.from("catalog_uploads").update({ college_id: collegeId }).eq("id", upload.id);
+
+    // Create schools
+    const schoolMap: Record<string, string> = {};
+    for (const school of collegeInfo.schools || []) {
+      const { data: schoolData } = await sb
+        .from("college_schools")
+        .upsert({ college_id: collegeId, name: school.name, short_name: school.short_name }, { onConflict: "college_id,name" })
+        .select()
+        .single();
+      if (schoolData) schoolMap[school.name] = schoolData.id;
+    }
+
+    await updateProgress("extracting_programs", { total_pages: totalPages, pages_processed: 10, schools_found: Object.keys(schoolMap).length });
+
+    // Phase 2: Extract programs — batch by school sections
+    const programChunks = chunkTextForCatalog(fullText, 20000);
+    const allPrograms: any[] = [];
+
+    for (let i = 0; i < Math.min(programChunks.length, 8); i++) {
+      const chunk = programChunks[i];
+      try {
+        const phase2 = await callGPT(`You are analyzing a university academic catalog section. Extract all degree programs mentioned.
+
+Text:
+${chunk}
+
+Schools in this university: ${Object.keys(schoolMap).join(", ")}
+
+Return JSON array of programs:
+[{
+  "name": "Full program name e.g. Bachelor of Business (Accountancy)",
+  "school_name": "Which school this belongs to (must be one from the list above)",
+  "degree_type": "bachelor|master|phd|graduate_certificate|diploma",
+  "abbreviation": "e.g. BBus, BCS, MBA",
+  "major": "Major specialization if any, null otherwise",
+  "duration_years": 3,
+  "total_credit_points": 144,
+  "qf_emirates_level": 7,
+  "delivery_mode": "on_campus|online|hybrid",
+  "description": "Brief program description",
+  "learning_outcomes": ["outcome1", "outcome2"],
+  "intake_sessions": ["Autumn", "Spring"]
+}]
+
+Only include programs clearly described. Skip duplicates.`);
+
+        const programs = JSON.parse(phase2);
+        allPrograms.push(...programs);
+      } catch { /* skip chunk errors */ }
+    }
+
+    // Deduplicate programs by name and insert
+    const seenPrograms = new Set<string>();
+    for (const prog of allPrograms) {
+      if (seenPrograms.has(prog.name)) continue;
+      seenPrograms.add(prog.name);
+
+      const schoolId = schoolMap[prog.school_name] || Object.values(schoolMap)[0];
+      if (!schoolId) continue;
+
+      await sb.from("college_programs").upsert({
+        school_id: schoolId,
+        college_id: collegeId,
+        name: prog.name,
+        degree_type: prog.degree_type || "bachelor",
+        abbreviation: prog.abbreviation,
+        major: prog.major,
+        duration_years: prog.duration_years,
+        total_credit_points: prog.total_credit_points,
+        qf_emirates_level: prog.qf_emirates_level,
+        delivery_mode: prog.delivery_mode,
+        description: prog.description,
+        learning_outcomes: prog.learning_outcomes || [],
+        intake_sessions: prog.intake_sessions || [],
+        processing_status: "completed",
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "college_id,name" });
+    }
+
+    await updateProgress("extracting_courses", { total_pages: totalPages, pages_processed: 40, programs_found: seenPrograms.size });
+
+    // Phase 3: Extract courses — batch 10-15 at a time
+    const courseChunks = chunkTextForCatalog(fullText, 25000);
+    const allCourses: any[] = [];
+
+    for (let i = 0; i < courseChunks.length; i++) {
+      const chunk = courseChunks[i];
+      try {
+        const phase3 = await callGPT(`You are analyzing a university catalog section. Extract all course/subject descriptions.
+
+Text:
+${chunk}
+
+Return JSON array of courses:
+[{
+  "code": "ACCY121",
+  "name": "Accounting for Decision Making",
+  "credit_points": 6,
+  "description": "Full course description",
+  "hours_format": "L-2, T-2",
+  "prerequisites": "Raw prerequisite text",
+  "topics_covered": ["topic1", "topic2"]
+}]
+
+Only include courses with a valid course code (letters followed by numbers, e.g. ACCY121, BUS101, CSIT111). Skip entries that aren't course descriptions.`);
+
+        const courses = JSON.parse(phase3);
+        allCourses.push(...courses);
+      } catch { /* skip chunk errors */ }
+
+      await updateProgress("extracting_courses", {
+        total_pages: totalPages,
+        pages_processed: 40 + Math.round((i / courseChunks.length) * 30),
+        courses_found: allCourses.length,
+      });
+    }
+
+    // Deduplicate courses by code and insert
+    const seenCodes = new Set<string>();
+    for (const course of allCourses) {
+      if (!course.code || seenCodes.has(course.code)) continue;
+      seenCodes.add(course.code);
+
+      const codeMatch = course.code.match(/^([A-Z]+)\s?(\d)/);
+      const prefix = codeMatch ? codeMatch[1] : null;
+      const level = codeMatch ? parseInt(codeMatch[2]) * 100 : null;
+      const prereqCodes = (course.prerequisites || "").match(/[A-Z]{2,4}\s?\d{3}/g) || [];
+
+      await sb.from("college_courses").upsert({
+        college_id: collegeId,
+        code: course.code.replace(/\s/g, ""),
+        name: course.name,
+        credit_points: course.credit_points || 6,
+        description: course.description,
+        hours_format: course.hours_format,
+        prerequisites: course.prerequisites,
+        prerequisite_codes: prereqCodes.map((c: string) => c.replace(/\s/g, "")),
+        department_prefix: prefix,
+        level,
+        topics_covered: course.topics_covered || [],
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "college_id,code" });
+    }
+
+    await updateProgress("mapping_courses_to_programs", { total_pages: totalPages, pages_processed: 70, courses_found: seenCodes.size });
+
+    // Phase 4: Build program-course mappings
+    const { data: dbPrograms } = await sb.from("college_programs").select("id, name").eq("college_id", collegeId);
+    const { data: dbCourses } = await sb.from("college_courses").select("id, code").eq("college_id", collegeId);
+    const codeToId: Record<string, string> = {};
+    for (const c of dbCourses || []) codeToId[c.code] = c.id;
+
+    for (const prog of dbPrograms || []) {
+      try {
+        const mappingPrompt = await callGPT(`Given this university program name: "${prog.name}"
+And these available course codes: ${(dbCourses || []).map((c: any) => c.code).join(", ")}
+
+Based on the program name and common university curriculum patterns, identify which courses likely belong to this program.
+
+Return JSON:
+[{
+  "code": "ACCY121",
+  "course_type": "core|major|elective|capstone|general_education",
+  "year_of_study": 1,
+  "is_required": true
+}]
+
+Be conservative — only include courses that clearly relate to this program based on the department prefix and program focus.`);
+
+        const mappings = JSON.parse(mappingPrompt);
+        for (let idx = 0; idx < mappings.length; idx++) {
+          const m = mappings[idx];
+          const courseId = codeToId[m.code?.replace(/\s/g, "")];
+          if (!courseId) continue;
+          await sb.from("program_courses").upsert({
+            program_id: prog.id,
+            course_id: courseId,
+            course_type: m.course_type || "core",
+            year_of_study: m.year_of_study,
+            is_required: m.is_required !== false,
+            sort_order: idx,
+          }, { onConflict: "program_id,course_id" });
+        }
+      } catch { /* skip mapping errors */ }
+    }
+
+    await updateProgress("extracting_skills", { total_pages: totalPages, pages_processed: 80 });
+
+    // Phase 5: Skill extraction — batch 5-8 courses per GPT call
+    const coursesWithDescriptions = (dbCourses || []).filter((c: any) => {
+      const full = allCourses.find((ac: any) => ac.code?.replace(/\s/g, "") === c.code);
+      return full?.description;
+    });
+
+    const courseBatches: any[][] = [];
+    for (let i = 0; i < coursesWithDescriptions.length; i += 6) {
+      courseBatches.push(coursesWithDescriptions.slice(i, i + 6));
+    }
+
+    for (let bi = 0; bi < courseBatches.length; bi++) {
+      const batch = courseBatches[bi];
+      const courseDescriptions = batch.map((c: any) => {
+        const full = allCourses.find((ac: any) => ac.code?.replace(/\s/g, "") === c.code);
+        return `Course: ${c.code} - ${full?.name || ""}\nDescription: ${full?.description || ""}`;
+      }).join("\n\n---\n\n");
+
+      try {
+        const phase5 = await callGPT(`You are analyzing university courses. Extract skills and competencies students will develop.
+
+${courseDescriptions}
+
+For EACH course above, extract skills. Return JSON:
+{
+  "courses": [
+    {
+      "code": "ACCY121",
+      "skills": [
+        { "skill_name": "Financial Statement Analysis", "skill_category": "Technical", "confidence": 0.9 },
+        { "skill_name": "Critical Thinking", "skill_category": "Analytical", "confidence": 0.7 }
+      ]
+    }
+  ]
+}
+
+Categories: "Technical", "Analytical", "Domain Knowledge", "Communication", "Leadership", "Research"
+Be specific (not "business skills" but "financial statement analysis"). Only include skills clearly developed in each course.`);
+
+        const result = JSON.parse(phase5);
+        for (const courseSkills of result.courses || []) {
+          const courseId = codeToId[courseSkills.code?.replace(/\s/g, "")];
+          if (!courseId) continue;
+          for (const skill of courseSkills.skills || []) {
+            await sb.from("course_skills").upsert({
+              course_id: courseId,
+              skill_name: skill.skill_name,
+              skill_category: skill.skill_category,
+              confidence: skill.confidence || 0.8,
+              source: "ai_extraction",
+            }, { onConflict: "course_id,skill_name" });
+          }
+        }
+      } catch { /* skip batch errors */ }
+
+      await updateProgress("extracting_skills", {
+        total_pages: totalPages,
+        pages_processed: 80 + Math.round((bi / courseBatches.length) * 15),
+        skills_progress: `${bi + 1}/${courseBatches.length} batches`,
+      });
+    }
+
+    await updateProgress("mapping_taxonomy", { total_pages: totalPages, pages_processed: 95 });
+
+    // Phase 6: Map skills to taxonomy — fuzzy match
+    const { data: extractedSkills } = await sb
+      .from("course_skills")
+      .select("id, skill_name")
+      .is("taxonomy_skill_id", null)
+      .in("course_id", Object.values(codeToId));
+
+    for (const skill of extractedSkills || []) {
+      // Try exact match first
+      const { data: exactMatch } = await sb
+        .from("taxonomy_skills")
+        .select("id")
+        .ilike("name", skill.skill_name)
+        .limit(1)
+        .maybeSingle();
+
+      if (exactMatch) {
+        await sb.from("course_skills").update({ taxonomy_skill_id: exactMatch.id }).eq("id", skill.id);
+      } else {
+        // Try fuzzy match via pg_trgm
+        try {
+          const { data: fuzzyMatch } = await sb
+            .rpc("find_similar_skill", { search_term: skill.skill_name })
+            .limit(1)
+            .maybeSingle();
+          if ((fuzzyMatch as any)?.id) {
+            await sb.from("course_skills").update({ taxonomy_skill_id: (fuzzyMatch as any).id }).eq("id", skill.id);
+          }
+        } catch { /* RPC may not exist */ }
+      }
+    }
+
+    // Mark complete
+    const { count: totalSkills } = await sb.from("course_skills")
+      .select("id", { count: "exact", head: true })
+      .in("course_id", Object.values(codeToId));
+
+    await sb.from("catalog_uploads").update({
+      status: "completed",
+      progress: { current_step: "completed", total_pages: totalPages, pages_processed: totalPages },
+      extraction_results: {
+        schools: Object.keys(schoolMap).length,
+        programs: seenPrograms.size,
+        courses: seenCodes.size,
+        skills: totalSkills || 0,
+      },
+      updated_at: new Date().toISOString(),
+    }).eq("id", upload.id);
+
+  } catch (err: any) {
+    console.error("Catalog processing failed:", err);
+    await sb.from("catalog_uploads").update({
+      status: "failed",
+      error_message: err.message || "Processing failed",
+      updated_at: new Date().toISOString(),
+    }).eq("id", upload.id);
+  }
+}
+
+async function callGPT(prompt: string): Promise<string> {
+  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.2,
+      max_tokens: 4000,
+    }),
+  });
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+  // Strip markdown code blocks if present
+  return content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+}
+
+function chunkTextForCatalog(text: string, maxChars: number = 20000): string[] {
+  const chunks: string[] = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + maxChars, text.length);
+    if (end < text.length) {
+      const lastNewline = text.lastIndexOf("\n\n", end);
+      if (lastNewline > start + maxChars * 0.5) end = lastNewline;
+    }
+    chunks.push(text.slice(start, end));
+    start = end;
+  }
+  return chunks;
 }
 
 // ==================== REPORT PROCESSING HELPERS ====================
