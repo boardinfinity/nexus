@@ -270,13 +270,15 @@ export default function Analytics() {
           </SelectContent>
         </Select>
         <Select value={filterStatus} onValueChange={setFilterStatus}>
-          <SelectTrigger className="w-[140px] h-9 text-xs">
-            <SelectValue placeholder="Status" />
+          <SelectTrigger className="w-[170px] h-9 text-xs">
+            <SelectValue placeholder="Enrichment Status" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">All Statuses</SelectItem>
+            <SelectItem value="all">All Enrichment Statuses</SelectItem>
             <SelectItem value="pending">Pending</SelectItem>
             <SelectItem value="partial">Partial</SelectItem>
+            <SelectItem value="enriched">Enriched</SelectItem>
+            <SelectItem value="analyzed">Analyzed</SelectItem>
             <SelectItem value="complete">Complete</SelectItem>
           </SelectContent>
         </Select>
@@ -405,17 +407,28 @@ export default function Analytics() {
               <CardTitle className="text-sm font-medium">Top 20 Skills</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="h-[400px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={topSkills || []} layout="vertical" margin={{ left: 20 }}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis type="number" className="text-xs" />
-                    <YAxis type="category" dataKey="skill_name" className="text-xs" width={140} tick={{ fontSize: 11 }} />
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#10b981" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {!topSkills?.length ? (
+                <div className="h-[400px] flex items-center justify-center">
+                  <div className="text-center space-y-2 max-w-[300px]">
+                    <Brain className="h-10 w-10 mx-auto text-muted-foreground/50" />
+                    <p className="text-sm text-muted-foreground">
+                      No skills data yet. Run the JD Analysis pipeline to extract skills from job descriptions.
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-[400px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topSkills} layout="vertical" margin={{ left: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis type="number" className="text-xs" />
+                      <YAxis type="category" dataKey="skill_name" className="text-xs" width={140} tick={{ fontSize: 11 }} />
+                      <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#10b981" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

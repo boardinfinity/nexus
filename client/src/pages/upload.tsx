@@ -1,8 +1,10 @@
 import { useState, useCallback, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import Papa from "papaparse";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
+import { Badge } from "@/components/ui/badge";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Label } from "@/components/ui/label";
 import {
@@ -13,9 +15,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2 } from "lucide-react";
+import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2, History } from "lucide-react";
 import { apiRequest, authFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import type { CsvUpload } from "@shared/schema";
 
 type SourceType = "clay_linkedin" | "google_jobs" | "custom";
 type UploadState = "idle" | "file_selected" | "previewing" | "uploading" | "completed" | "failed";
@@ -83,6 +86,15 @@ interface UploadStats {
 }
 
 export default function UploadPage() {
+  const { data: uploadHistory, isLoading: historyLoading } = useQuery<{ data: CsvUpload[]; total: number }>({
+    queryKey: ["/api/csv-uploads"],
+    queryFn: async () => {
+      const res = await authFetch("/api/csv-uploads?limit=20");
+      if (!res.ok) throw new Error("Failed to fetch upload history");
+      return res.json();
+    },
+  });
+
   const [sourceType, setSourceType] = useState<SourceType>("clay_linkedin");
   const [state, setState] = useState<UploadState>("idle");
   const [file, setFile] = useState<File | null>(null);
@@ -451,6 +463,74 @@ export default function UploadPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Upload History */}
+      <Card>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <History className="h-4 w-4" />
+            Upload History
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {historyLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 3 }).map((_, i) => (
+                <div key={i} className="h-10 bg-muted animate-pulse rounded" />
+              ))}
+            </div>
+          ) : !uploadHistory?.data?.length ? (
+            <p className="text-sm text-muted-foreground text-center py-6">No uploads yet</p>
+          ) : (
+            <div className="rounded-md border overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-xs">File Name</TableHead>
+                    <TableHead className="text-xs">Source</TableHead>
+                    <TableHead className="text-xs">Upload Date</TableHead>
+                    <TableHead className="text-xs">Total Rows</TableHead>
+                    <TableHead className="text-xs">Imported</TableHead>
+                    <TableHead className="text-xs">Failed</TableHead>
+                    <TableHead className="text-xs">Status</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {uploadHistory.data.map((upload) => (
+                    <TableRow key={upload.id}>
+                      <TableCell className="text-xs font-medium max-w-[200px] truncate">{upload.filename}</TableCell>
+                      <TableCell className="text-xs">{upload.source_type?.replace(/_/g, " ")}</TableCell>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {upload.created_at ? new Date(upload.created_at).toLocaleString() : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs">{upload.total_rows?.toLocaleString()}</TableCell>
+                      <TableCell className="text-xs">
+                        <span className="text-green-600">{upload.processed_rows?.toLocaleString()}</span>
+                        {upload.skipped_rows > 0 && <span className="text-yellow-600 ml-1">(+{upload.skipped_rows} skipped)</span>}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {upload.failed_rows > 0 ? (
+                          <span className="text-red-500">{upload.failed_rows.toLocaleString()}</span>
+                        ) : (
+                          <span className="text-muted-foreground">0</span>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant={upload.status === "completed" ? "default" : upload.status === "failed" ? "destructive" : "outline"}
+                          className="text-[10px]"
+                        >
+                          {upload.status}
+                        </Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

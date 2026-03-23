@@ -1,18 +1,35 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { useLocation } from "wouter";
 import { KPICard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable } from "@/components/data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
 import { Briefcase, Building2, Users, GitBranch } from "lucide-react";
 import {
   LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
+import { authFetch } from "@/lib/queryClient";
 import type { DashboardStats, Job, PipelineRun, ProviderCredit } from "@shared/schema";
 
 export default function Dashboard() {
+  const [, navigate] = useLocation();
+  const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+
   const { data: stats } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
+  });
+
+  const { data: jobDetail } = useQuery<Job>({
+    queryKey: ["/api/jobs", selectedJob?.id],
+    queryFn: async () => {
+      const res = await authFetch(`/api/jobs/${selectedJob!.id}`);
+      if (!res.ok) throw new Error("Failed to fetch job");
+      return res.json();
+    },
+    enabled: !!selectedJob?.id,
   });
 
   const { data: recentJobs, isLoading: jobsLoading } = useQuery<Job[]>({
@@ -39,30 +56,38 @@ export default function Dashboard() {
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <KPICard
-          title="Total Jobs"
-          value={stats?.total_jobs ?? 0}
-          icon={Briefcase}
-          subtitle="Across all sources"
-        />
-        <KPICard
-          title="Total Companies"
-          value={stats?.total_companies ?? 0}
-          icon={Building2}
-          subtitle="In database"
-        />
-        <KPICard
-          title="Total People"
-          value={stats?.total_people ?? 0}
-          icon={Users}
-          subtitle="Contacts tracked"
-        />
-        <KPICard
-          title="Active Pipelines"
-          value={stats?.active_pipelines ?? 0}
-          icon={GitBranch}
-          subtitle="Currently running"
-        />
+        <div className="cursor-pointer" onClick={() => navigate("/jobs")}>
+          <KPICard
+            title="Total Jobs"
+            value={stats?.total_jobs ?? 0}
+            icon={Briefcase}
+            subtitle="Across all sources"
+          />
+        </div>
+        <div className="cursor-pointer" onClick={() => navigate("/companies")}>
+          <KPICard
+            title="Total Companies"
+            value={stats?.total_companies ?? 0}
+            icon={Building2}
+            subtitle="In database"
+          />
+        </div>
+        <div className="cursor-pointer" onClick={() => navigate("/people")}>
+          <KPICard
+            title="Total People"
+            value={stats?.total_people ?? 0}
+            icon={Users}
+            subtitle="Contacts tracked"
+          />
+        </div>
+        <div className="cursor-pointer" onClick={() => navigate("/pipelines")}>
+          <KPICard
+            title="Active Pipelines"
+            value={stats?.active_pipelines ?? 0}
+            icon={GitBranch}
+            subtitle="Currently running"
+          />
+        </div>
       </div>
 
       {jobStats?.byDay && jobStats.byDay.length > 0 && (
@@ -102,7 +127,7 @@ export default function Dashboard() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Recent Pipeline Runs</CardTitle>
+            <CardTitle className="text-sm font-medium cursor-pointer hover:text-primary" onClick={() => navigate("/pipelines")}>Recent Pipeline Runs</CardTitle>
           </CardHeader>
           <CardContent>
             <DataTable
@@ -124,6 +149,7 @@ export default function Dashboard() {
               ]}
               data={pipelineActivity ?? []}
               isLoading={pipelinesLoading}
+              onRowClick={() => navigate("/pipelines")}
               emptyMessage="No pipeline runs yet"
             />
           </CardContent>
@@ -131,7 +157,7 @@ export default function Dashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-sm font-medium">Recent Jobs</CardTitle>
+            <CardTitle className="text-sm font-medium cursor-pointer hover:text-primary" onClick={() => navigate("/jobs")}>Recent Jobs</CardTitle>
           </CardHeader>
           <CardContent>
             <DataTable
@@ -149,6 +175,7 @@ export default function Dashboard() {
               ]}
               data={recentJobs ?? []}
               isLoading={jobsLoading}
+              onRowClick={(row) => setSelectedJob(row)}
               emptyMessage="No jobs found"
             />
           </CardContent>
@@ -178,6 +205,39 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       )}
+
+      <Sheet open={!!selectedJob} onOpenChange={(open) => !open && setSelectedJob(null)}>
+        <SheetContent className="sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle className="text-lg">{jobDetail?.title || selectedJob?.title}</SheetTitle>
+          </SheetHeader>
+          {(jobDetail || selectedJob) && (() => {
+            const job = jobDetail || selectedJob!;
+            return (
+              <div className="space-y-3 mt-4 text-sm">
+                {[
+                  ["Company", job.company_name],
+                  ["Location", [job.location_city, job.location_country].filter(Boolean).join(", ")],
+                  ["Source", job.source],
+                  ["Employment Type", job.employment_type?.replace(/_/g, " ")],
+                  ["Seniority", job.seniority_level],
+                  ["Posted", job.posted_at ? new Date(job.posted_at).toLocaleDateString() : null],
+                ].map(([label, val]) => val ? (
+                  <div key={label as string} className="flex justify-between">
+                    <span className="text-muted-foreground">{label}</span>
+                    <span>{String(val)}</span>
+                  </div>
+                ) : null)}
+                {job.source_url && (
+                  <a href={job.source_url} target="_blank" rel="noreferrer" className="text-primary text-sm hover:underline block">
+                    View Original Listing
+                  </a>
+                )}
+              </div>
+            );
+          })()}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search } from "lucide-react";
+import { Search, ExternalLink } from "lucide-react";
 import type { Job } from "@shared/schema";
 
 export default function Jobs() {
@@ -16,6 +16,7 @@ export default function Jobs() {
   const [source, setSource] = useState("all");
   const [status, setStatus] = useState("all");
   const [seniority, setSeniority] = useState("all");
+  const [employmentType, setEmploymentType] = useState("all");
   const [page, setPage] = useState(1);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
 
@@ -26,6 +27,7 @@ export default function Jobs() {
   if (source !== "all") params.set("source", source);
   if (status !== "all") params.set("enrichment_status", status);
   if (seniority !== "all") params.set("seniority", seniority);
+  if (employmentType !== "all") params.set("employment_type", employmentType);
 
   const { data, isLoading } = useQuery<{ data: Job[]; total: number }>({
     queryKey: ["/api/jobs", params.toString()],
@@ -104,23 +106,46 @@ export default function Jobs() {
             <SelectItem value="executive">Executive</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={employmentType} onValueChange={(v) => { setEmploymentType(v); setPage(1); }}>
+          <SelectTrigger className="w-[160px] h-9 text-xs" data-testid="filter-employment-type">
+            <SelectValue placeholder="Employment Type" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Types</SelectItem>
+            <SelectItem value="full_time">Full Time</SelectItem>
+            <SelectItem value="part_time">Part Time</SelectItem>
+            <SelectItem value="contract">Contract</SelectItem>
+            <SelectItem value="internship">Internship</SelectItem>
+            <SelectItem value="temporary">Temporary</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
-      <DataTable
-        columns={[
-          { header: "Title", accessor: "title" as keyof Job, className: "max-w-[250px] truncate font-medium" },
-          { header: "Company", accessor: "company_name" as keyof Job },
-          { header: "Location", accessor: (r: Job) => r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country || "—" },
-          { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} /> },
-          { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[11px]">{r.seniority_level}</Badge> : "—" },
-          { header: "Posted", accessor: (r: Job) => r.posted_at ? new Date(r.posted_at).toLocaleDateString() : "—" },
-          { header: "Status", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} /> },
-        ]}
-        data={data?.data ?? []}
-        isLoading={isLoading}
-        onRowClick={(row) => setSelectedJob(row)}
-        emptyMessage="No jobs match your filters"
-      />
+      <div className="overflow-x-auto">
+        <DataTable
+          columns={[
+            { header: "Title", accessor: "title" as keyof Job, className: "max-w-[250px] truncate font-medium" },
+            { header: "Company", accessor: "company_name" as keyof Job },
+            { header: "Employment Type", accessor: (r: Job) => r.employment_type ? <Badge variant="outline" className="text-[11px]">{r.employment_type.replace(/_/g, " ")}</Badge> : "—" },
+            { header: "Location", accessor: (r: Job) => r.location_raw || (r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country) || "—" },
+            { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} /> },
+            { header: "Job ID", accessor: (r: Job) => r.external_id ? <span className="text-[11px] font-mono text-muted-foreground max-w-[120px] truncate block">{r.external_id}</span> : "—" },
+            { header: "Posted", accessor: (r: Job) => r.posted_at ? new Date(r.posted_at).toLocaleDateString() : "—" },
+            { header: "Uploaded", accessor: (r: Job) => r.created_at ? new Date(r.created_at).toLocaleDateString() : "—" },
+            { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[11px]">{r.seniority_level}</Badge> : "—" },
+            { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} /> },
+            { header: "Link", accessor: (r: Job) => r.source_url ? (
+              <a href={r.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-primary hover:text-primary/80">
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            ) : "—" },
+          ]}
+          data={data?.data ?? []}
+          isLoading={isLoading}
+          onRowClick={(row) => setSelectedJob(row)}
+          emptyMessage="No jobs match your filters"
+        />
+      </div>
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between text-xs text-muted-foreground">

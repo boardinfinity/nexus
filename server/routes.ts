@@ -75,6 +75,7 @@ export async function registerRoutes(
         enrichment_status: req.query.enrichment_status as string,
         location_country: req.query.location_country as string,
         seniority_level: req.query.seniority_level as string,
+        employment_type: req.query.employment_type as string,
       });
       res.json(result);
     } catch (err: unknown) {
@@ -301,6 +302,20 @@ export async function registerRoutes(
       res.json({ dequeued: jobs.length, jobs });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Failed to process queue";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  // ==================== CSV UPLOADS ====================
+  app.get("/api/csv-uploads", async (req: Request, res: Response) => {
+    try {
+      const result = await storage.getCsvUploads({
+        page: parseInt(req.query.page as string) || 1,
+        limit: parseInt(req.query.limit as string) || 20,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to get CSV uploads";
       res.status(500).json({ message: msg });
     }
   });

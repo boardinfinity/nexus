@@ -362,6 +362,14 @@ export default function Pipelines() {
                   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
                 },
               },
+              {
+                header: "Error",
+                accessor: (r: PipelineRun) => r.error_message ? (
+                  <span className="text-red-500 text-xs max-w-[200px] truncate block" title={r.error_message}>
+                    {r.error_message}
+                  </span>
+                ) : null,
+              },
             ]}
             data={data?.data ?? []}
             isLoading={isLoading}

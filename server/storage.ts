@@ -37,6 +37,7 @@ export const storage = {
     page?: number; limit?: number; search?: string;
     source?: string; enrichment_status?: string;
     location_country?: string; seniority_level?: string;
+    employment_type?: string;
   }): Promise<{ data: Job[]; total: number }> {
     const page = params.page || 1;
     const limit = params.limit || 50;
@@ -59,6 +60,9 @@ export const storage = {
     }
     if (params.seniority_level) {
       query = query.eq("seniority_level", params.seniority_level);
+    }
+    if (params.employment_type) {
+      query = query.eq("employment_type", params.employment_type);
     }
 
     query = query.order("created_at", { ascending: false }).range(from, to);
@@ -177,7 +181,7 @@ export const storage = {
     const from = (page - 1) * limit;
     const to = from + limit - 1;
 
-    let query = supabase.from("people").select("*", { count: "exact" });
+    let query = supabase.from("people").select("*, companies:current_company_id(name)", { count: "exact" });
 
     if (params.search) {
       query = query.ilike("full_name", `%${params.search}%`);
@@ -368,6 +372,22 @@ export const storage = {
       p_error: errorMsg || null,
     });
     if (error) throw error;
+  },
+
+  // CSV Uploads
+  async getCsvUploads(params: { page?: number; limit?: number }): Promise<{ data: any[]; total: number }> {
+    const page = params.page || 1;
+    const limit = params.limit || 20;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data, error, count } = await supabase
+      .from("csv_uploads")
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(from, to);
+    if (error) throw error;
+    return { data: data || [], total: count || 0 };
   },
 
   async updateProviderCredits(provider: string, creditsUsed: number): Promise<void> {

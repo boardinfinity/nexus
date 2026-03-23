@@ -96,7 +96,10 @@ export default function People() {
             ),
           },
           { header: "Title", accessor: "current_title" as keyof Person, className: "max-w-[200px] truncate" },
-          { header: "Company", accessor: "current_company_id" as keyof Person },
+          { header: "Company", accessor: (r: Person) => {
+            const companies = (r as any).companies;
+            return companies?.name || r.current_company_id || "—";
+          }},
           { header: "Location", accessor: (r: Person) => r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country || "—" },
           { header: "Score", accessor: (r: Person) => (
             <div className="flex items-center gap-1">
@@ -150,7 +153,7 @@ export default function People() {
                 <CardContent className="space-y-2 text-sm">
                   {[
                     ["Title", p.current_title],
-                    ["Company", p.current_company_id],
+                    ["Company", (p as any).companies?.name || p.current_company_id],
                     ["Location", [p.location_city, p.location_country].filter(Boolean).join(", ")],
                     ["Email", p.email],
                     ["Phone", p.phone],
