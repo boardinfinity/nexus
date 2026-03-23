@@ -141,6 +141,16 @@ CREATE TABLE IF NOT EXISTS catalog_uploads (
 
 -- ==================== RPC FUNCTIONS ====================
 
+-- Fuzzy skill matching using pg_trgm (used by multiple features)
+CREATE OR REPLACE FUNCTION find_similar_skill(search_term TEXT)
+RETURNS TABLE(id UUID, name TEXT, category TEXT, similarity_score REAL) AS $$
+  SELECT ts.id, ts.name, ts.category, similarity(ts.name, search_term) AS similarity_score
+  FROM taxonomy_skills ts
+  WHERE similarity(ts.name, search_term) > 0.3
+  ORDER BY similarity_score DESC
+  LIMIT 5;
+$$ LANGUAGE sql SECURITY DEFINER;
+
 -- Program skill heatmap: programs × skill categories → count
 CREATE OR REPLACE FUNCTION get_program_skill_heatmap(p_college_id UUID)
 RETURNS TABLE(program_name TEXT, skill_category TEXT, skill_count BIGINT) AS $$
