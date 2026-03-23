@@ -247,7 +247,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       let query = supabase
         .from("jobs")
-        .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, posted_at, enrichment_status, created_at", { count: "exact" });
+        .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, posted_at, enrichment_status, job_status, status_checked_at, source_url, created_at", { count: "exact" });
 
       if (search) query = query.ilike("title", `%${search}%`);
       if (source) query = query.eq("source", source);
@@ -300,6 +300,107 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const id = path.split("/").pop();
       const { data, error } = await supabase.from("companies").select("*").eq("id", id).single();
       if (error) return res.status(404).json({ error: "Company not found" });
+      return res.json(data);
+    }
+
+    // Auto-enrich companies from job data
+    if (path === "/companies/auto-enrich" && req.method === "POST") {
+      const { data: companies, error: compErr } = await supabase
+        .from("companies")
+        .select("id, name");
+      if (compErr) return res.status(500).json({ error: compErr.message });
+
+      let enriched = 0;
+      for (const company of companies || []) {
+        // Get jobs for this company
+        const { data: jobs } = await supabase
+          .from("jobs")
+          .select("id, location_city, location_state, location_country, employment_type")
+          .eq("company_id", company.id);
+
+        if (!jobs || jobs.length === 0) continue;
+
+        const jobCount = jobs.length;
+
+        // Most common location
+        const locationCounts: Record<string, number> = {};
+        const countryCounts: Record<string, number> = {};
+        for (const j of jobs) {
+          if (j.location_city) locationCounts[j.location_city] = (locationCounts[j.location_city] || 0) + 1;
+          if (j.location_country) countryCounts[j.location_country] = (countryCounts[j.location_country] || 0) + 1;
+        }
+        const topCity = Object.entries(locationCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+        const topCountry = Object.entries(countryCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+        const topState = jobs.find(j => j.location_city === topCity)?.location_state || null;
+
+        // Top skills from job_skills
+        const jobIds = jobs.map(j => j.id);
+        const { data: skills } = await supabase
+          .from("job_skills")
+          .select("skill_name")
+          .in("job_id", jobIds.slice(0, 100));
+
+        const skillCounts: Record<string, number> = {};
+        for (const s of skills || []) {
+          skillCounts[s.skill_name] = (skillCounts[s.skill_name] || 0) + 1;
+        }
+        const topSkills = Object.entries(skillCounts)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 10)
+          .map(([name]) => name);
+
+        // Update company
+        const updates: Record<string, any> = {
+          updated_at: new Date().toISOString(),
+        };
+        if (topCity) updates.headquarters_city = topCity;
+        if (topState) updates.headquarters_state = topState;
+        if (topCountry) updates.headquarters_country = topCountry;
+        if (topSkills.length > 0) updates.specialities = topSkills;
+
+        // Calculate enrichment score based on filled fields
+        const { data: current } = await supabase.from("companies").select("*").eq("id", company.id).single();
+        if (current) {
+          const fields = ["industry", "employee_count", "headquarters_city", "headquarters_country", "website", "linkedin_url", "description", "founded_year"];
+          const merged = { ...current, ...updates };
+          const filledCount = fields.filter(f => merged[f] != null && merged[f] !== "").length;
+          updates.enrichment_score = Math.round((filledCount / fields.length) * 100);
+          if (updates.enrichment_score > 0 && (!current.enrichment_status || current.enrichment_status === "pending")) {
+            updates.enrichment_status = "partial";
+          }
+        }
+
+        await supabase.from("companies").update(updates).eq("id", company.id);
+        enriched++;
+      }
+
+      return res.json({ success: true, enriched, total: (companies || []).length });
+    }
+
+    // Manual edit company
+    if (path.match(/^\/companies\/[^/]+$/) && req.method === "PATCH") {
+      const id = path.split("/").pop();
+      const allowedFields = [
+        "industry", "sub_industry", "company_type", "size_range", "employee_count",
+        "headquarters_city", "headquarters_state", "headquarters_country",
+        "website", "linkedin_url", "description", "founded_year",
+      ];
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      for (const field of allowedFields) {
+        if (req.body?.[field] !== undefined) updates[field] = req.body[field];
+      }
+
+      // Recalculate enrichment score
+      const { data: current } = await supabase.from("companies").select("*").eq("id", id).single();
+      if (current) {
+        const fields = ["industry", "employee_count", "headquarters_city", "headquarters_country", "website", "linkedin_url", "description", "founded_year"];
+        const merged = { ...current, ...updates };
+        const filledCount = fields.filter(f => merged[f] != null && merged[f] !== "").length;
+        updates.enrichment_score = Math.round((filledCount / fields.length) * 100);
+      }
+
+      const { data, error } = await supabase.from("companies").update(updates).eq("id", id).select().single();
+      if (error) return res.status(500).json({ error: error.message });
       return res.json(data);
     }
 
@@ -434,6 +535,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // For Google Jobs, execute synchronously (fast RapidAPI call)
       if (pipeline_type === "google_jobs") {
+        await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+      }
+
+      // Job status check pipeline executes synchronously
+      if (pipeline_type === "job_status_check") {
         await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
       }
 
@@ -618,6 +724,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .range(offset, offset + parseInt(limit) - 1);
 
       if (error) return res.status(500).json({ error: error.message });
+
+      // Enrich each skill with job_count
+      if (data && data.length > 0) {
+        const skillIds = data.map((s: any) => s.id);
+        const { data: jobSkills } = await supabase
+          .from("job_skills")
+          .select("taxonomy_skill_id")
+          .in("taxonomy_skill_id", skillIds);
+
+        const countMap: Record<string, number> = {};
+        for (const js of jobSkills || []) {
+          if (js.taxonomy_skill_id) {
+            countMap[js.taxonomy_skill_id] = (countMap[js.taxonomy_skill_id] || 0) + 1;
+          }
+        }
+        for (const skill of data) {
+          (skill as any).job_count = countMap[(skill as any).id] || 0;
+        }
+      }
+
       return res.json({ data: data || [], total: count || 0, page: parseInt(page), limit: parseInt(limit) });
     }
 
@@ -678,6 +804,78 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .eq("taxonomy_skill_id", id);
 
       return res.json({ ...data, job_count: jobCount || 0 });
+    }
+
+    // Edit taxonomy skill name
+    if (path.match(/^\/taxonomy\/[^/]+$/) && req.method === "PATCH") {
+      const id = path.split("/")[2];
+      const { name } = req.body || {};
+      if (!name) return res.status(400).json({ error: "name is required" });
+
+      const { data, error } = await supabase
+        .from("taxonomy_skills")
+        .update({ name })
+        .eq("id", id)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // Skill detail: linked jobs, courses, reports
+    if (path.match(/^\/taxonomy\/[^/]+\/linked$/) && req.method === "GET") {
+      const id = path.split("/")[2];
+
+      // Get the skill first
+      const { data: skill } = await supabase.from("taxonomy_skills").select("id, name").eq("id", id).single();
+      if (!skill) return res.status(404).json({ error: "Skill not found" });
+
+      // Linked jobs (via job_skills by taxonomy_skill_id or skill_name)
+      const { data: jobSkills } = await supabase
+        .from("job_skills")
+        .select("job_id, skill_name")
+        .or(`taxonomy_skill_id.eq.${id},skill_name.ilike.%${skill.name}%`)
+        .limit(50);
+
+      const jobIds = [...new Set((jobSkills || []).map(js => js.job_id))];
+      let linkedJobs: any[] = [];
+      if (jobIds.length > 0) {
+        const { data: jobs } = await supabase
+          .from("jobs")
+          .select("id, title, company_name, source")
+          .in("id", jobIds.slice(0, 50));
+        linkedJobs = jobs || [];
+      }
+
+      // Linked courses (via course_skills)
+      const { data: courseSkills } = await supabase
+        .from("course_skills")
+        .select("course_id")
+        .eq("taxonomy_skill_id", id)
+        .limit(50);
+
+      let linkedCourses: any[] = [];
+      const courseIds = [...new Set((courseSkills || []).map(cs => cs.course_id))];
+      if (courseIds.length > 0) {
+        const { data: courses } = await supabase
+          .from("college_courses")
+          .select("id, course_code, title, college_id")
+          .in("id", courseIds.slice(0, 50));
+        linkedCourses = courses || [];
+      }
+
+      // Linked reports
+      const { data: reports } = await supabase
+        .from("reports")
+        .select("id, title, report_type, created_at")
+        .ilike("config::text", `%${skill.name}%`)
+        .limit(20);
+
+      return res.json({
+        jobs: linkedJobs,
+        courses: linkedCourses,
+        reports: reports || [],
+      });
     }
 
     if (path === "/analyze-jd" && req.method === "POST") {
@@ -2752,6 +2950,116 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ success: true });
     }
 
+    // ==================== JOB STATUS CHECKER ====================
+    if (path === "/pipelines/check-job-status" && req.method === "POST") {
+      const { batch_size = 50 } = req.body || {};
+      const limit = Math.min(parseInt(batch_size) || 50, 200);
+
+      // Get jobs with source_url that haven't been checked recently (or never checked)
+      const { data: jobs, error: fetchErr } = await supabase
+        .from("jobs")
+        .select("id, title, source_url, job_status, status_checked_at")
+        .not("source_url", "is", null)
+        .order("status_checked_at", { ascending: true, nullsFirst: true })
+        .limit(limit);
+
+      if (fetchErr) return res.status(500).json({ error: fetchErr.message });
+      if (!jobs || jobs.length === 0) return res.json({ success: true, checked: 0, message: "No jobs with source URLs to check" });
+
+      // Create a pipeline run
+      const { data: run, error: runErr } = await supabase
+        .from("pipeline_runs")
+        .insert({
+          pipeline_type: "job_status_check",
+          trigger_type: "manual",
+          config: { batch_size: limit },
+          status: "running",
+          total_items: jobs.length,
+          processed_items: 0,
+          started_at: new Date().toISOString(),
+          triggered_by: "dashboard",
+        })
+        .select()
+        .single();
+      if (runErr) return res.status(500).json({ error: runErr.message });
+
+      // Process each job
+      let processed = 0;
+      let failed = 0;
+      for (const job of jobs) {
+        try {
+          let status = "unknown";
+          try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
+            const response = await fetch(job.source_url!, {
+              method: "GET",
+              headers: { "User-Agent": "Mozilla/5.0 (compatible; NexusBot/1.0)" },
+              signal: controller.signal,
+              redirect: "follow",
+            });
+            clearTimeout(timeout);
+
+            if (response.status === 404 || response.status === 410) {
+              status = "closed";
+            } else if (response.ok) {
+              const html = await response.text();
+              const lowerHtml = html.toLowerCase();
+              // Check for closed/expired indicators
+              if (
+                lowerHtml.includes("job not found") ||
+                lowerHtml.includes("this job has expired") ||
+                lowerHtml.includes("no longer available") ||
+                lowerHtml.includes("position has been filled") ||
+                lowerHtml.includes("this job is no longer") ||
+                lowerHtml.includes("job has been removed")
+              ) {
+                status = "closed";
+              } else if (
+                lowerHtml.includes("apply now") ||
+                lowerHtml.includes("apply for this") ||
+                lowerHtml.includes("submit application") ||
+                lowerHtml.includes("easy apply")
+              ) {
+                status = "open";
+              }
+            } else {
+              status = "unknown";
+            }
+          } catch {
+            status = "unknown";
+          }
+
+          await supabase
+            .from("jobs")
+            .update({ job_status: status, status_checked_at: new Date().toISOString() })
+            .eq("id", job.id);
+          processed++;
+        } catch {
+          failed++;
+        }
+
+        // Update progress
+        await supabase
+          .from("pipeline_runs")
+          .update({ processed_items: processed, failed_items: failed })
+          .eq("id", run.id);
+      }
+
+      // Complete the pipeline run
+      await supabase
+        .from("pipeline_runs")
+        .update({
+          status: "completed",
+          processed_items: processed,
+          failed_items: failed,
+          completed_at: new Date().toISOString(),
+        })
+        .eq("id", run.id);
+
+      return res.json({ success: true, checked: processed, failed, pipeline_run_id: run.id });
+    }
+
     return res.status(404).json({ error: "Not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
@@ -3581,6 +3889,9 @@ async function executePipeline(runId: string, pipelineType: string, config: any)
       await executeDeduplication(runId, config);
     } else if (pipelineType === "cooccurrence") {
       await executeCooccurrence(runId, config);
+    } else if (pipelineType === "job_status_check") {
+      // Handled by the /pipelines/check-job-status endpoint directly
+      return;
     }
   } catch (err: any) {
     await supabase.from("pipeline_runs").update({

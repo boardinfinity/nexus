@@ -2,7 +2,7 @@ import { useLocation, Link } from "wouter";
 import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
-  BookOpen, Sparkles, Upload, CalendarClock, BarChart3,
+  BookOpen, Sparkles, Upload, CalendarClock,
   ClipboardList, ShieldCheck, FileText, GraduationCap,
 } from "lucide-react";
 import {
@@ -18,7 +18,6 @@ import { useAuth } from "@/lib/auth";
 const navItems = [
   { title: "Dashboard", href: "/", icon: LayoutDashboard },
   { title: "Jobs", href: "/jobs", icon: Briefcase },
-  { title: "Analytics", href: "/analytics", icon: BarChart3 },
   { title: "Data Quality", href: "/data-quality", icon: ShieldCheck },
   { title: "Companies", href: "/companies", icon: Building2 },
   { title: "People", href: "/people", icon: Users },

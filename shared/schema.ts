@@ -115,6 +115,8 @@ export interface Job {
   recruiter_url: string | null;
   functions: string[];
   enrichment_status: typeof enrichmentStatusEnum[number];
+  job_status: string | null;
+  status_checked_at: string | null;
   raw_data: unknown;
   created_at: string;
   updated_at: string;

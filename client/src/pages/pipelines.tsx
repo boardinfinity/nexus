@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Briefcase, Search, Building2, FileText, GraduationCap, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network, CircleCheck } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
 
@@ -176,6 +176,75 @@ function GoogleJobsPipelineTrigger() {
   );
 }
 
+function JobStatusCheckerTrigger() {
+  const [batchSize, setBatchSize] = useState("50");
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/pipelines/check-job-status", {
+        batch_size: parseInt(batchSize) || 50,
+      });
+      return res.json();
+    },
+    onSuccess: (data) => {
+      toast({
+        title: "Job status check complete",
+        description: `Checked ${data.checked} jobs. ${data.failed || 0} failed.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/pipelines"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Status check failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Card data-testid="pipeline-trigger-job_status_check">
+      <CardHeader className="pb-3">
+        <div className="flex items-center gap-2">
+          <div className="rounded-lg bg-primary/10 p-2">
+            <CircleCheck className="h-4 w-4 text-primary" />
+          </div>
+          <div>
+            <CardTitle className="text-sm">Job Status Checker</CardTitle>
+            <p className="text-xs text-muted-foreground">Check if jobs are still open or closed</p>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="space-y-1">
+          <Label className="text-xs">Batch Size</Label>
+          <Input
+            type="number"
+            className="h-8 text-xs"
+            value={batchSize}
+            onChange={(e) => setBatchSize(e.target.value)}
+            min={1}
+            max={200}
+            data-testid="field-batch_size_status"
+          />
+        </div>
+        <Button
+          className="w-full h-8 text-xs"
+          onClick={() => mutation.mutate()}
+          disabled={mutation.isPending}
+          data-testid="run-job_status_check"
+        >
+          {mutation.isPending ? (
+            <Loader2 className="h-3 w-3 animate-spin mr-1" />
+          ) : (
+            <Play className="h-3 w-3 mr-1" />
+          )}
+          Check Job Status
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Pipelines() {
   const [selected, setSelected] = useState<PipelineRun | null>(null);
   const [page, setPage] = useState(1);
@@ -317,6 +386,7 @@ export default function Pipelines() {
             icon={Network}
             fields={[]}
           />
+          <JobStatusCheckerTrigger />
         </div>
       </div>
 

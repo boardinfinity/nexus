@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search, ExternalLink } from "lucide-react";
+import { Search, ExternalLink, Circle } from "lucide-react";
 import type { Job } from "@shared/schema";
 
 export default function Jobs() {
@@ -134,6 +134,20 @@ export default function Jobs() {
             { header: "Uploaded", accessor: (r: Job) => r.created_at ? new Date(r.created_at).toLocaleDateString() : "—" },
             { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[11px]">{r.seniority_level}</Badge> : "—" },
             { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} /> },
+            { header: "Status", accessor: (r: Job) => {
+              if (!r.job_status) return <span className="text-xs text-muted-foreground">—</span>;
+              const colors: Record<string, string> = {
+                open: "text-green-600",
+                closed: "text-red-600",
+                unknown: "text-gray-400",
+              };
+              return (
+                <div className="flex items-center gap-1">
+                  <Circle className={`h-2 w-2 fill-current ${colors[r.job_status] || "text-gray-400"}`} />
+                  <span className={`text-xs capitalize ${colors[r.job_status] || "text-gray-400"}`}>{r.job_status}</span>
+                </div>
+              );
+            }},
             { header: "Link", accessor: (r: Job) => r.source_url ? (
               <a href={r.source_url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-primary hover:text-primary/80">
                 <ExternalLink className="h-3.5 w-3.5" />

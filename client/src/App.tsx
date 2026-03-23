@@ -19,7 +19,7 @@ import Settings from "@/pages/settings";
 import Taxonomy from "@/pages/taxonomy";
 import JDAnalyzer from "@/pages/jd-analyzer";
 import UploadPage from "@/pages/upload";
-import Analytics from "@/pages/analytics";
+import { Redirect } from "wouter";
 import SurveyAdmin from "@/pages/survey-admin";
 import Reports from "@/pages/reports";
 import Login from "@/pages/login";
@@ -37,7 +37,7 @@ function AppRouter() {
     <Switch>
       <Route path="/" component={Dashboard} />
       <Route path="/jobs" component={Jobs} />
-      <Route path="/analytics" component={Analytics} />
+      <Route path="/analytics"><Redirect to="/" /></Route>
       <Route path="/data-quality" component={DataQuality} />
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />

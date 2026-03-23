@@ -1,12 +1,14 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { authFetch } from "@/lib/queryClient";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { authFetch, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table";
-import { Flame, TrendingUp, Search } from "lucide-react";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText } from "lucide-react";
+import { useToast } from "@/hooks/use-toast";
 
 interface TaxonomySkill {
   id: string;
@@ -19,6 +21,7 @@ interface TaxonomySkill {
   is_hot_technology: boolean;
   is_in_demand: boolean;
   aliases: string[];
+  job_count: number;
   created_at: string;
 }
 
@@ -29,6 +32,12 @@ interface TaxonomyStats {
   top_skills: Array<{ name: string; job_count: number }>;
 }
 
+interface LinkedData {
+  jobs: Array<{ id: string; title: string; company_name: string; source: string }>;
+  courses: Array<{ id: string; course_code: string; title: string; college_id: string }>;
+  reports: Array<{ id: string; title: string; report_type: string; created_at: string }>;
+}
+
 const categoryColors: Record<string, string> = {
   skill: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
   knowledge: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
@@ -37,10 +46,23 @@ const categoryColors: Record<string, string> = {
   soft_skill: "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
 };
 
+const categoryTabs = [
+  { value: "all", label: "All" },
+  { value: "skill", label: "Skill" },
+  { value: "knowledge", label: "Knowledge" },
+  { value: "ability", label: "Ability" },
+  { value: "technology", label: "Technology" },
+];
+
 export default function Taxonomy() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [page, setPage] = useState(1);
+  const [selectedSkill, setSelectedSkill] = useState<TaxonomySkill | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState("");
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   const { data: stats } = useQuery<TaxonomyStats>({
     queryKey: ["/api/taxonomy/stats"],
@@ -63,7 +85,51 @@ export default function Taxonomy() {
     },
   });
 
+  const { data: linkedData } = useQuery<LinkedData>({
+    queryKey: ["/api/taxonomy", selectedSkill?.id, "linked"],
+    queryFn: async () => {
+      const res = await authFetch(`/api/taxonomy/${selectedSkill!.id}/linked`);
+      if (!res.ok) throw new Error("Failed to fetch linked data");
+      return res.json();
+    },
+    enabled: !!selectedSkill?.id,
+  });
+
+  const editMutation = useMutation({
+    mutationFn: async ({ id, name }: { id: string; name: string }) => {
+      const res = await apiRequest("PATCH", `/api/taxonomy/${id}`, { name });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Skill updated", description: "Skill name has been changed." });
+      queryClient.invalidateQueries({ queryKey: ["/api/taxonomy"] });
+      setEditingId(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Failed to update", description: err.message, variant: "destructive" });
+    },
+  });
+
   const totalPages = data ? Math.ceil(data.total / 50) : 1;
+
+  function startEdit(skill: TaxonomySkill, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingId(skill.id);
+    setEditName(skill.name);
+  }
+
+  function saveEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (editingId && editName.trim()) {
+      editMutation.mutate({ id: editingId, name: editName.trim() });
+    }
+  }
+
+  function cancelEdit(e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingId(null);
+    setEditName("");
+  }
 
   return (
     <div className="space-y-6" data-testid="taxonomy-page">
@@ -80,7 +146,18 @@ export default function Taxonomy() {
             <p className="text-xs text-muted-foreground">Total Skills</p>
           </CardContent>
         </Card>
-        {stats?.by_category && Object.entries(stats.by_category).map(([cat, count]) => (
+        <Card>
+          <CardContent className="pt-4">
+            <div className="flex items-center gap-2">
+              <Flame className="h-5 w-5 text-orange-500" />
+              <div>
+                <div className="text-2xl font-bold">{stats?.hot_technologies || "—"}</div>
+                <p className="text-xs text-muted-foreground">Hot Technologies</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+        {stats?.by_category && Object.entries(stats.by_category).slice(0, 2).map(([cat, count]) => (
           <Card key={cat}>
             <CardContent className="pt-4">
               <div className="flex items-center justify-between">
@@ -93,17 +170,6 @@ export default function Taxonomy() {
             </CardContent>
           </Card>
         ))}
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2">
-              <Flame className="h-5 w-5 text-orange-500" />
-              <div>
-                <div className="text-2xl font-bold">{stats?.hot_technologies || "—"}</div>
-                <p className="text-xs text-muted-foreground">Hot Technologies</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
       {/* Top Skills */}
@@ -126,8 +192,31 @@ export default function Taxonomy() {
         </Card>
       )}
 
-      {/* Search & Filter */}
-      <div className="flex gap-3">
+      {/* Category Filter Tabs */}
+      <div className="flex items-center gap-4">
+        <div className="flex gap-1 bg-muted rounded-lg p-1">
+          {categoryTabs.map((tab) => {
+            const count = tab.value === "all"
+              ? stats?.total
+              : stats?.by_category?.[tab.value];
+            return (
+              <button
+                key={tab.value}
+                onClick={() => { setCategory(tab.value); setPage(1); }}
+                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                  category === tab.value
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {tab.label}
+                {count !== undefined && (
+                  <span className="ml-1 text-[10px] opacity-70">({count.toLocaleString()})</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
@@ -138,19 +227,6 @@ export default function Taxonomy() {
             data-testid="taxonomy-search"
           />
         </div>
-        <Select value={category} onValueChange={(v) => { setCategory(v); setPage(1); }}>
-          <SelectTrigger className="w-[180px]" data-testid="taxonomy-category-filter">
-            <SelectValue placeholder="All Categories" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Categories</SelectItem>
-            <SelectItem value="skill">Skills</SelectItem>
-            <SelectItem value="knowledge">Knowledge</SelectItem>
-            <SelectItem value="ability">Abilities</SelectItem>
-            <SelectItem value="technology">Technology</SelectItem>
-            <SelectItem value="soft_skill">Soft Skills</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
 
       {/* Skills Table */}
@@ -162,9 +238,41 @@ export default function Taxonomy() {
                 header: "Name",
                 accessor: (r: TaxonomySkill) => (
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">{r.name}</span>
-                    {r.is_hot_technology && <Flame className="h-3 w-3 text-orange-500" title="Hot Technology" />}
-                    {r.is_in_demand && <TrendingUp className="h-3 w-3 text-green-500" title="In Demand" />}
+                    {editingId === r.id ? (
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <Input
+                          value={editName}
+                          onChange={(e) => setEditName(e.target.value)}
+                          className="h-7 text-sm w-[200px]"
+                          autoFocus
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") saveEdit(e as any);
+                            if (e.key === "Escape") cancelEdit(e as any);
+                          }}
+                        />
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={saveEdit}>
+                          <Check className="h-3 w-3 text-green-600" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEdit}>
+                          <X className="h-3 w-3 text-red-600" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <>
+                        <span className="font-medium">{r.name}</span>
+                        {r.is_hot_technology && <span title="Hot Technology"><Flame className="h-3 w-3 text-orange-500" /></span>}
+                        {r.is_in_demand && <span title="In Demand"><TrendingUp className="h-3 w-3 text-green-500" /></span>}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-5 w-5 opacity-40 hover:opacity-100"
+                          onClick={(e) => startEdit(r, e)}
+                          title="Edit name"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </Button>
+                      </>
+                    )}
                   </div>
                 ),
               },
@@ -176,17 +284,20 @@ export default function Taxonomy() {
                   </Badge>
                 ),
               },
+              {
+                header: "Jobs",
+                accessor: (r: TaxonomySkill) => (
+                  <Badge variant="outline" className="text-[11px]">
+                    {r.job_count || 0}
+                  </Badge>
+                ),
+              },
               { header: "Subcategory", accessor: (r: TaxonomySkill) => r.subcategory || "—", className: "text-muted-foreground text-sm" },
               { header: "Source", accessor: (r: TaxonomySkill) => r.source.toUpperCase(), className: "text-xs font-mono" },
-              {
-                header: "Description",
-                accessor: (r: TaxonomySkill) => r.description ? (
-                  <span className="text-xs text-muted-foreground line-clamp-2" title={r.description}>{r.description}</span>
-                ) : "—",
-              },
             ]}
             data={data?.data ?? []}
             isLoading={isLoading}
+            onRowClick={(row) => setSelectedSkill(row)}
             emptyMessage="No taxonomy skills found. Run the data loader to populate."
           />
 
@@ -201,6 +312,118 @@ export default function Taxonomy() {
           )}
         </CardContent>
       </Card>
+
+      {/* Skill Detail Panel */}
+      <Sheet open={!!selectedSkill} onOpenChange={(open) => !open && setSelectedSkill(null)}>
+        <SheetContent className="sm:max-w-lg overflow-y-auto">
+          <SheetHeader>
+            <SheetTitle>{selectedSkill?.name}</SheetTitle>
+          </SheetHeader>
+          {selectedSkill && (
+            <div className="space-y-4 mt-4">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground uppercase">Skill Info</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Category</span>
+                    <Badge className={categoryColors[selectedSkill.category] || ""}>{selectedSkill.category}</Badge>
+                  </div>
+                  {selectedSkill.subcategory && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Subcategory</span>
+                      <span>{selectedSkill.subcategory}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Source</span>
+                    <span className="font-mono text-xs">{selectedSkill.source.toUpperCase()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Jobs</span>
+                    <span className="font-bold">{selectedSkill.job_count || 0}</span>
+                  </div>
+                  {selectedSkill.description && (
+                    <div className="pt-2 border-t">
+                      <p className="text-xs text-muted-foreground">{selectedSkill.description}</p>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Linked Jobs */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
+                    <Briefcase className="h-3 w-3" /> Linked Jobs ({linkedData?.jobs?.length ?? 0})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {!linkedData?.jobs?.length ? (
+                    <p className="text-xs text-muted-foreground">No linked jobs found</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                      {linkedData.jobs.map((j) => (
+                        <div key={j.id} className="flex justify-between text-xs py-1 border-b last:border-0">
+                          <span className="font-medium truncate max-w-[200px]">{j.title}</span>
+                          <span className="text-muted-foreground">{j.company_name}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Linked Courses */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
+                    <GraduationCap className="h-3 w-3" /> Linked Courses ({linkedData?.courses?.length ?? 0})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {!linkedData?.courses?.length ? (
+                    <p className="text-xs text-muted-foreground">No linked courses found</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                      {linkedData.courses.map((c) => (
+                        <div key={c.id} className="flex justify-between text-xs py-1 border-b last:border-0">
+                          <span className="font-medium truncate max-w-[200px]">{c.title}</span>
+                          <span className="text-muted-foreground font-mono">{c.course_code}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+
+              {/* Linked Reports */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
+                    <FileText className="h-3 w-3" /> Linked Reports ({linkedData?.reports?.length ?? 0})
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {!linkedData?.reports?.length ? (
+                    <p className="text-xs text-muted-foreground">No linked reports found</p>
+                  ) : (
+                    <div className="space-y-1.5 max-h-[200px] overflow-y-auto">
+                      {linkedData.reports.map((r) => (
+                        <div key={r.id} className="flex justify-between text-xs py-1 border-b last:border-0">
+                          <span className="font-medium truncate max-w-[200px]">{r.title}</span>
+                          <span className="text-muted-foreground">{r.report_type}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
