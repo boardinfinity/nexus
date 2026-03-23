@@ -107,6 +107,7 @@ interface ProgramData {
   avg_cgpa?: number | null;
   min_cgpa_for_placement?: number | null;
   backlog_policy?: string;
+  dream_offer_policy?: string;
   top_recruiters_for_program?: string[];
   preferred_sectors?: string[];
   [key: string]: any;
@@ -149,7 +150,6 @@ export default function PlacementForm({ params }: { params: { college_id: string
   const profileDirty = useRef(false);
 
   // Tag input state
-  const [recruiterInput, setRecruiterInput] = useState("");
   const [programRecruiterInput, setProgramRecruiterInput] = useState("");
 
   // Load college info
@@ -300,18 +300,6 @@ export default function PlacementForm({ params }: { params: { college_id: string
     }
   };
 
-  const addTag = (field: keyof ProfileData, value: string) => {
-    if (!value.trim()) return;
-    const current = (profile[field] as string[]) || [];
-    if (!current.includes(value.trim())) {
-      updateProfile({ [field]: [...current, value.trim()] });
-    }
-  };
-
-  const removeTag = (field: keyof ProfileData, value: string) => {
-    const current = (profile[field] as string[]) || [];
-    updateProfile({ [field]: current.filter(v => v !== value) });
-  };
 
   // ==================== SUBMITTED STATE ====================
   if (submitted) {
@@ -806,23 +794,18 @@ export default function PlacementForm({ params }: { params: { college_id: string
                       </div>
 
                       <Separator />
-                      <h4 className="font-medium text-sm">Student Profile</h4>
+                      <h4 className="font-medium text-sm">Policies</h4>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                         <div className="space-y-2">
-                          <Label>Min CGPA for Placement</Label>
-                          <Input type="number" step="0.01" value={prog.min_cgpa_for_placement ?? ""} onChange={e => {
+                          <Label>Dream Offer Policy</Label>
+                          <Select value={prog.dream_offer_policy || ""} onValueChange={v => {
                             const updated = [...programs];
-                            updated[idx] = { ...updated[idx], min_cgpa_for_placement: e.target.value ? parseFloat(e.target.value) : null };
+                            updated[idx] = { ...updated[idx], dream_offer_policy: v };
                             setPrograms(updated);
-                          }} />
-                        </div>
-                        <div className="space-y-2">
-                          <Label>Avg CGPA</Label>
-                          <Input type="number" step="0.01" value={prog.avg_cgpa ?? ""} onChange={e => {
-                            const updated = [...programs];
-                            updated[idx] = { ...updated[idx], avg_cgpa: e.target.value ? parseFloat(e.target.value) : null };
-                            setPrograms(updated);
-                          }} />
+                          }}>
+                            <SelectTrigger><SelectValue placeholder="Select policy" /></SelectTrigger>
+                            <SelectContent>{DREAM_POLICIES.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
+                          </Select>
                         </div>
                         <div className="space-y-2">
                           <Label>Backlog Policy</Label>
@@ -835,6 +818,101 @@ export default function PlacementForm({ params }: { params: { college_id: string
                             <SelectContent>{BACKLOG_POLICIES.map(b => <SelectItem key={b} value={b}>{b}</SelectItem>)}</SelectContent>
                           </Select>
                         </div>
+                        <div className="space-y-2">
+                          <Label>Min CGPA for Placement</Label>
+                          <Input type="number" step="0.01" value={prog.min_cgpa_for_placement ?? ""} onChange={e => {
+                            const updated = [...programs];
+                            updated[idx] = { ...updated[idx], min_cgpa_for_placement: e.target.value ? parseFloat(e.target.value) : null };
+                            setPrograms(updated);
+                          }} />
+                        </div>
+                      </div>
+
+                      <Separator />
+                      <h4 className="font-medium text-sm">Student Profile</h4>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <Label>Avg CGPA</Label>
+                          <Input type="number" step="0.01" value={prog.avg_cgpa ?? ""} onChange={e => {
+                            const updated = [...programs];
+                            updated[idx] = { ...updated[idx], avg_cgpa: e.target.value ? parseFloat(e.target.value) : null };
+                            setPrograms(updated);
+                          }} />
+                        </div>
+                      </div>
+
+                      <Separator />
+                      <h4 className="font-medium text-sm">Top Recruiters</h4>
+                      <div className="flex flex-wrap gap-2 mb-2">
+                        {(prog.top_recruiters_for_program || []).map(r => (
+                          <Badge key={r} variant="secondary" className="gap-1">
+                            {r}
+                            <button onClick={() => {
+                              const updated = [...programs];
+                              updated[idx] = { ...updated[idx], top_recruiters_for_program: (prog.top_recruiters_for_program || []).filter(v => v !== r) };
+                              setPrograms(updated);
+                            }} className="ml-1 hover:text-red-500">x</button>
+                          </Badge>
+                        ))}
+                      </div>
+                      <div className="flex gap-2">
+                        <Input
+                          placeholder="Add company name..."
+                          value={editingProgramIdx === idx ? programRecruiterInput : ""}
+                          onChange={e => setProgramRecruiterInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              if (programRecruiterInput.trim()) {
+                                const current = prog.top_recruiters_for_program || [];
+                                if (!current.includes(programRecruiterInput.trim())) {
+                                  const updated = [...programs];
+                                  updated[idx] = { ...updated[idx], top_recruiters_for_program: [...current, programRecruiterInput.trim()] };
+                                  setPrograms(updated);
+                                }
+                                setProgramRecruiterInput("");
+                              }
+                            }
+                          }}
+                        />
+                        <Button variant="outline" size="sm" onClick={() => {
+                          if (programRecruiterInput.trim()) {
+                            const current = prog.top_recruiters_for_program || [];
+                            if (!current.includes(programRecruiterInput.trim())) {
+                              const updated = [...programs];
+                              updated[idx] = { ...updated[idx], top_recruiters_for_program: [...current, programRecruiterInput.trim()] };
+                              setPrograms(updated);
+                            }
+                            setProgramRecruiterInput("");
+                          }
+                        }}>Add</Button>
+                      </div>
+
+                      <Separator />
+                      <h4 className="font-medium text-sm">Preferred Sectors</h4>
+                      <div className="flex flex-wrap gap-2">
+                        {SECTORS.map(sector => {
+                          const selected = (prog.preferred_sectors || []).includes(sector);
+                          return (
+                            <Badge
+                              key={sector}
+                              variant={selected ? "default" : "outline"}
+                              className="cursor-pointer"
+                              onClick={() => {
+                                const updated = [...programs];
+                                const current = prog.preferred_sectors || [];
+                                if (selected) {
+                                  updated[idx] = { ...updated[idx], preferred_sectors: current.filter(v => v !== sector) };
+                                } else {
+                                  updated[idx] = { ...updated[idx], preferred_sectors: [...current, sector] };
+                                }
+                                setPrograms(updated);
+                              }}
+                            >
+                              {sector}
+                            </Badge>
+                          );
+                        })}
                       </div>
 
                       <div className="flex justify-end gap-2 pt-2">
@@ -860,6 +938,9 @@ export default function PlacementForm({ params }: { params: { college_id: string
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
+                <p className="text-sm text-muted-foreground">
+                  Aggregate college-level stats. Program-specific policies, recruiters, and sectors are in each program's section.
+                </p>
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <div className="space-y-2">
                     <Label>Total Students Eligible</Label>
@@ -875,89 +956,35 @@ export default function PlacementForm({ params }: { params: { college_id: string
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Total Companies Visited</Label>
-                    <Input type="number" value={profile.total_companies_visited ?? ""} onChange={e => updateProfile({ total_companies_visited: e.target.value ? parseInt(e.target.value) : null })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Dream Offer Policy</Label>
-                    <Select value={profile.dream_offer_policy || ""} onValueChange={v => updateProfile({ dream_offer_policy: v })}>
-                      <SelectTrigger><SelectValue placeholder="Select policy" /></SelectTrigger>
-                      <SelectContent>{DREAM_POLICIES.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
-                    </Select>
-                  </div>
+                <div className="space-y-2">
+                  <Label>Total Companies Visited</Label>
+                  <Input type="number" value={profile.total_companies_visited ?? ""} onChange={e => updateProfile({ total_companies_visited: e.target.value ? parseInt(e.target.value) : null })} />
                 </div>
 
                 <Separator />
-                <h4 className="font-medium">CTC Data (in INR)</h4>
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <h4 className="font-medium">CTC Data (Last Year, in INR)</h4>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label>Min CTC Expected</Label>
-                    <Input type="number" value={profile.min_ctc_expectation ?? ""} onChange={e => updateProfile({ min_ctc_expectation: e.target.value ? parseInt(e.target.value) : null })} />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Max CTC Expected</Label>
-                    <Input type="number" value={profile.max_ctc_expectation ?? ""} onChange={e => updateProfile({ max_ctc_expectation: e.target.value ? parseInt(e.target.value) : null })} />
+                    <Label>Highest CTC (Last Year)</Label>
+                    <Input type="number" value={profile.highest_ctc_last_year ?? ""} onChange={e => updateProfile({ highest_ctc_last_year: e.target.value ? parseInt(e.target.value) : null })} />
                   </div>
                   <div className="space-y-2">
                     <Label>Median CTC (Last Year)</Label>
                     <Input type="number" value={profile.median_ctc_last_year ?? ""} onChange={e => updateProfile({ median_ctc_last_year: e.target.value ? parseInt(e.target.value) : null })} />
                   </div>
-                  <div className="space-y-2">
-                    <Label>Highest CTC (Last Year)</Label>
-                    <Input type="number" value={profile.highest_ctc_last_year ?? ""} onChange={e => updateProfile({ highest_ctc_last_year: e.target.value ? parseInt(e.target.value) : null })} />
-                  </div>
                 </div>
 
                 <Separator />
-                <h4 className="font-medium">Top Recruiters</h4>
-                <div className="flex flex-wrap gap-2 mb-2">
-                  {(profile.top_recruiters || []).map(r => (
-                    <Badge key={r} variant="secondary" className="gap-1">
-                      {r}
-                      <button onClick={() => removeTag("top_recruiters", r)} className="ml-1 hover:text-red-500">x</button>
-                    </Badge>
-                  ))}
-                </div>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Add company name..."
-                    value={recruiterInput}
-                    onChange={e => setRecruiterInput(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        addTag("top_recruiters", recruiterInput);
-                        setRecruiterInput("");
-                      }
-                    }}
-                  />
-                  <Button variant="outline" size="sm" onClick={() => { addTag("top_recruiters", recruiterInput); setRecruiterInput(""); }}>Add</Button>
-                </div>
-
-                <Separator />
-                <h4 className="font-medium">Sectors Hiring</h4>
-                <div className="flex flex-wrap gap-2">
-                  {SECTORS.map(sector => {
-                    const selected = (profile.sectors_hiring || []).includes(sector);
-                    return (
-                      <Badge
-                        key={sector}
-                        variant={selected ? "default" : "outline"}
-                        className="cursor-pointer"
-                        onClick={() => {
-                          if (selected) {
-                            removeTag("sectors_hiring", sector);
-                          } else {
-                            addTag("sectors_hiring", sector);
-                          }
-                        }}
-                      >
-                        {sector}
-                      </Badge>
-                    );
-                  })}
+                <div className="space-y-2">
+                  <Label>Resume Format</Label>
+                  <Select value={profile.resume_format || ""} onValueChange={v => updateProfile({ resume_format: v })}>
+                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="Standard template provided by college">Standard template provided by college</SelectItem>
+                      <SelectItem value="Student's own format">Student's own format</SelectItem>
+                      <SelectItem value="Both options available">Both options available</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
 
                 <div className="flex items-center gap-3 mt-4">
@@ -989,17 +1016,6 @@ export default function PlacementForm({ params }: { params: { college_id: string
                     onChange={e => updateProfile({ selection_process_notes: e.target.value })}
                     rows={4}
                   />
-                </div>
-                <div className="space-y-2">
-                  <Label>Resume Format</Label>
-                  <Select value={profile.resume_format || ""} onValueChange={v => updateProfile({ resume_format: v })}>
-                    <SelectTrigger><SelectValue placeholder="Select" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="Standard template provided by college">Standard template provided by college</SelectItem>
-                      <SelectItem value="Student's own format">Student's own format</SelectItem>
-                      <SelectItem value="Both options available">Both options available</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
               </CardContent>
             </Card>
