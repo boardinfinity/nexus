@@ -2554,28 +2554,55 @@ async function runCatalogPhase(
       await sb.from("catalog_uploads").update({ total_pages: totalPages }).eq("id", upload.id);
       await updateProgress({ current_phase: "extract_info", total_pages: totalPages });
 
-      const firstSection = fullText.slice(0, 10000);
-      const gptResult = await callGPT(`You are analyzing a university academic catalog. Extract the following information from this text.
+      // Extract schools using regex (more reliable than GPT for this)
+      const schoolRegex = /School of [A-Za-z, &]+/g;
+      const schoolMentions = new Set<string>();
+      let match;
+      while ((match = schoolRegex.exec(fullText)) !== null) {
+        let name = match[0].replace(/\s+/g, " ").trim();
+        // Clean up: remove trailing prepositions/articles
+        name = name.replace(/\s+(of|the|and|in|for|to|at|on|with|from|by|or|as|is|an|a)$/i, "").trim();
+        if (name.length > 15 && name.length < 80) schoolMentions.add(name);
+      }
+      // Deduplicate similar school names (keep longest)
+      const schoolNames = [...schoolMentions].filter(s => 
+        !["School of Business offers", "School of Business office"].some(skip => s.startsWith(skip))
+      ).filter(s => /^School of [A-Z]/.test(s));
+      const uniqueSchools = schoolNames.reduce((acc: string[], s) => {
+        if (!acc.some(a => s.startsWith(a) || a.startsWith(s))) acc.push(s);
+        else {
+          const idx = acc.findIndex(a => s.startsWith(a) || a.startsWith(s));
+          if (idx >= 0 && s.length > acc[idx].length) acc[idx] = s;
+        }
+        return acc;
+      }, []);
+      console.log("Found schools via regex:", uniqueSchools);
 
-Text (first pages of catalog):
+      // Use GPT just for college name/location (first 5K chars is enough for that)
+      const firstSection = fullText.slice(0, 5000);
+      const gptResult = await callGPT(`You are analyzing a university academic catalog. Extract basic info from this text.
+
+Text:
 ${firstSection}
 
-Return a JSON object with these fields:
+Return a JSON object:
 {
   "college_name": "Full official name of the university",
-  "short_name": "Abbreviation (e.g. UOWD)",
+  "short_name": "Abbreviation",
   "country": "Country",
   "city": "City",
   "website": "Website URL if found",
-  "catalog_year": "Academic year e.g. 2025-2026",
-  "schools": [
-    { "name": "Full school/faculty name", "short_name": "Short name" }
-  ]
+  "catalog_year": "Academic year e.g. 2025-2026"
 }
 
 Only include information clearly stated in the text.`);
 
       const collegeInfo = JSON.parse(gptResult);
+      // Add schools from regex extraction
+      collegeInfo.schools = uniqueSchools.map(name => ({
+        name,
+        short_name: name.replace("School of ", "").split(",")[0].trim()
+      }));
       const collegeFinalName = opts.college_name || collegeInfo.college_name;
 
       let collegeId: string;
