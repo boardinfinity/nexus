@@ -52,7 +52,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const path = pathFromQuery ? `/${pathFromQuery}` : (req.url?.replace(/^\/api\/index\.ts/, "").replace(/^\/api/, "").split("?")[0] || "/");
 
   // ==================== PLACEINTEL ROUTES (public / placeintel-JWT auth, before main auth) ====================
-  if (path.startsWith("/placeintel/") && !path.startsWith("/placeintel/admin")) {
+  if (path.startsWith("/placeintel/") && !path.startsWith("/placeintel/admin") && !path.startsWith("/placeintel/sync")) {
     try {
       return await handlePlaceIntelRoutes(path, req, res);
     } catch (err: any) {
