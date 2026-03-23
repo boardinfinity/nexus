@@ -4,7 +4,7 @@ import { useLocation } from "wouter";
 import { KPICard } from "@/components/kpi-card";
 import { StatusBadge } from "@/components/status-badge";
 import { DataTable } from "@/components/data-table";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Progress } from "@/components/ui/progress";
 import { Input } from "@/components/ui/input";
@@ -14,7 +14,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   Briefcase, Building2, Users, GitBranch, FileText, Brain, CheckCircle,
-  Search, Download, ChevronLeft, ChevronRight,
+  Search, Download, ChevronLeft, ChevronRight, X, BarChart3, TrendingUp,
+  Globe, Layers, Activity, Database,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
@@ -24,12 +25,34 @@ import {
 import { authFetch } from "@/lib/queryClient";
 import type { DashboardStats, Job, PipelineRun, ProviderCredit } from "@shared/schema";
 
-const COLORS = ["#0ea5e9", "#8b5cf6", "#f59e0b", "#10b981", "#ef4444", "#6366f1", "#ec4899"];
+const CHART_COLORS = {
+  primary: "#0ea5e9",
+  secondary: "#8b5cf6",
+  success: "#22c55e",
+  warning: "#f59e0b",
+  danger: "#ef4444",
+  neutral: "#64748b",
+  pink: "#ec4899",
+  cyan: "#06b6d4",
+};
+
+const COLORS = [
+  CHART_COLORS.primary,
+  CHART_COLORS.secondary,
+  CHART_COLORS.warning,
+  CHART_COLORS.success,
+  CHART_COLORS.danger,
+  CHART_COLORS.pink,
+  CHART_COLORS.cyan,
+];
+
 const FUNNEL_COLORS: Record<string, string> = {
-  pending: "#f59e0b",
-  partial: "#6366f1",
-  complete: "#10b981",
-  failed: "#ef4444",
+  pending: CHART_COLORS.warning,
+  partial: CHART_COLORS.secondary,
+  complete: CHART_COLORS.success,
+  failed: CHART_COLORS.danger,
+  enriched: CHART_COLORS.primary,
+  analyzed: CHART_COLORS.cyan,
 };
 
 interface OverviewData {
@@ -59,14 +82,49 @@ interface JobRow {
   skills_count: number;
 }
 
+function SectionHeader({ icon: Icon, title, subtitle }: { icon: React.ElementType; title: string; subtitle: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-2">
+      <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-muted">
+        <Icon className="h-4 w-4 text-muted-foreground" />
+      </div>
+      <div>
+        <h2 className="text-lg font-semibold tracking-tight">{title}</h2>
+        <p className="text-sm text-muted-foreground">{subtitle}</p>
+      </div>
+    </div>
+  );
+}
+
 function ChartSkeleton({ height = "h-[300px]" }: { height?: string }) {
   return (
     <Card>
-      <CardHeader><Skeleton className="h-4 w-40" /></CardHeader>
+      <CardHeader>
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-3 w-60 mt-1" />
+      </CardHeader>
       <CardContent><Skeleton className={`w-full ${height}`} /></CardContent>
     </Card>
   );
 }
+
+function EmptyChart({ icon: Icon, message }: { icon: React.ElementType; message: string }) {
+  return (
+    <div className="h-[300px] flex items-center justify-center">
+      <div className="text-center space-y-2 max-w-[280px]">
+        <Icon className="h-10 w-10 mx-auto text-muted-foreground/40" />
+        <p className="text-sm text-muted-foreground">{message}</p>
+      </div>
+    </div>
+  );
+}
+
+const chartTooltipStyle = {
+  fontSize: 12,
+  borderRadius: 8,
+  border: "1px solid hsl(var(--border))",
+  boxShadow: "0 4px 6px -1px rgb(0 0 0 / 0.1)",
+};
 
 function downloadCSV(data: JobRow[], filename: string) {
   const headers = ["Title", "Company", "Country", "City", "Source", "Status", "Skills", "Created", "Posted"];
@@ -118,6 +176,17 @@ export default function Dashboard() {
   if (filterCountry !== "all") filterParams.set("country", filterCountry);
   if (filterStatus !== "all") filterParams.set("status", filterStatus);
   const filterString = filterParams.toString();
+
+  const hasActiveFilters = dateFrom || dateTo || filterSource !== "all" || filterCountry !== "all" || filterStatus !== "all";
+  const activeFilterCount = [dateFrom, dateTo, filterSource !== "all", filterCountry !== "all", filterStatus !== "all"].filter(Boolean).length;
+
+  function clearFilters() {
+    setDateFrom("");
+    setDateTo("");
+    setFilterSource("all");
+    setFilterCountry("all");
+    setFilterStatus("all");
+  }
 
   // ── Dashboard queries ──
   const { data: stats } = useQuery<DashboardStats>({
@@ -257,19 +326,21 @@ export default function Dashboard() {
 
   const sortIcon = (col: string) => {
     if (tableSort !== col) return null;
-    return tableOrder === "asc" ? " ↑" : " ↓";
+    return tableOrder === "asc" ? " \u2191" : " \u2193";
   };
 
   return (
     <div className="space-y-6" data-testid="dashboard-page">
-      {/* 1. Title + subtitle */}
+      {/* Page Title */}
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-sm text-muted-foreground">Overview of your data intelligence platform</p>
       </div>
 
-      {/* 2. KPI Cards — 4 main + 3 analytics */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {/* ═══ SECTION: Overview KPIs ═══ */}
+      <SectionHeader icon={BarChart3} title="Overview" subtitle="Key performance indicators at a glance" />
+
+      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
         <div className="cursor-pointer" onClick={() => navigate("/jobs")}>
           <KPICard
             title="Total Jobs"
@@ -318,118 +389,89 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* 3. Filter bar */}
-      <div className="flex flex-wrap gap-3 items-end">
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">From</label>
-          <Input
-            type="date"
-            className="h-9 text-sm w-[150px]"
-            value={dateFrom}
-            onChange={(e) => setDateFrom(e.target.value)}
-          />
+      {/* ═══ SECTION: Filters ═══ */}
+      <div className="sticky top-0 z-10 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 -mx-6 px-6 py-3 border-b">
+        <div className="flex flex-wrap gap-3 items-end">
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">From</label>
+            <Input
+              type="date"
+              className="h-9 text-sm w-[150px]"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">To</label>
+            <Input
+              type="date"
+              className="h-9 text-sm w-[150px]"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+            />
+          </div>
+          <Select value={filterSource} onValueChange={setFilterSource}>
+            <SelectTrigger className="w-[140px] h-9 text-xs">
+              <SelectValue placeholder="Source" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Sources</SelectItem>
+              {sources.map((s) => (
+                <SelectItem key={s} value={s}>{s.replace(/_/g, " ")}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={filterCountry} onValueChange={setFilterCountry}>
+            <SelectTrigger className="w-[140px] h-9 text-xs">
+              <SelectValue placeholder="Country" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Countries</SelectItem>
+              {countries.map((c) => (
+                <SelectItem key={c} value={c}>{c}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-[170px] h-9 text-xs">
+              <SelectValue placeholder="Enrichment Status" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Enrichment Statuses</SelectItem>
+              <SelectItem value="pending">Pending</SelectItem>
+              <SelectItem value="partial">Partial</SelectItem>
+              <SelectItem value="enriched">Enriched</SelectItem>
+              <SelectItem value="analyzed">Analyzed</SelectItem>
+              <SelectItem value="complete">Complete</SelectItem>
+            </SelectContent>
+          </Select>
+          {hasActiveFilters && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 text-xs gap-1.5 text-muted-foreground hover:text-foreground"
+              onClick={clearFilters}
+            >
+              <X className="h-3.5 w-3.5" />
+              Clear Filters
+              <Badge variant="secondary" className="ml-1 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge>
+            </Button>
+          )}
         </div>
-        <div className="space-y-1">
-          <label className="text-xs text-muted-foreground">To</label>
-          <Input
-            type="date"
-            className="h-9 text-sm w-[150px]"
-            value={dateTo}
-            onChange={(e) => setDateTo(e.target.value)}
-          />
-        </div>
-        <Select value={filterSource} onValueChange={setFilterSource}>
-          <SelectTrigger className="w-[140px] h-9 text-xs">
-            <SelectValue placeholder="Source" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Sources</SelectItem>
-            {sources.map((s) => (
-              <SelectItem key={s} value={s}>{s.replace(/_/g, " ")}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={filterCountry} onValueChange={setFilterCountry}>
-          <SelectTrigger className="w-[140px] h-9 text-xs">
-            <SelectValue placeholder="Country" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Countries</SelectItem>
-            {countries.map((c) => (
-              <SelectItem key={c} value={c}>{c}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select value={filterStatus} onValueChange={setFilterStatus}>
-          <SelectTrigger className="w-[170px] h-9 text-xs">
-            <SelectValue placeholder="Enrichment Status" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Enrichment Statuses</SelectItem>
-            <SelectItem value="pending">Pending</SelectItem>
-            <SelectItem value="partial">Partial</SelectItem>
-            <SelectItem value="enriched">Enriched</SelectItem>
-            <SelectItem value="analyzed">Analyzed</SelectItem>
-            <SelectItem value="complete">Complete</SelectItem>
-          </SelectContent>
-        </Select>
       </div>
 
-      {/* 4. Charts row 1: Jobs by Source + Jobs by Region */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {sourceLoading ? <ChartSkeleton /> : (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Jobs by Source</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={bySource || []}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="source" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
-                    <YAxis className="text-xs" />
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                      {(bySource || []).map((_, i) => (
-                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      {/* ═══ SECTION: Trends & Distribution ═══ */}
+      <SectionHeader icon={TrendingUp} title="Trends & Distribution" subtitle="Job volume over time and distribution by source" />
 
-        {regionLoading ? <ChartSkeleton /> : (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-sm font-medium">Jobs by Region (Top 10)</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={byRegion || []} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis type="number" className="text-xs" />
-                    <YAxis type="category" dataKey="country" className="text-xs" width={100} />
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#8b5cf6" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
-        )}
-      </div>
-
-      {/* 5. Timeline chart (area chart with day/week toggle) */}
-      {timelineLoading ? <ChartSkeleton height="h-[250px]" /> : (
+      {/* Timeline chart */}
+      {timelineLoading ? <ChartSkeleton height="h-[300px]" /> : (
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm font-medium">Jobs Added Over Time</CardTitle>
+              <div>
+                <CardTitle className="text-sm font-medium">Jobs Added Over Time</CardTitle>
+                <CardDescription className="text-xs">Daily or weekly job ingestion volume over the last 60 days</CardDescription>
+              </div>
               <div className="flex gap-1">
                 <Button
                   variant={granularity === "day" ? "default" : "outline"}
@@ -451,54 +493,57 @@ export default function Dashboard() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="h-[250px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeline || []}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis
-                    dataKey="date"
-                    className="text-xs"
-                    tickFormatter={(v) => new Date(v).toLocaleDateString("en", { month: "short", day: "numeric" })}
-                  />
-                  <YAxis className="text-xs" />
-                  <Tooltip
-                    labelFormatter={(v) => new Date(v).toLocaleDateString()}
-                    contentStyle={{ fontSize: 12 }}
-                  />
-                  <Area type="monotone" dataKey="count" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.15} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {!timeline?.length ? (
+              <EmptyChart icon={TrendingUp} message="No timeline data available yet. Jobs will appear here as they are ingested." />
+            ) : (
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={timeline}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis
+                      dataKey="date"
+                      className="text-xs"
+                      tickFormatter={(v) => new Date(v).toLocaleDateString("en", { month: "short", day: "numeric" })}
+                    />
+                    <YAxis className="text-xs" />
+                    <Tooltip
+                      labelFormatter={(v) => new Date(v).toLocaleDateString("en", { weekday: "short", month: "long", day: "numeric", year: "numeric" })}
+                      contentStyle={chartTooltipStyle}
+                      formatter={(v: number) => [v.toLocaleString(), "Jobs Added"]}
+                    />
+                    <Area type="monotone" dataKey="count" stroke={CHART_COLORS.primary} fill={CHART_COLORS.primary} fillOpacity={0.15} strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
-      {/* 6. Charts row 2: Top 20 Skills + Enrichment Funnel */}
-      <div className="grid gap-6 lg:grid-cols-2">
-        {skillsLoading ? <ChartSkeleton /> : (
+      {/* Jobs by Source */}
+      <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+        {sourceLoading ? <ChartSkeleton /> : (
           <Card>
             <CardHeader>
-              <CardTitle className="text-sm font-medium">Top 20 Skills</CardTitle>
+              <CardTitle className="text-sm font-medium">Jobs by Source</CardTitle>
+              <CardDescription className="text-xs">Distribution of jobs across data sources</CardDescription>
             </CardHeader>
             <CardContent>
-              {!topSkills?.length ? (
-                <div className="h-[400px] flex items-center justify-center">
-                  <div className="text-center space-y-2 max-w-[300px]">
-                    <Brain className="h-10 w-10 mx-auto text-muted-foreground/50" />
-                    <p className="text-sm text-muted-foreground">
-                      No skills data yet. Run the JD Analysis pipeline to extract skills from job descriptions.
-                    </p>
-                  </div>
-                </div>
+              {!bySource?.length ? (
+                <EmptyChart icon={BarChart3} message="No source data available. Jobs will be categorized as they are ingested." />
               ) : (
-                <div className="h-[400px]">
+                <div className="h-[300px]">
                   <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={topSkills} layout="vertical" margin={{ left: 20 }}>
+                    <BarChart data={bySource}>
                       <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                      <XAxis type="number" className="text-xs" />
-                      <YAxis type="category" dataKey="skill_name" className="text-xs" width={140} tick={{ fontSize: 11 }} />
-                      <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                      <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#10b981" />
+                      <XAxis dataKey="source" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
+                      <YAxis className="text-xs" />
+                      <Tooltip contentStyle={chartTooltipStyle} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                        {(bySource || []).map((_, i) => (
+                          <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                        ))}
+                      </Bar>
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -507,75 +552,148 @@ export default function Dashboard() {
           </Card>
         )}
 
+        {/* Enrichment Funnel (Pie) */}
         {funnelLoading ? <ChartSkeleton /> : (
           <Card>
             <CardHeader>
               <CardTitle className="text-sm font-medium">Enrichment Funnel</CardTitle>
+              <CardDescription className="text-xs">Job enrichment status breakdown across the pipeline</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-[400px] flex items-center justify-center">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={funnel || []}
-                      dataKey="count"
-                      nameKey="status"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={80}
-                      outerRadius={130}
-                      paddingAngle={3}
-                      label={({ status, count }) => `${status} (${count.toLocaleString()})`}
-                    >
-                      {(funnel || []).map((entry, i) => (
-                        <Cell key={i} fill={FUNNEL_COLORS[entry.status] || COLORS[i % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: 16, maxWidth: 150, overflow: "visible" }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
+              {!funnel?.length ? (
+                <EmptyChart icon={Layers} message="No enrichment data yet. Run the enrichment pipeline to see status breakdown." />
+              ) : (
+                <div className="h-[300px] flex items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={funnel}
+                        dataKey="count"
+                        nameKey="status"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={70}
+                        outerRadius={120}
+                        paddingAngle={3}
+                        label={({ status, count }) => `${status} (${count.toLocaleString()})`}
+                      >
+                        {(funnel || []).map((entry, i) => (
+                          <Cell key={i} fill={FUNNEL_COLORS[entry.status] || COLORS[i % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={chartTooltipStyle} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: 16, maxWidth: 150, overflow: "visible" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
       </div>
 
-      {/* 7. Pipeline Health chart */}
+      {/* ═══ SECTION: Geographic & Skills ═══ */}
+      <SectionHeader icon={Globe} title="Geographic & Skills" subtitle="Regional distribution and most in-demand skills" />
+
+      <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
+        {regionLoading ? <ChartSkeleton /> : (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Jobs by Region (Top 10)</CardTitle>
+              <CardDescription className="text-xs">Geographic distribution of job listings by country</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {!byRegion?.length ? (
+                <EmptyChart icon={Globe} message="No geographic data available. Location data appears as jobs are ingested." />
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={byRegion} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis type="number" className="text-xs" />
+                      <YAxis type="category" dataKey="country" className="text-xs" width={100} />
+                      <Tooltip contentStyle={chartTooltipStyle} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]} fill={CHART_COLORS.secondary} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {skillsLoading ? <ChartSkeleton height="h-[300px]" /> : (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-sm font-medium">Top 20 Skills</CardTitle>
+              <CardDescription className="text-xs">Most frequently extracted skills from job descriptions</CardDescription>
+            </CardHeader>
+            <CardContent>
+              {!topSkills?.length ? (
+                <EmptyChart icon={Brain} message="No skills data yet. Run the JD Analysis pipeline to extract skills from job descriptions." />
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topSkills.slice(0, 15)} layout="vertical" margin={{ left: 20 }}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis type="number" className="text-xs" />
+                      <YAxis type="category" dataKey="skill_name" className="text-xs" width={140} tick={{ fontSize: 11 }} />
+                      <Tooltip contentStyle={chartTooltipStyle} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]} fill={CHART_COLORS.success} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      {/* ═══ SECTION: Pipeline & Quality ═══ */}
+      <SectionHeader icon={Layers} title="Pipeline & Quality" subtitle="Pipeline execution health and data quality metrics" />
+
       {pipelineLoading ? <ChartSkeleton /> : (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">Pipeline Health (Last 30 Days)</CardTitle>
+            <CardDescription className="text-xs">Completed, failed, and running pipeline executions by type</CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={pipelineHealth || []}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="pipeline_type" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
-                  <YAxis className="text-xs" />
-                  <Tooltip contentStyle={{ fontSize: 12 }} />
-                  <Legend />
-                  <Bar dataKey="completed" name="Completed" fill="#10b981" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="failed" name="Failed" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="running" name="Running" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {!pipelineHealth?.length ? (
+              <EmptyChart icon={Activity} message="No pipeline data yet. Pipeline health will appear after running your first pipeline." />
+            ) : (
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={pipelineHealth}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="pipeline_type" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
+                    <YAxis className="text-xs" />
+                    <Tooltip contentStyle={chartTooltipStyle} />
+                    <Legend />
+                    <Bar dataKey="completed" name="Completed" fill={CHART_COLORS.success} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="failed" name="Failed" fill={CHART_COLORS.danger} radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="running" name="Running" fill={CHART_COLORS.primary} radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
 
-      {/* 8. Recent Activity: Pipeline Runs + Recent Jobs */}
-      <div className="grid gap-6 lg:grid-cols-2">
+      {/* ═══ SECTION: Recent Activity ═══ */}
+      <SectionHeader icon={Activity} title="Recent Activity" subtitle="Latest pipeline runs and recently added jobs" />
+
+      <div className="grid gap-6 grid-cols-1 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium cursor-pointer hover:text-primary" onClick={() => navigate("/pipelines")}>Recent Pipeline Runs</CardTitle>
+            <CardDescription className="text-xs">Latest pipeline executions and their status</CardDescription>
           </CardHeader>
           <CardContent>
             <DataTable
               columns={[
-                { header: "Type", accessor: (r: PipelineRun) => r.pipeline_type?.replace(/_/g, " ") ?? "—" },
+                { header: "Type", accessor: (r: PipelineRun) => r.pipeline_type?.replace(/_/g, " ") ?? "\u2014" },
                 { header: "Status", accessor: (r: PipelineRun) => <StatusBadge status={r.status} /> },
                 {
                   header: "Progress",
@@ -587,7 +705,7 @@ export default function Dashboard() {
                   accessor: (r: PipelineRun) =>
                     r.started_at
                       ? new Date(r.started_at).toLocaleDateString()
-                      : "—",
+                      : "\u2014",
                 },
               ]}
               data={pipelineActivity ?? []}
@@ -601,6 +719,7 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium cursor-pointer hover:text-primary" onClick={() => navigate("/jobs")}>Recent Jobs</CardTitle>
+            <CardDescription className="text-xs">Most recently added job listings</CardDescription>
           </CardHeader>
           <CardContent>
             <DataTable
@@ -613,7 +732,7 @@ export default function Dashboard() {
                   accessor: (r: Job) =>
                     r.posted_at
                       ? new Date(r.posted_at).toLocaleDateString()
-                      : "—",
+                      : "\u2014",
                 },
               ]}
               data={recentJobs ?? []}
@@ -625,11 +744,18 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      {/* 9. Jobs Data Table with search/filters/sort/pagination/CSV export */}
+      {/* ═══ SECTION: Jobs Data ═══ */}
+      <SectionHeader icon={Database} title="Jobs Data" subtitle="Browse, search, and export all job records" />
+
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium">Jobs Data</CardTitle>
+            <div>
+              <CardTitle className="text-sm font-medium">All Jobs</CardTitle>
+              <CardDescription className="text-xs">
+                {jobsTable?.total ? `${jobsTable.total.toLocaleString()} total records` : "Search and filter job listings"}
+              </CardDescription>
+            </div>
             <Button
               variant="outline"
               size="sm"
@@ -732,10 +858,10 @@ export default function Dashboard() {
                 ) : (
                   jobsTable.data.map((job) => (
                     <tr key={job.id} className="border-b hover:bg-muted/50">
-                      <td className="px-3 py-2 max-w-[200px] truncate font-medium">{job.title || "—"}</td>
-                      <td className="px-3 py-2 max-w-[150px] truncate">{job.company_name || "—"}</td>
+                      <td className="px-3 py-2 max-w-[200px] truncate font-medium">{job.title || "\u2014"}</td>
+                      <td className="px-3 py-2 max-w-[150px] truncate">{job.company_name || "\u2014"}</td>
                       <td className="px-3 py-2 text-xs">
-                        {job.location_city ? `${job.location_city}, ${job.location_country}` : job.location_country || "—"}
+                        {job.location_city ? `${job.location_city}, ${job.location_country}` : job.location_country || "\u2014"}
                       </td>
                       <td className="px-3 py-2"><StatusBadge status={job.source} /></td>
                       <td className="px-3 py-2"><StatusBadge status={job.enrichment_status} /></td>
@@ -743,7 +869,7 @@ export default function Dashboard() {
                         <Badge variant="outline" className="text-[11px]">{job.skills_count}</Badge>
                       </td>
                       <td className="px-3 py-2 text-xs text-muted-foreground">
-                        {job.created_at ? new Date(job.created_at).toLocaleDateString() : "—"}
+                        {job.created_at ? new Date(job.created_at).toLocaleDateString() : "\u2014"}
                       </td>
                     </tr>
                   ))
@@ -756,7 +882,7 @@ export default function Dashboard() {
           {totalPages > 1 && (
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>
-                Showing {((tablePage - 1) * tableLimit) + 1}–{Math.min(tablePage * tableLimit, jobsTable?.total ?? 0)} of {jobsTable?.total?.toLocaleString() ?? 0}
+                Showing {((tablePage - 1) * tableLimit) + 1}\u2013{Math.min(tablePage * tableLimit, jobsTable?.total ?? 0)} of {jobsTable?.total?.toLocaleString() ?? 0}
               </span>
               <div className="flex items-center gap-2">
                 <Button
@@ -784,11 +910,12 @@ export default function Dashboard() {
         </CardContent>
       </Card>
 
-      {/* 10. Credit Usage */}
+      {/* Credit Usage */}
       {credits && credits.length > 0 && (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium">Credit Usage by Provider</CardTitle>
+            <CardDescription className="text-xs">API credit consumption across AI providers</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {credits.map((c) => (
@@ -809,7 +936,7 @@ export default function Dashboard() {
         </Card>
       )}
 
-      {/* 11. Job detail Sheet */}
+      {/* Job detail Sheet */}
       <Sheet open={!!selectedJob} onOpenChange={(open) => !open && setSelectedJob(null)}>
         <SheetContent className="sm:max-w-lg overflow-y-auto">
           <SheetHeader>
