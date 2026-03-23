@@ -11,6 +11,13 @@ import { Search } from "lucide-react";
 import type { Person } from "@shared/schema";
 import { authFetch } from "@/lib/queryClient";
 
+const MONTHS: Record<string, number> = { Jan: 1, Feb: 2, Mar: 3, Apr: 4, May: 5, Jun: 6, Jul: 7, Aug: 8, Sep: 9, Oct: 10, Nov: 11, Dec: 12 };
+function monthToNum(m: any): number {
+  if (!m) return 0;
+  if (typeof m === "number") return m;
+  return MONTHS[String(m).slice(0, 3)] || 0;
+}
+
 export default function People() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
@@ -193,7 +200,7 @@ export default function People() {
                     extra: extras || undefined,
                     dateRange: parts,
                     initial: (e.companyName || e.position || "W").charAt(0).toUpperCase(),
-                    sortKey: ((startYear || 0) * 100) + (e.startDate?.month || 0),
+                    sortKey: ((startYear || 0) * 100) + monthToNum(e.startDate?.month),
                   });
                 }
                 for (const e of education) {
@@ -209,7 +216,7 @@ export default function People() {
                     extra: e.fieldOfStudy && e.degree ? e.fieldOfStudy : undefined,
                     dateRange: e.period || parts,
                     initial: (e.schoolName || e.degree || "E").charAt(0).toUpperCase(),
-                    sortKey: ((startYear || 0) * 100),
+                    sortKey: ((startYear || 0) * 100) + monthToNum(e.startDate?.month),
                   });
                 }
                 entries.sort((a, b) => b.sortKey - a.sortKey);
