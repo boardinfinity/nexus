@@ -24,6 +24,10 @@ import SurveyAdmin from "@/pages/survey-admin";
 import Reports from "@/pages/reports";
 import Login from "@/pages/login";
 import DataQuality from "@/pages/data-quality";
+import Colleges from "@/pages/colleges";
+import CollegeDetail from "@/pages/college-detail";
+import ProgramDetail from "@/pages/program-detail";
+import CourseDetailPage from "@/pages/course-detail";
 import SurveyLanding from "@/pages/survey-landing";
 import SurveyForm from "@/pages/survey-form";
 import { Loader2 } from "lucide-react";
@@ -45,6 +49,10 @@ function AppRouter() {
       <Route path="/taxonomy" component={Taxonomy} />
       <Route path="/jd-analyzer" component={JDAnalyzer} />
       <Route path="/survey-admin" component={SurveyAdmin} />
+      <Route path="/colleges" component={Colleges} />
+      <Route path="/colleges/:id">{(params) => <CollegeDetail params={params} />}</Route>
+      <Route path="/colleges/:id/programs/:pid">{(params) => <ProgramDetail params={params} />}</Route>
+      <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
       <Route path="/reports" component={Reports} />
       <Route component={NotFound} />
     </Switch>
