@@ -3029,10 +3029,10 @@ async function callGPT(prompt: string, retries = 2): Promise<string> {
           "Authorization": `Bearer ${OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-4o-mini",
+          model: "gpt-4o",
           messages: [{ role: "user", content: truncatedPrompt }],
           temperature: 0.2,
-          max_tokens: 4000,
+          max_tokens: 4096,
         }),
         signal: controller.signal,
       });
