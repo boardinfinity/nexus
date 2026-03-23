@@ -2182,10 +2182,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json(upload);
     }
 
-    // POST /api/college/process-catalog — Synchronous processing pipeline
-    if (path === "/college/process-catalog" && req.method === "POST") {
-      const { upload_id, college_name, college_short_name, catalog_year } = req.body || {};
-      if (!upload_id) return res.status(400).json({ error: "upload_id is required" });
+    // POST /api/college/process-phase — Phased catalog processing (one phase per call)
+    if (path === "/college/process-phase" && req.method === "POST") {
+      const { upload_id, phase, college_name, college_short_name, catalog_year } = req.body || {};
+      if (!upload_id || !phase) return res.status(400).json({ error: "upload_id and phase are required" });
 
       const { data: upload, error: fetchErr } = await supabase
         .from("catalog_uploads")
@@ -2194,19 +2194,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .single();
       if (fetchErr || !upload) return res.status(404).json({ error: "Upload not found" });
 
-      await supabase.from("catalog_uploads").update({
-        status: "extracting",
-        progress: { current_step: "starting", pages_processed: 0 },
-        updated_at: new Date().toISOString(),
-      }).eq("id", upload_id);
-
-      // Run processing synchronously — Vercel Pro allows 5 min timeout
       try {
-        await processCatalog(upload, college_name, college_short_name, catalog_year);
-        return res.json({ processing: false, upload_id, status: "completed" });
+        const result = await runCatalogPhase(upload, phase, { college_name, college_short_name, catalog_year });
+        return res.json(result);
       } catch (err: any) {
-        console.error("Catalog processing error:", err);
-        return res.status(500).json({ processing: false, upload_id, status: "failed", error: err.message });
+        console.error(`Phase ${phase} failed:`, err.message);
+        await supabase.from("catalog_uploads").update({
+          status: "failed",
+          error_message: (err.message || "Phase failed").slice(0, 500),
+          updated_at: new Date().toISOString(),
+        }).eq("id", upload_id);
+        return res.status(500).json({ error: err.message, phase });
       }
     }
 
@@ -2519,46 +2517,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
-// ==================== COLLEGE CATALOG PROCESSING PIPELINE ====================
+// ==================== COLLEGE CATALOG PHASED PROCESSING ====================
 
-async function processCatalog(
+async function downloadAndParsePDF(sb: any, filePath: string): Promise<{ text: string; pages: number }> {
+  const { data: fileData, error: dlErr } = await sb.storage
+    .from("college-catalogs")
+    .download(filePath);
+  if (dlErr || !fileData) throw new Error("Failed to download catalog PDF");
+  const pdfParse = require("pdf-parse");
+  const buffer = Buffer.from(await fileData.arrayBuffer());
+  const pdf = await pdfParse(buffer);
+  return { text: pdf.text, pages: pdf.numpages };
+}
+
+async function runCatalogPhase(
   upload: any,
-  collegeName?: string,
-  collegeShortName?: string,
-  catalogYear?: string
-) {
-  const supabaseUrl = process.env.SUPABASE_URL!;
-  const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!;
-  const sb = createClient(supabaseUrl, supabaseServiceKey);
+  phase: string,
+  opts: { college_name?: string; college_short_name?: string; catalog_year?: string }
+): Promise<{ done: boolean; next_phase?: string; batch?: number; stats?: Record<string, any> }> {
+  const sb = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_SERVICE_KEY!);
+  const progress = upload.progress || {};
 
-  const updateProgress = async (step: string, detail?: Record<string, any>) => {
+  const updateProgress = async (updates: Record<string, any>) => {
+    const merged = { ...progress, ...updates };
     await sb.from("catalog_uploads").update({
-      progress: { current_step: step, ...detail },
+      status: "extracting",
+      progress: merged,
       updated_at: new Date().toISOString(),
     }).eq("id", upload.id);
   };
 
-  try {
-    // Download PDF from storage
-    const { data: fileData, error: dlErr } = await sb.storage
-      .from("college-catalogs")
-      .download(upload.file_path);
-    if (dlErr || !fileData) throw new Error("Failed to download catalog PDF");
+  switch (phase) {
+    // ---- PHASE 1: Extract college info + schools ----
+    case "extract_info": {
+      const { text: fullText, pages: totalPages } = await downloadAndParsePDF(sb, upload.file_path);
+      await sb.from("catalog_uploads").update({ total_pages: totalPages }).eq("id", upload.id);
+      await updateProgress({ current_phase: "extract_info", total_pages: totalPages });
 
-    const pdfParse = require("pdf-parse");
-    const buffer = Buffer.from(await fileData.arrayBuffer());
-    const pdf = await pdfParse(buffer);
-    const fullText = pdf.text;
-    const totalPages = pdf.numpages;
-
-    await sb.from("catalog_uploads").update({ total_pages: totalPages }).eq("id", upload.id);
-    await updateProgress("extracting_college_info", { total_pages: totalPages, pages_processed: 0 });
-
-    // Phase 1: Extract college and schools info from first pages
-    const firstSection = fullText.slice(0, 10000);
-    console.log("Phase 1: Extracting college info, text length:", firstSection.length);
-    
-    const phase1 = await callGPT(`You are analyzing a university academic catalog. Extract the following information from this text.
+      const firstSection = fullText.slice(0, 10000);
+      const gptResult = await callGPT(`You are analyzing a university academic catalog. Extract the following information from this text.
 
 Text (first pages of catalog):
 ${firstSection}
@@ -2578,78 +2575,79 @@ Return a JSON object with these fields:
 
 Only include information clearly stated in the text.`);
 
-    console.log("Phase 1 GPT response:", phase1.slice(0, 500));
-    const collegeInfo = JSON.parse(phase1);
+      const collegeInfo = JSON.parse(gptResult);
+      const collegeFinalName = opts.college_name || collegeInfo.college_name;
 
-    // Create or update college record
-    const collegeFinalName = collegeName || collegeInfo.college_name;
-    console.log("Creating college:", collegeFinalName);
-    
-    // Try insert first, then update if exists
-    let collegeId: string;
-    const { data: existingCollege } = await sb
-      .from("colleges")
-      .select("id")
-      .eq("name", collegeFinalName)
-      .maybeSingle();
-    
-    if (existingCollege) {
-      // Update existing
-      await sb.from("colleges").update({
-        short_name: collegeShortName || collegeInfo.short_name,
-        country: collegeInfo.country,
-        city: collegeInfo.city,
-        website: collegeInfo.website,
-        catalog_year: catalogYear || collegeInfo.catalog_year,
-        updated_at: new Date().toISOString(),
-      }).eq("id", existingCollege.id);
-      collegeId = existingCollege.id;
-    } else {
-      // Insert new
-      const { data: newCollege, error: insertErr } = await sb
-        .from("colleges")
-        .insert({
-          name: collegeFinalName,
-          short_name: collegeShortName || collegeInfo.short_name,
-          country: collegeInfo.country,
-          city: collegeInfo.city,
+      let collegeId: string;
+      const { data: existingCollege } = await sb
+        .from("colleges").select("id").eq("name", collegeFinalName).maybeSingle();
+
+      if (existingCollege) {
+        await sb.from("colleges").update({
+          short_name: opts.college_short_name || collegeInfo.short_name,
+          country: collegeInfo.country, city: collegeInfo.city,
           website: collegeInfo.website,
-          catalog_year: catalogYear || collegeInfo.catalog_year,
-        })
-        .select()
-        .single();
-      if (insertErr) throw new Error(`Failed to create college: ${insertErr.message}`);
-      collegeId = newCollege.id;
+          catalog_year: opts.catalog_year || collegeInfo.catalog_year,
+          updated_at: new Date().toISOString(),
+        }).eq("id", existingCollege.id);
+        collegeId = existingCollege.id;
+      } else {
+        const { data: newCollege, error: insertErr } = await sb
+          .from("colleges").insert({
+            name: collegeFinalName,
+            short_name: opts.college_short_name || collegeInfo.short_name,
+            country: collegeInfo.country, city: collegeInfo.city,
+            website: collegeInfo.website,
+            catalog_year: opts.catalog_year || collegeInfo.catalog_year,
+          }).select().single();
+        if (insertErr) throw new Error(`Failed to create college: ${insertErr.message}`);
+        collegeId = newCollege.id;
+      }
+
+      await sb.from("catalog_uploads").update({ college_id: collegeId }).eq("id", upload.id);
+
+      const schoolMap: Record<string, string> = {};
+      for (const school of collegeInfo.schools || []) {
+        const { data: schoolData } = await sb
+          .from("college_schools")
+          .upsert({ college_id: collegeId, name: school.name, short_name: school.short_name }, { onConflict: "college_id,name" })
+          .select().single();
+        if (schoolData) schoolMap[school.name] = schoolData.id;
+      }
+
+      await updateProgress({
+        current_phase: "extract_info",
+        college_id: collegeId,
+        school_map: schoolMap,
+        total_pages: totalPages,
+        schools_found: Object.keys(schoolMap).length,
+        programs_extracted: 0,
+        courses_found: 0,
+      });
+
+      return { done: false, next_phase: "extract_programs", stats: { schools: Object.keys(schoolMap).length } };
     }
-    
-    console.log("College ID:", collegeId);
 
-    await sb.from("catalog_uploads").update({ college_id: collegeId }).eq("id", upload.id);
+    // ---- PHASE 2: Extract programs (2 chunks per call) ----
+    case "extract_programs": {
+      const collegeId = progress.college_id;
+      const schoolMap = progress.school_map || {};
+      if (!collegeId) throw new Error("No college_id in progress — run extract_info first");
 
-    // Create schools
-    const schoolMap: Record<string, string> = {};
-    for (const school of collegeInfo.schools || []) {
-      const { data: schoolData } = await sb
-        .from("college_schools")
-        .upsert({ college_id: collegeId, name: school.name, short_name: school.short_name }, { onConflict: "college_id,name" })
-        .select()
-        .single();
-      if (schoolData) schoolMap[school.name] = schoolData.id;
-    }
+      const { text: fullText } = await downloadAndParsePDF(sb, upload.file_path);
+      const programChunks = chunkTextForCatalog(fullText, 20000);
+      const maxChunks = Math.min(programChunks.length, 8);
+      const batchIndex = progress.programs_batch_index || 0;
+      const chunksPerCall = 2;
+      const endIndex = Math.min(batchIndex + chunksPerCall, maxChunks);
 
-    await updateProgress("extracting_programs", { total_pages: totalPages, pages_processed: 10, schools_found: Object.keys(schoolMap).length });
-
-    // Phase 2: Extract programs — batch by school sections
-    const programChunks = chunkTextForCatalog(fullText, 20000);
-    const allPrograms: any[] = [];
-
-    for (let i = 0; i < Math.min(programChunks.length, 8); i++) {
-      const chunk = programChunks[i];
-      try {
-        const phase2 = await callGPT(`You are analyzing a university academic catalog section. Extract all degree programs mentioned.
+      const allPrograms: any[] = [];
+      for (let i = batchIndex; i < endIndex; i++) {
+        try {
+          const gptResult = await callGPT(`You are analyzing a university academic catalog section. Extract all degree programs mentioned.
 
 Text:
-${chunk}
+${programChunks[i]}
 
 Schools in this university: ${Object.keys(schoolMap).join(", ")}
 
@@ -2670,53 +2668,67 @@ Return JSON array of programs:
 }]
 
 Only include programs clearly described. Skip duplicates.`);
+          allPrograms.push(...JSON.parse(gptResult));
+        } catch { /* skip chunk errors */ }
+      }
 
-        const programs = JSON.parse(phase2);
-        allPrograms.push(...programs);
-      } catch { /* skip chunk errors */ }
+      // Deduplicate and insert
+      const seenPrograms = new Set<string>();
+      for (const prog of allPrograms) {
+        if (seenPrograms.has(prog.name)) continue;
+        seenPrograms.add(prog.name);
+        const schoolId = schoolMap[prog.school_name] || Object.values(schoolMap)[0];
+        if (!schoolId) continue;
+        await sb.from("college_programs").upsert({
+          school_id: schoolId, college_id: collegeId, name: prog.name,
+          degree_type: prog.degree_type || "bachelor", abbreviation: prog.abbreviation,
+          major: prog.major, duration_years: prog.duration_years,
+          total_credit_points: prog.total_credit_points, qf_emirates_level: prog.qf_emirates_level,
+          delivery_mode: prog.delivery_mode, description: prog.description,
+          learning_outcomes: prog.learning_outcomes || [], intake_sessions: prog.intake_sessions || [],
+          processing_status: "completed", updated_at: new Date().toISOString(),
+        }, { onConflict: "college_id,name" });
+      }
+
+      const { count: totalPrograms } = await sb.from("college_programs")
+        .select("id", { count: "exact", head: true }).eq("college_id", collegeId);
+
+      if (endIndex < maxChunks) {
+        await updateProgress({
+          current_phase: "extract_programs",
+          programs_batch_index: endIndex,
+          programs_total_batches: maxChunks,
+          programs_extracted: totalPrograms || 0,
+        });
+        return { done: false, next_phase: "extract_programs", batch: endIndex, stats: { programs: totalPrograms } };
+      }
+
+      await updateProgress({
+        current_phase: "extract_programs",
+        programs_batch_index: maxChunks,
+        programs_total_batches: maxChunks,
+        programs_extracted: totalPrograms || 0,
+      });
+      return { done: false, next_phase: "extract_courses", stats: { programs: totalPrograms } };
     }
 
-    // Deduplicate programs by name and insert
-    const seenPrograms = new Set<string>();
-    for (const prog of allPrograms) {
-      if (seenPrograms.has(prog.name)) continue;
-      seenPrograms.add(prog.name);
+    // ---- PHASE 3: Extract courses (2 chunks per call) ----
+    case "extract_courses": {
+      const collegeId = progress.college_id;
+      if (!collegeId) throw new Error("No college_id in progress");
 
-      const schoolId = schoolMap[prog.school_name] || Object.values(schoolMap)[0];
-      if (!schoolId) continue;
+      const { text: fullText } = await downloadAndParsePDF(sb, upload.file_path);
+      const courseChunks = chunkTextForCatalog(fullText, 25000);
+      const batchIndex = progress.courses_batch_index || 0;
+      const chunksPerCall = 2;
+      const endIndex = Math.min(batchIndex + chunksPerCall, courseChunks.length);
 
-      await sb.from("college_programs").upsert({
-        school_id: schoolId,
-        college_id: collegeId,
-        name: prog.name,
-        degree_type: prog.degree_type || "bachelor",
-        abbreviation: prog.abbreviation,
-        major: prog.major,
-        duration_years: prog.duration_years,
-        total_credit_points: prog.total_credit_points,
-        qf_emirates_level: prog.qf_emirates_level,
-        delivery_mode: prog.delivery_mode,
-        description: prog.description,
-        learning_outcomes: prog.learning_outcomes || [],
-        intake_sessions: prog.intake_sessions || [],
-        processing_status: "completed",
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "college_id,name" });
-    }
-
-    await updateProgress("extracting_courses", { total_pages: totalPages, pages_processed: 40, programs_found: seenPrograms.size });
-
-    // Phase 3: Extract courses — batch 10-15 at a time
-    const courseChunks = chunkTextForCatalog(fullText, 25000);
-    const allCourses: any[] = [];
-
-    for (let i = 0; i < courseChunks.length; i++) {
-      const chunk = courseChunks[i];
-      try {
-        const phase3 = await callGPT(`You are analyzing a university catalog section. Extract all course/subject descriptions.
+      for (let i = batchIndex; i < endIndex; i++) {
+        try {
+          const gptResult = await callGPT(`You are analyzing a university catalog section. Extract all course/subject descriptions.
 
 Text:
-${chunk}
+${courseChunks[i]}
 
 Return JSON array of courses:
 [{
@@ -2731,56 +2743,68 @@ Return JSON array of courses:
 
 Only include courses with a valid course code (letters followed by numbers, e.g. ACCY121, BUS101, CSIT111). Skip entries that aren't course descriptions.`);
 
-        const courses = JSON.parse(phase3);
-        allCourses.push(...courses);
-      } catch { /* skip chunk errors */ }
+          const courses = JSON.parse(gptResult);
+          for (const course of courses) {
+            if (!course.code) continue;
+            const codeMatch = course.code.match(/^([A-Z]+)\s?(\d)/);
+            const prefix = codeMatch ? codeMatch[1] : null;
+            const level = codeMatch ? parseInt(codeMatch[2]) * 100 : null;
+            const prereqCodes = (course.prerequisites || "").match(/[A-Z]{2,4}\s?\d{3}/g) || [];
+            await sb.from("college_courses").upsert({
+              college_id: collegeId, code: course.code.replace(/\s/g, ""), name: course.name,
+              credit_points: course.credit_points || 6, description: course.description,
+              hours_format: course.hours_format, prerequisites: course.prerequisites,
+              prerequisite_codes: prereqCodes.map((c: string) => c.replace(/\s/g, "")),
+              department_prefix: prefix, level, topics_covered: course.topics_covered || [],
+              updated_at: new Date().toISOString(),
+            }, { onConflict: "college_id,code" });
+          }
+        } catch { /* skip chunk errors */ }
+      }
 
-      await updateProgress("extracting_courses", {
-        total_pages: totalPages,
-        pages_processed: 40 + Math.round((i / courseChunks.length) * 30),
-        courses_found: allCourses.length,
+      const { count: totalCourses } = await sb.from("college_courses")
+        .select("id", { count: "exact", head: true }).eq("college_id", collegeId);
+
+      if (endIndex < courseChunks.length) {
+        await updateProgress({
+          current_phase: "extract_courses",
+          courses_batch_index: endIndex,
+          courses_total_batches: courseChunks.length,
+          courses_found: totalCourses || 0,
+        });
+        return { done: false, next_phase: "extract_courses", batch: endIndex, stats: { courses: totalCourses } };
+      }
+
+      await updateProgress({
+        current_phase: "extract_courses",
+        courses_batch_index: courseChunks.length,
+        courses_total_batches: courseChunks.length,
+        courses_found: totalCourses || 0,
       });
+      return { done: false, next_phase: "map_courses", stats: { courses: totalCourses } };
     }
 
-    // Deduplicate courses by code and insert
-    const seenCodes = new Set<string>();
-    for (const course of allCourses) {
-      if (!course.code || seenCodes.has(course.code)) continue;
-      seenCodes.add(course.code);
+    // ---- PHASE 4: Map courses to programs (3 programs per call) ----
+    case "map_courses": {
+      const collegeId = progress.college_id;
+      if (!collegeId) throw new Error("No college_id in progress");
 
-      const codeMatch = course.code.match(/^([A-Z]+)\s?(\d)/);
-      const prefix = codeMatch ? codeMatch[1] : null;
-      const level = codeMatch ? parseInt(codeMatch[2]) * 100 : null;
-      const prereqCodes = (course.prerequisites || "").match(/[A-Z]{2,4}\s?\d{3}/g) || [];
+      const { data: dbPrograms } = await sb.from("college_programs").select("id, name").eq("college_id", collegeId);
+      const { data: dbCourses } = await sb.from("college_courses").select("id, code").eq("college_id", collegeId);
+      const codeToId: Record<string, string> = {};
+      for (const c of dbCourses || []) codeToId[c.code] = c.id;
+      const courseCodes = (dbCourses || []).map((c: any) => c.code).join(", ");
 
-      await sb.from("college_courses").upsert({
-        college_id: collegeId,
-        code: course.code.replace(/\s/g, ""),
-        name: course.name,
-        credit_points: course.credit_points || 6,
-        description: course.description,
-        hours_format: course.hours_format,
-        prerequisites: course.prerequisites,
-        prerequisite_codes: prereqCodes.map((c: string) => c.replace(/\s/g, "")),
-        department_prefix: prefix,
-        level,
-        topics_covered: course.topics_covered || [],
-        updated_at: new Date().toISOString(),
-      }, { onConflict: "college_id,code" });
-    }
+      const batchIndex = progress.map_batch_index || 0;
+      const progsPerCall = 3;
+      const programs = dbPrograms || [];
+      const endIndex = Math.min(batchIndex + progsPerCall, programs.length);
 
-    await updateProgress("mapping_courses_to_programs", { total_pages: totalPages, pages_processed: 70, courses_found: seenCodes.size });
-
-    // Phase 4: Build program-course mappings
-    const { data: dbPrograms } = await sb.from("college_programs").select("id, name").eq("college_id", collegeId);
-    const { data: dbCourses } = await sb.from("college_courses").select("id, code").eq("college_id", collegeId);
-    const codeToId: Record<string, string> = {};
-    for (const c of dbCourses || []) codeToId[c.code] = c.id;
-
-    for (const prog of dbPrograms || []) {
-      try {
-        const mappingPrompt = await callGPT(`Given this university program name: "${prog.name}"
-And these available course codes: ${(dbCourses || []).map((c: any) => c.code).join(", ")}
+      for (let i = batchIndex; i < endIndex; i++) {
+        const prog = programs[i];
+        try {
+          const gptResult = await callGPT(`Given this university program name: "${prog.name}"
+And these available course codes: ${courseCodes}
 
 Based on the program name and common university curriculum patterns, identify which courses likely belong to this program.
 
@@ -2794,45 +2818,58 @@ Return JSON:
 
 Be conservative — only include courses that clearly relate to this program based on the department prefix and program focus.`);
 
-        const mappings = JSON.parse(mappingPrompt);
-        for (let idx = 0; idx < mappings.length; idx++) {
-          const m = mappings[idx];
-          const courseId = codeToId[m.code?.replace(/\s/g, "")];
-          if (!courseId) continue;
-          await sb.from("program_courses").upsert({
-            program_id: prog.id,
-            course_id: courseId,
-            course_type: m.course_type || "core",
-            year_of_study: m.year_of_study,
-            is_required: m.is_required !== false,
-            sort_order: idx,
-          }, { onConflict: "program_id,course_id" });
-        }
-      } catch { /* skip mapping errors */ }
+          const mappings = JSON.parse(gptResult);
+          for (let idx = 0; idx < mappings.length; idx++) {
+            const m = mappings[idx];
+            const courseId = codeToId[m.code?.replace(/\s/g, "")];
+            if (!courseId) continue;
+            await sb.from("program_courses").upsert({
+              program_id: prog.id, course_id: courseId,
+              course_type: m.course_type || "core", year_of_study: m.year_of_study,
+              is_required: m.is_required !== false, sort_order: idx,
+            }, { onConflict: "program_id,course_id" });
+          }
+        } catch { /* skip mapping errors */ }
+      }
+
+      if (endIndex < programs.length) {
+        await updateProgress({
+          current_phase: "map_courses",
+          map_batch_index: endIndex,
+          map_total_batches: programs.length,
+        });
+        return { done: false, next_phase: "map_courses", batch: endIndex };
+      }
+
+      await updateProgress({
+        current_phase: "map_courses",
+        map_batch_index: programs.length,
+        map_total_batches: programs.length,
+      });
+      return { done: false, next_phase: "extract_skills" };
     }
 
-    await updateProgress("extracting_skills", { total_pages: totalPages, pages_processed: 80 });
+    // ---- PHASE 5: Extract skills (1 batch of 6 courses per call) ----
+    case "extract_skills": {
+      const collegeId = progress.college_id;
+      if (!collegeId) throw new Error("No college_id in progress");
 
-    // Phase 5: Skill extraction — batch 5-8 courses per GPT call
-    const coursesWithDescriptions = (dbCourses || []).filter((c: any) => {
-      const full = allCourses.find((ac: any) => ac.code?.replace(/\s/g, "") === c.code);
-      return full?.description;
-    });
+      const { data: dbCourses } = await sb.from("college_courses")
+        .select("id, code, name, description").eq("college_id", collegeId);
+      const coursesWithDesc = (dbCourses || []).filter((c: any) => c.description);
 
-    const courseBatches: any[][] = [];
-    for (let i = 0; i < coursesWithDescriptions.length; i += 6) {
-      courseBatches.push(coursesWithDescriptions.slice(i, i + 6));
-    }
+      const batchSize = 6;
+      const totalBatches = Math.ceil(coursesWithDesc.length / batchSize);
+      const batchIndex = progress.skills_batch_index || 0;
 
-    for (let bi = 0; bi < courseBatches.length; bi++) {
-      const batch = courseBatches[bi];
-      const courseDescriptions = batch.map((c: any) => {
-        const full = allCourses.find((ac: any) => ac.code?.replace(/\s/g, "") === c.code);
-        return `Course: ${c.code} - ${full?.name || ""}\nDescription: ${full?.description || ""}`;
-      }).join("\n\n---\n\n");
+      if (batchIndex < totalBatches) {
+        const batch = coursesWithDesc.slice(batchIndex * batchSize, (batchIndex + 1) * batchSize);
+        const courseDescriptions = batch.map((c: any) =>
+          `Course: ${c.code} - ${c.name}\nDescription: ${c.description}`
+        ).join("\n\n---\n\n");
 
-      try {
-        const phase5 = await callGPT(`You are analyzing university courses. Extract skills and competencies students will develop.
+        try {
+          const gptResult = await callGPT(`You are analyzing university courses. Extract skills and competencies students will develop.
 
 ${courseDescriptions}
 
@@ -2852,88 +2889,100 @@ For EACH course above, extract skills. Return JSON:
 Categories: "Technical", "Analytical", "Domain Knowledge", "Communication", "Leadership", "Research"
 Be specific (not "business skills" but "financial statement analysis"). Only include skills clearly developed in each course.`);
 
-        const result = JSON.parse(phase5);
-        for (const courseSkills of result.courses || []) {
-          const courseId = codeToId[courseSkills.code?.replace(/\s/g, "")];
-          if (!courseId) continue;
-          for (const skill of courseSkills.skills || []) {
-            await sb.from("course_skills").upsert({
-              course_id: courseId,
-              skill_name: skill.skill_name,
-              skill_category: skill.skill_category,
-              confidence: skill.confidence || 0.8,
-              source: "ai_extraction",
-            }, { onConflict: "course_id,skill_name" });
+          const result = JSON.parse(gptResult);
+          for (const courseSkills of result.courses || []) {
+            const course = (dbCourses || []).find((c: any) => c.code === courseSkills.code?.replace(/\s/g, ""));
+            if (!course) continue;
+            for (const skill of courseSkills.skills || []) {
+              await sb.from("course_skills").upsert({
+                course_id: course.id, skill_name: skill.skill_name,
+                skill_category: skill.skill_category, confidence: skill.confidence || 0.8,
+                source: "ai_extraction",
+              }, { onConflict: "course_id,skill_name" });
+            }
           }
+        } catch { /* skip batch errors */ }
+
+        const nextBatch = batchIndex + 1;
+        await updateProgress({
+          current_phase: "extract_skills",
+          skills_batch_index: nextBatch,
+          skills_total_batches: totalBatches,
+        });
+
+        if (nextBatch < totalBatches) {
+          return { done: false, next_phase: "extract_skills", batch: nextBatch, stats: { skills_batches: `${nextBatch}/${totalBatches}` } };
         }
-      } catch { /* skip batch errors */ }
-
-      await updateProgress("extracting_skills", {
-        total_pages: totalPages,
-        pages_processed: 80 + Math.round((bi / courseBatches.length) * 15),
-        skills_progress: `${bi + 1}/${courseBatches.length} batches`,
-      });
-    }
-
-    await updateProgress("mapping_taxonomy", { total_pages: totalPages, pages_processed: 95 });
-
-    // Phase 6: Map skills to taxonomy — fuzzy match
-    const { data: extractedSkills } = await sb
-      .from("course_skills")
-      .select("id, skill_name")
-      .is("taxonomy_skill_id", null)
-      .in("course_id", Object.values(codeToId));
-
-    for (const skill of extractedSkills || []) {
-      // Try exact match first
-      const { data: exactMatch } = await sb
-        .from("taxonomy_skills")
-        .select("id")
-        .ilike("name", skill.skill_name)
-        .limit(1)
-        .maybeSingle();
-
-      if (exactMatch) {
-        await sb.from("course_skills").update({ taxonomy_skill_id: exactMatch.id }).eq("id", skill.id);
-      } else {
-        // Try fuzzy match via pg_trgm
-        try {
-          const { data: fuzzyMatch } = await sb
-            .rpc("find_similar_skill", { search_term: skill.skill_name })
-            .limit(1)
-            .maybeSingle();
-          if ((fuzzyMatch as any)?.id) {
-            await sb.from("course_skills").update({ taxonomy_skill_id: (fuzzyMatch as any).id }).eq("id", skill.id);
-          }
-        } catch { /* RPC may not exist */ }
       }
+
+      await updateProgress({ current_phase: "extract_skills", skills_batch_index: totalBatches, skills_total_batches: totalBatches });
+      return { done: false, next_phase: "map_taxonomy" };
     }
 
-    // Mark complete
-    const { count: totalSkills } = await sb.from("course_skills")
-      .select("id", { count: "exact", head: true })
-      .in("course_id", Object.values(codeToId));
+    // ---- PHASE 6: Map skills to taxonomy ----
+    case "map_taxonomy": {
+      const collegeId = progress.college_id;
+      if (!collegeId) throw new Error("No college_id in progress");
 
-    await sb.from("catalog_uploads").update({
-      status: "completed",
-      progress: { current_step: "completed", total_pages: totalPages, pages_processed: totalPages },
-      extraction_results: {
-        schools: Object.keys(schoolMap).length,
-        programs: seenPrograms.size,
-        courses: seenCodes.size,
-        skills: totalSkills || 0,
-      },
-      updated_at: new Date().toISOString(),
-    }).eq("id", upload.id);
+      const { data: dbCourses } = await sb.from("college_courses").select("id").eq("college_id", collegeId);
+      const courseIds = (dbCourses || []).map((c: any) => c.id);
 
-  } catch (err: any) {
-    console.error("Catalog processing failed:", err.message, err.stack);
-    await sb.from("catalog_uploads").update({
-      status: "failed",
-      error_message: (err.message || "Processing failed").slice(0, 500),
-      updated_at: new Date().toISOString(),
-    }).eq("id", upload.id);
-    throw err; // Re-throw so the endpoint returns 500
+      const { data: extractedSkills } = await sb
+        .from("course_skills").select("id, skill_name")
+        .is("taxonomy_skill_id", null)
+        .in("course_id", courseIds);
+
+      for (const skill of extractedSkills || []) {
+        const { data: exactMatch } = await sb
+          .from("taxonomy_skills").select("id")
+          .ilike("name", skill.skill_name).limit(1).maybeSingle();
+
+        if (exactMatch) {
+          await sb.from("course_skills").update({ taxonomy_skill_id: exactMatch.id }).eq("id", skill.id);
+        } else {
+          try {
+            const { data: fuzzyMatch } = await sb
+              .rpc("find_similar_skill", { search_term: skill.skill_name }).limit(1).maybeSingle();
+            if ((fuzzyMatch as any)?.id) {
+              await sb.from("course_skills").update({ taxonomy_skill_id: (fuzzyMatch as any).id }).eq("id", skill.id);
+            }
+          } catch { /* RPC may not exist */ }
+        }
+      }
+
+      // Compute final stats
+      const { count: totalSkills } = await sb.from("course_skills")
+        .select("id", { count: "exact", head: true }).in("course_id", courseIds);
+      const { count: totalPrograms } = await sb.from("college_programs")
+        .select("id", { count: "exact", head: true }).eq("college_id", collegeId);
+      const { count: totalCourses } = await sb.from("college_courses")
+        .select("id", { count: "exact", head: true }).eq("college_id", collegeId);
+
+      await sb.from("catalog_uploads").update({
+        status: "completed",
+        progress: { ...progress, current_phase: "done" },
+        extraction_results: {
+          schools: progress.schools_found || 0,
+          programs: totalPrograms || 0,
+          courses: totalCourses || 0,
+          skills: totalSkills || 0,
+        },
+        updated_at: new Date().toISOString(),
+      }).eq("id", upload.id);
+
+      return {
+        done: true,
+        stats: {
+          schools: progress.schools_found || 0,
+          programs: totalPrograms || 0,
+          courses: totalCourses || 0,
+          skills: totalSkills || 0,
+        },
+      };
+    }
+
+    default:
+      throw new Error(`Unknown phase: ${phase}`);
   }
 }
 

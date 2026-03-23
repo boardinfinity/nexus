@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { supabase } from "@/lib/supabase";
@@ -15,6 +15,7 @@ import {
 import {
   GraduationCap, Upload, Search, BookOpen, Code2, Sparkles,
   Loader2, CheckCircle2, XCircle, Building2, MapPin, Calendar,
+  RotateCcw,
 } from "lucide-react";
 import { Link } from "wouter";
 
@@ -32,13 +33,33 @@ interface College {
   created_at: string;
 }
 
-interface CatalogUpload {
-  id: string;
-  status: string;
-  progress: any;
-  extraction_results: any;
-  error_message: string | null;
-  college_id: string | null;
+const PHASE_LABELS: Record<string, string> = {
+  extract_info: "Extracting college info",
+  extract_programs: "Extracting programs",
+  extract_courses: "Extracting courses",
+  map_courses: "Mapping courses to programs",
+  extract_skills: "Extracting skills",
+  map_taxonomy: "Mapping skills to taxonomy",
+  done: "Complete",
+};
+
+const PHASE_ORDER = ["extract_info", "extract_programs", "extract_courses", "map_courses", "extract_skills", "map_taxonomy", "done"];
+
+function computeProgress(phase: string, batch?: number, totalBatches?: number): number {
+  const phaseWeights: Record<string, [number, number]> = {
+    extract_info: [0, 10],
+    extract_programs: [10, 25],
+    extract_courses: [25, 55],
+    map_courses: [55, 70],
+    extract_skills: [70, 92],
+    map_taxonomy: [92, 100],
+    done: [100, 100],
+  };
+  const [start, end] = phaseWeights[phase] || [0, 0];
+  if (batch != null && totalBatches && totalBatches > 0) {
+    return Math.round(start + ((end - start) * batch) / totalBatches);
+  }
+  return start;
 }
 
 export default function Colleges() {
@@ -53,6 +74,16 @@ export default function Colleges() {
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
+  // Processing state
+  const [currentPhase, setCurrentPhase] = useState("");
+  const [phaseBatch, setPhaseBatch] = useState<number | undefined>();
+  const [phaseTotalBatches, setPhaseTotalBatches] = useState<number | undefined>();
+  const [phaseStats, setPhaseStats] = useState<Record<string, any>>({});
+  const [processingError, setProcessingError] = useState<string | null>(null);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [finalResults, setFinalResults] = useState<Record<string, any> | null>(null);
+  const [collegeId, setCollegeId] = useState<string | null>(null);
+
   const { data: colleges, isLoading } = useQuery<College[]>({
     queryKey: ["/api/colleges"],
     queryFn: async () => {
@@ -62,38 +93,16 @@ export default function Colleges() {
     },
   });
 
-  const { data: processingStatus } = useQuery<CatalogUpload>({
-    queryKey: ["/api/college/processing-status", uploadId],
-    queryFn: async () => {
-      const res = await authFetch(`/api/college/processing-status/${uploadId}`);
-      if (!res.ok) throw new Error("Failed to fetch status");
-      return res.json();
-    },
-    enabled: !!uploadId && uploadStep === 3,
-    refetchInterval: 3000,
-  });
-
-  // Auto-advance to step 4 when processing completes
-  if (processingStatus?.status === "completed" && uploadStep === 3) {
-    setUploadStep(4);
-    queryClient.invalidateQueries({ queryKey: ["/api/colleges"] });
-  }
-  if (processingStatus?.status === "failed" && uploadStep === 3) {
-    setUploadStep(4);
-  }
-
   const uploadMutation = useMutation({
     mutationFn: async () => {
       if (!selectedFile) throw new Error("No file selected");
 
-      // Upload directly to Supabase Storage (bypasses Vercel body size limit)
       const filePath = `catalogs/${Date.now()}_${selectedFile.name}`;
       const { error: uploadErr } = await supabase.storage
         .from("college-catalogs")
         .upload(filePath, selectedFile, { contentType: "application/pdf" });
       if (uploadErr) throw new Error(uploadErr.message);
 
-      // Register the upload in the database via API
       const res = await apiRequest("POST", "/api/college/upload-catalog", {
         file_name: selectedFile.name,
         file_path: filePath,
@@ -110,28 +119,84 @@ export default function Colleges() {
     },
   });
 
-  const processMutation = useMutation({
-    mutationFn: async () => {
-      // Start polling immediately, don't wait for response
-      setUploadStep(3);
-      const res = await apiRequest("POST", "/api/college/process-catalog", {
+  const processNextPhase = useCallback(async (phase: string) => {
+    if (!uploadId) return;
+    setCurrentPhase(phase);
+    setProcessingError(null);
+
+    try {
+      const res = await apiRequest("POST", "/api/college/process-phase", {
         upload_id: uploadId,
+        phase,
         college_name: collegeName || undefined,
+        college_short_name: undefined,
         catalog_year: catalogYear || undefined,
       });
-      return res.json();
-    },
-    onSuccess: (data) => {
-      // Processing completed synchronously
-      if (data.status === "completed") {
-        queryClient.invalidateQueries({ queryKey: ["/api/colleges"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/college/processing-status", uploadId] });
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({ error: "Phase failed" }));
+        throw new Error(errData.error || `Phase ${phase} failed`);
       }
-    },
-    onError: (err: Error) => {
-      toast({ title: "Processing failed", description: err.message, variant: "destructive" });
-    },
-  });
+
+      const data = await res.json();
+
+      // Merge stats
+      if (data.stats) {
+        setPhaseStats((prev) => ({ ...prev, ...data.stats }));
+      }
+      setPhaseBatch(data.batch);
+
+      // Fetch updated upload to get batch totals from progress
+      const statusRes = await authFetch(`/api/college/processing-status/${uploadId}`);
+      if (statusRes.ok) {
+        const status = await statusRes.json();
+        const prog = status.progress || {};
+        setPhaseTotalBatches(
+          prog.programs_total_batches || prog.courses_total_batches ||
+          prog.map_total_batches || prog.skills_total_batches || undefined
+        );
+        if (status.college_id) setCollegeId(status.college_id);
+        // Update stats from progress
+        setPhaseStats((prev) => ({
+          ...prev,
+          schools: prog.schools_found ?? prev.schools,
+          programs: prog.programs_extracted ?? prev.programs,
+          courses: prog.courses_found ?? prev.courses,
+        }));
+      }
+
+      if (data.done) {
+        setFinalResults(data.stats || {});
+        setIsProcessing(false);
+        setUploadStep(4);
+        queryClient.invalidateQueries({ queryKey: ["/api/colleges"] });
+      } else if (data.next_phase) {
+        // Small delay to avoid hammering API
+        setTimeout(() => processNextPhase(data.next_phase), 500);
+      }
+    } catch (err: any) {
+      setProcessingError(err.message);
+      setIsProcessing(false);
+    }
+  }, [uploadId, collegeName, catalogYear, queryClient]);
+
+  const startProcessing = useCallback(() => {
+    setIsProcessing(true);
+    setUploadStep(3);
+    setPhaseStats({});
+    setProcessingError(null);
+    setFinalResults(null);
+    setPhaseBatch(undefined);
+    setPhaseTotalBatches(undefined);
+    processNextPhase("extract_info");
+  }, [processNextPhase]);
+
+  const retryPhase = useCallback(() => {
+    if (!currentPhase) return;
+    setIsProcessing(true);
+    setProcessingError(null);
+    processNextPhase(currentPhase);
+  }, [currentPhase, processNextPhase]);
 
   const resetUpload = () => {
     setUploadStep(1);
@@ -140,6 +205,14 @@ export default function Colleges() {
     setCatalogYear("");
     setSelectedFile(null);
     setUploadOpen(false);
+    setCurrentPhase("");
+    setPhaseStats({});
+    setProcessingError(null);
+    setIsProcessing(false);
+    setFinalResults(null);
+    setCollegeId(null);
+    setPhaseBatch(undefined);
+    setPhaseTotalBatches(undefined);
   };
 
   const filtered = (colleges || []).filter((c) =>
@@ -147,9 +220,7 @@ export default function Colleges() {
     c.short_name?.toLowerCase().includes(search.toLowerCase())
   );
 
-  const progressPct = processingStatus?.progress?.pages_processed && processingStatus?.progress?.total_pages
-    ? Math.round((processingStatus.progress.pages_processed / processingStatus.progress.total_pages) * 100)
-    : 0;
+  const progressPct = computeProgress(currentPhase, phaseBatch, phaseTotalBatches);
 
   return (
     <div className="space-y-6">
@@ -248,7 +319,7 @@ export default function Colleges() {
       )}
 
       {/* Upload Modal */}
-      <Dialog open={uploadOpen} onOpenChange={(o) => { if (!o) resetUpload(); }}>
+      <Dialog open={uploadOpen} onOpenChange={(o) => { if (!o && !isProcessing) resetUpload(); }}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>
@@ -317,11 +388,7 @@ export default function Colleges() {
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setUploadStep(1)}>Back</Button>
-                <Button
-                  disabled={processMutation.isPending}
-                  onClick={() => processMutation.mutate()}
-                >
-                  {processMutation.isPending && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                <Button onClick={startProcessing}>
                   Start Processing
                 </Button>
               </DialogFooter>
@@ -330,59 +397,68 @@ export default function Colleges() {
 
           {uploadStep === 3 && (
             <div className="space-y-4 py-4">
-              <div className="flex items-center gap-3">
-                <Loader2 className="h-5 w-5 animate-spin text-primary" />
-                <span className="font-medium capitalize">
-                  {processingStatus?.progress?.current_step?.replace(/_/g, " ") || "Starting..."}
-                </span>
-              </div>
-              <Progress value={progressPct} className="h-2" />
-              <div className="text-sm text-muted-foreground space-y-1">
-                {processingStatus?.progress?.schools_found != null && (
-                  <p>Schools found: {processingStatus.progress.schools_found}</p>
-                )}
-                {processingStatus?.progress?.programs_found != null && (
-                  <p>Programs found: {processingStatus.progress.programs_found}</p>
-                )}
-                {processingStatus?.progress?.courses_found != null && (
-                  <p>Courses found: {processingStatus.progress.courses_found}</p>
-                )}
-                {processingStatus?.progress?.skills_progress && (
-                  <p>Skill extraction: {processingStatus.progress.skills_progress}</p>
-                )}
-              </div>
+              {processingError ? (
+                <>
+                  <div className="flex items-center gap-3">
+                    <XCircle className="h-5 w-5 text-red-500" />
+                    <span className="font-medium">
+                      Failed: {PHASE_LABELS[currentPhase] || currentPhase}
+                    </span>
+                  </div>
+                  <p className="text-sm text-red-600">{processingError}</p>
+                  <DialogFooter>
+                    <Button variant="outline" onClick={resetUpload}>Close</Button>
+                    <Button onClick={retryPhase}>
+                      <RotateCcw className="h-4 w-4 mr-2" />
+                      Retry
+                    </Button>
+                  </DialogFooter>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <span className="font-medium">
+                      {PHASE_LABELS[currentPhase] || "Starting..."}
+                      {phaseBatch != null && phaseTotalBatches ? ` (batch ${phaseBatch}/${phaseTotalBatches})` : ""}
+                    </span>
+                  </div>
+                  <Progress value={progressPct} className="h-2" />
+                  <p className="text-xs text-muted-foreground">{progressPct}% complete</p>
+                  <div className="text-sm text-muted-foreground space-y-1">
+                    {phaseStats.schools != null && (
+                      <p>Schools found: {phaseStats.schools}</p>
+                    )}
+                    {phaseStats.programs != null && (
+                      <p>Programs found: {phaseStats.programs}</p>
+                    )}
+                    {phaseStats.courses != null && (
+                      <p>Courses found: {phaseStats.courses}</p>
+                    )}
+                    {phaseStats.skills_batches && (
+                      <p>Skill extraction: {phaseStats.skills_batches}</p>
+                    )}
+                  </div>
+                </>
+              )}
             </div>
           )}
 
           {uploadStep === 4 && (
             <div className="space-y-4 py-4">
-              {processingStatus?.status === "completed" ? (
-                <>
-                  <div className="flex items-center gap-3">
-                    <CheckCircle2 className="h-6 w-6 text-green-500" />
-                    <span className="font-medium">Processing Complete</span>
-                  </div>
-                  <div className="bg-muted/50 rounded-lg p-4 space-y-2 text-sm">
-                    <p>Schools: <span className="font-medium">{processingStatus.extraction_results?.schools || 0}</span></p>
-                    <p>Programs: <span className="font-medium">{processingStatus.extraction_results?.programs || 0}</span></p>
-                    <p>Courses: <span className="font-medium">{processingStatus.extraction_results?.courses || 0}</span></p>
-                    <p>Skills extracted: <span className="font-medium">{processingStatus.extraction_results?.skills || 0}</span></p>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div className="flex items-center gap-3">
-                    <XCircle className="h-6 w-6 text-red-500" />
-                    <span className="font-medium">Processing Failed</span>
-                  </div>
-                  {processingStatus?.error_message && (
-                    <p className="text-sm text-red-600">{processingStatus.error_message}</p>
-                  )}
-                </>
-              )}
+              <div className="flex items-center gap-3">
+                <CheckCircle2 className="h-6 w-6 text-green-500" />
+                <span className="font-medium">Processing Complete</span>
+              </div>
+              <div className="bg-muted/50 rounded-lg p-4 space-y-2 text-sm">
+                <p>Schools: <span className="font-medium">{finalResults?.schools || phaseStats.schools || 0}</span></p>
+                <p>Programs: <span className="font-medium">{finalResults?.programs || phaseStats.programs || 0}</span></p>
+                <p>Courses: <span className="font-medium">{finalResults?.courses || phaseStats.courses || 0}</span></p>
+                <p>Skills extracted: <span className="font-medium">{finalResults?.skills || 0}</span></p>
+              </div>
               <DialogFooter>
-                {processingStatus?.college_id && (
-                  <Link href={`/colleges/${processingStatus.college_id}`}>
+                {collegeId && (
+                  <Link href={`/colleges/${collegeId}`}>
                     <Button onClick={resetUpload}>View College</Button>
                   </Link>
                 )}
