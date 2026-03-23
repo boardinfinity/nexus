@@ -11,6 +11,7 @@ const supabase = createClient(supabaseUrl, supabaseServiceKey);
 const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
 const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
+const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const JWT_SECRET = process.env.JWT_SECRET || "nexus-survey-secret-change-me";
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
 const CRON_SECRET = process.env.CRON_SECRET || "";
@@ -2258,23 +2259,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         // Generate overall summary if multiple chunks
         let summary = summaryParts.join(" ");
-        if (summaryParts.length > 1 && OPENAI_API_KEY) {
+        if (summaryParts.length > 1 && ANTHROPIC_API_KEY) {
           try {
-            const summaryResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-              method: "POST",
-              headers: { "Content-Type": "application/json", "Authorization": `Bearer ${OPENAI_API_KEY}` },
-              body: JSON.stringify({
-                model: "gpt-5.4",
-                messages: [
-                  { role: "system", content: "Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences)." },
-                  { role: "user", content: summaryParts.join("\n\n") },
-                ],
-                temperature: 0.3,
-                max_completion_tokens: 500,
-              }),
-            });
-            const summaryData = await summaryResponse.json();
-            summary = summaryData.choices?.[0]?.message?.content || summary;
+            const summaryPrompt = `Summarize the following section summaries from an industry report into a concise executive summary (3-5 sentences).\n\n${summaryParts.join("\n\n")}`;
+            summary = await callClaude(summaryPrompt) || summary;
           } catch {
             // Keep concatenated summary
           }
@@ -3579,7 +3567,7 @@ async function callGPT(prompt: string, retries = 2): Promise<string> {
           "Authorization": `Bearer ${OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-5.4",
+          model: "gpt-5.2",
           messages: [{ role: "user", content: truncatedPrompt }],
           temperature: 0.2,
           max_completion_tokens: 4096,
@@ -3605,6 +3593,64 @@ async function callGPT(prompt: string, retries = 2): Promise<string> {
     }
   }
   throw new Error("callGPT: all retries failed");
+}
+
+async function callClaude(prompt: string, jsonSchema?: any, retries = 2): Promise<string> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 90000);
+
+      const body: any = {
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 4096,
+        messages: [{ role: "user", content: prompt }],
+      };
+
+      // If JSON schema provided, use tool_use for guaranteed structured output
+      if (jsonSchema) {
+        body.tools = [{
+          name: "extract_data",
+          description: "Extract structured data from the content",
+          input_schema: jsonSchema,
+        }];
+        body.tool_choice = { type: "tool", name: "extract_data" };
+      }
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": ANTHROPIC_API_KEY,
+          "anthropic-version": "2023-06-01",
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "unknown");
+        throw new Error(`Anthropic API error ${response.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const data = await response.json();
+
+      // Extract result based on response type
+      if (jsonSchema) {
+        const toolBlock = data.content?.find((b: any) => b.type === "tool_use");
+        return JSON.stringify(toolBlock?.input || {});
+      } else {
+        const textBlock = data.content?.find((b: any) => b.type === "text");
+        return textBlock?.text || "";
+      }
+    } catch (err: any) {
+      console.error(`callClaude attempt ${attempt + 1} failed:`, err.message);
+      if (attempt === retries) throw err;
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  throw new Error("callClaude: all retries failed");
 }
 
 function chunkTextForCatalog(text: string, maxChars: number = 20000): string[] {
@@ -3649,56 +3695,90 @@ async function processReportChunk(
   chunkNum: number,
   totalChunks: number
 ): Promise<any> {
-  if (!OPENAI_API_KEY) throw new Error("OPENAI_API_KEY not configured");
+  if (!ANTHROPIC_API_KEY) throw new Error("ANTHROPIC_API_KEY not configured");
 
-  // Truncate text to fit within GPT context limits (~80K chars ≈ 20K tokens)
+  // Truncate text to fit within Claude context limits
   const truncatedText = text.slice(0, 80000);
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+  const prompt = `You are an expert analyst processing a section of an industry/skills report.
+Extract structured information from the following report section.
+
+Report: ${title} by ${sourceOrg} (${year}) — Region: ${region}
+Section ${chunkNum} of ${totalChunks}:
+"""
+${truncatedText}
+"""`;
+
+  const jsonSchema = {
+    type: "object" as const,
+    properties: {
+      section_summary: { type: "string", description: "Brief summary of this section (2-3 sentences)" },
+      key_findings: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            finding: { type: "string" },
+            category: { type: "string", enum: ["skills", "labor_market", "technology", "salary", "education", "regional"] },
+            confidence: { type: "number" },
+          },
+          required: ["finding", "category", "confidence"],
+        },
+      },
+      skill_mentions: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            skill_name: { type: "string" },
+            mention_context: { type: "string" },
+            ranking: { type: "number" },
+            growth_indicator: { type: "string", enum: ["growing", "declining", "stable", "emerging"] },
+            data_point: { type: "string" },
+          },
+          required: ["skill_name"],
+        },
+      },
+      extracted_tables: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            title: { type: "string" },
+            rows: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  label: { type: "string" },
+                  value: { type: "string" },
+                },
+                required: ["label", "value"],
+              },
+            },
+          },
+          required: ["title", "rows"],
+        },
+      },
+      stats: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            metric: { type: "string" },
+            value: { type: "string" },
+            context: { type: "string" },
+          },
+          required: ["metric", "value", "context"],
+        },
+      },
     },
-    body: JSON.stringify({
-      model: "gpt-5.4",
-      messages: [
-        {
-          role: "system",
-          content: `You are an expert analyst processing a section of an industry/skills report.
-Extract structured information. Return valid JSON only.
+    required: ["section_summary", "key_findings", "skill_mentions", "extracted_tables", "stats"],
+  };
 
-{
-  "section_summary": "Brief summary of this section (2-3 sentences)",
-  "key_findings": [
-    {"finding": "string", "category": "skills|labor_market|technology|salary|education|regional", "confidence": 0.0-1.0}
-  ],
-  "skill_mentions": [
-    {"skill_name": "string", "mention_context": "verbatim sentence", "ranking": null, "growth_indicator": "growing|declining|stable|emerging|null", "data_point": "string|null"}
-  ],
-  "extracted_tables": [
-    {"title": "string", "rows": [{"label": "string", "value": "string"}]}
-  ],
-  "stats": [
-    {"metric": "string", "value": "string", "context": "string"}
-  ]
-}`,
-        },
-        {
-          role: "user",
-          content: `Report: ${title} by ${sourceOrg} (${year}) — Region: ${region}\nSection ${chunkNum} of ${totalChunks}:\n"""\n${truncatedText}\n"""`,
-        },
-      ],
-      temperature: 0.3,
-      max_completion_tokens: 4000,
-      response_format: { type: "json_object" },
-    }),
-  });
-
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "{}";
   try {
-    return JSON.parse(content);
+    const result = await callClaude(prompt, jsonSchema);
+    return JSON.parse(result);
   } catch {
     return { section_summary: "", key_findings: [], skill_mentions: [], extracted_tables: [], stats: [] };
   }
@@ -4214,7 +4294,7 @@ async function extractSkillsWithAI(text: string): Promise<Array<{ name: string; 
       "Authorization": `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-5.4",
+      model: "gpt-5.4-nano",
       messages: [
         {
           role: "system",
@@ -4325,7 +4405,7 @@ async function executeJDFetch(runId: string, config: any) {
               "Authorization": `Bearer ${OPENAI_API_KEY}`,
             },
             body: JSON.stringify({
-              model: "gpt-5.4",
+              model: "gpt-5.4-nano",
               messages: [{
                 role: "user",
                 content: `Find or reconstruct the full job description for the role "${job.title}" at ${job.company_name || "unknown company"}. ${job.source_url ? `Original posting: ${job.source_url}` : ""}\n\nReturn ONLY the full job description text. If you cannot find it, construct a realistic job description based on the role title and company. Start directly with the job description content.`,
@@ -4437,7 +4517,7 @@ async function extractImplicitData(description: string, title: string, companyNa
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-5.4",
+        model: "gpt-5.4-nano",
         messages: [
           {
             role: "system",
@@ -4519,7 +4599,7 @@ async function executeJDEnrichment(runId: string, config: any) {
             "Authorization": `Bearer ${OPENAI_API_KEY}`,
           },
           body: JSON.stringify({
-            model: "gpt-5.4",
+            model: "gpt-5.4-nano",
             messages: [
               {
                 role: "system",
@@ -4625,7 +4705,7 @@ Return a JSON object with:
           operation: "jd_analysis",
           status: "success",
           credits_used: tokenUsage.total_tokens || 0,
-          details: { skills_extracted: skills.length, model: "gpt-5.4", tokens: tokenUsage },
+          details: { skills_extracted: skills.length, model: "gpt-5.4-nano", tokens: tokenUsage },
         });
       })
     );
