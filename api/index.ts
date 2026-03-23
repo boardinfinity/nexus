@@ -3032,7 +3032,7 @@ async function callGPT(prompt: string, retries = 2): Promise<string> {
           model: "gpt-5.2",
           messages: [{ role: "user", content: truncatedPrompt }],
           temperature: 0.2,
-          max_tokens: 4096,
+          max_completion_tokens: 4096,
         }),
         signal: controller.signal,
       });
