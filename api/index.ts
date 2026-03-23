@@ -2555,13 +2555,15 @@ async function processCatalog(
     await updateProgress("extracting_college_info", { total_pages: totalPages, pages_processed: 0 });
 
     // Phase 1: Extract college and schools info from first pages
-    const firstSection = fullText.slice(0, 15000);
+    const firstSection = fullText.slice(0, 10000);
+    console.log("Phase 1: Extracting college info, text length:", firstSection.length);
+    
     const phase1 = await callGPT(`You are analyzing a university academic catalog. Extract the following information from this text.
 
 Text (first pages of catalog):
 ${firstSection}
 
-Return JSON:
+Return a JSON object with these fields:
 {
   "college_name": "Full official name of the university",
   "short_name": "Abbreviation (e.g. UOWD)",
@@ -2576,25 +2578,51 @@ Return JSON:
 
 Only include information clearly stated in the text.`);
 
+    console.log("Phase 1 GPT response:", phase1.slice(0, 500));
     const collegeInfo = JSON.parse(phase1);
 
     // Create or update college record
-    const { data: college, error: collegeErr } = await sb
+    const collegeFinalName = collegeName || collegeInfo.college_name;
+    console.log("Creating college:", collegeFinalName);
+    
+    // Try insert first, then update if exists
+    let collegeId: string;
+    const { data: existingCollege } = await sb
       .from("colleges")
-      .upsert({
-        name: collegeName || collegeInfo.college_name,
+      .select("id")
+      .eq("name", collegeFinalName)
+      .maybeSingle();
+    
+    if (existingCollege) {
+      // Update existing
+      await sb.from("colleges").update({
         short_name: collegeShortName || collegeInfo.short_name,
         country: collegeInfo.country,
         city: collegeInfo.city,
         website: collegeInfo.website,
         catalog_year: catalogYear || collegeInfo.catalog_year,
         updated_at: new Date().toISOString(),
-      }, { onConflict: "name" })
-      .select()
-      .single();
-
-    if (collegeErr) throw new Error(`Failed to create college: ${collegeErr.message}`);
-    const collegeId = college.id;
+      }).eq("id", existingCollege.id);
+      collegeId = existingCollege.id;
+    } else {
+      // Insert new
+      const { data: newCollege, error: insertErr } = await sb
+        .from("colleges")
+        .insert({
+          name: collegeFinalName,
+          short_name: collegeShortName || collegeInfo.short_name,
+          country: collegeInfo.country,
+          city: collegeInfo.city,
+          website: collegeInfo.website,
+          catalog_year: catalogYear || collegeInfo.catalog_year,
+        })
+        .select()
+        .single();
+      if (insertErr) throw new Error(`Failed to create college: ${insertErr.message}`);
+      collegeId = newCollege.id;
+    }
+    
+    console.log("College ID:", collegeId);
 
     await sb.from("catalog_uploads").update({ college_id: collegeId }).eq("id", upload.id);
 
@@ -2899,33 +2927,58 @@ Be specific (not "business skills" but "financial statement analysis"). Only inc
     }).eq("id", upload.id);
 
   } catch (err: any) {
-    console.error("Catalog processing failed:", err);
+    console.error("Catalog processing failed:", err.message, err.stack);
     await sb.from("catalog_uploads").update({
       status: "failed",
-      error_message: err.message || "Processing failed",
+      error_message: (err.message || "Processing failed").slice(0, 500),
       updated_at: new Date().toISOString(),
     }).eq("id", upload.id);
+    throw err; // Re-throw so the endpoint returns 500
   }
 }
 
-async function callGPT(prompt: string): Promise<string> {
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.2,
-      max_tokens: 4000,
-    }),
-  });
-  const data = await response.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  // Strip markdown code blocks if present
-  return content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+async function callGPT(prompt: string, retries = 2): Promise<string> {
+  // Truncate prompt to ~120K chars to stay within GPT-4o-mini context window
+  const truncatedPrompt = prompt.length > 120000 ? prompt.slice(0, 120000) + "\n[TEXT TRUNCATED]" : prompt;
+  
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000); // 60s timeout per call
+      
+      const response = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4o-mini",
+          messages: [{ role: "user", content: truncatedPrompt }],
+          temperature: 0.2,
+          max_tokens: 4000,
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "unknown error");
+        throw new Error(`OpenAI API error ${response.status}: ${errText.slice(0, 200)}`);
+      }
+      
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      // Strip markdown code blocks if present
+      return content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+    } catch (err: any) {
+      console.error(`callGPT attempt ${attempt + 1} failed:`, err.message);
+      if (attempt === retries) throw err;
+      // Wait before retry
+      await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+    }
+  }
+  throw new Error("callGPT: all retries failed");
 }
 
 function chunkTextForCatalog(text: string, maxChars: number = 20000): string[] {
