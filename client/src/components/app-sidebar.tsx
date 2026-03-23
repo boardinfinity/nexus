@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
   BookOpen, Sparkles, Upload, CalendarClock,
-  ClipboardList, ShieldCheck, FileText, GraduationCap, ClipboardCheck,
+  ClipboardList, ShieldCheck, FileText, GraduationCap, ClipboardCheck, Shield,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -15,28 +15,41 @@ import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/lib/auth";
 
+// Map each nav item to its RBAC section key
 const navItems = [
-  { title: "Dashboard", href: "/", icon: LayoutDashboard },
-  { title: "Jobs", href: "/jobs", icon: Briefcase },
-  { title: "Data Quality", href: "/data-quality", icon: ShieldCheck },
-  { title: "Companies", href: "/companies", icon: Building2 },
-  { title: "People", href: "/people", icon: Users },
-  { title: "Upload", href: "/upload", icon: Upload },
-  { title: "Pipelines", href: "/pipelines", icon: GitBranch },
-  { title: "Schedules", href: "/schedules", icon: CalendarClock },
-  { title: "Taxonomy", href: "/taxonomy", icon: BookOpen },
-  { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles },
-  { title: "Monitoring", href: "/monitoring", icon: Activity },
-  { title: "Survey Admin", href: "/survey-admin", icon: ClipboardList },
-  { title: "PlaceIntel", href: "/placeintel-admin", icon: ClipboardCheck },
-  { title: "Colleges", href: "/colleges", icon: GraduationCap },
-  { title: "Reports", href: "/reports", icon: FileText },
-  { title: "Settings", href: "/settings", icon: Settings },
+  { title: "Dashboard", href: "/", icon: LayoutDashboard, section: "dashboard" },
+  { title: "Jobs", href: "/jobs", icon: Briefcase, section: "jobs" },
+  { title: "Data Quality", href: "/data-quality", icon: ShieldCheck, section: "data_quality" },
+  { title: "Companies", href: "/companies", icon: Building2, section: "companies" },
+  { title: "People", href: "/people", icon: Users, section: "people" },
+  { title: "Upload", href: "/upload", icon: Upload, section: "upload" },
+  { title: "Pipelines", href: "/pipelines", icon: GitBranch, section: "pipelines" },
+  { title: "Schedules", href: "/schedules", icon: CalendarClock, section: "schedules" },
+  { title: "Taxonomy", href: "/taxonomy", icon: BookOpen, section: "taxonomy" },
+  { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles, section: "jd_analyzer" },
+  { title: "Monitoring", href: "/monitoring", icon: Activity, section: null },
+  { title: "Survey Admin", href: "/survey-admin", icon: ClipboardList, section: "surveys" },
+  { title: "PlaceIntel", href: "/placeintel-admin", icon: ClipboardCheck, section: "placeintel" },
+  { title: "Colleges", href: "/colleges", icon: GraduationCap, section: "colleges" },
+  { title: "Reports", href: "/reports", icon: FileText, section: "reports" },
+  { title: "Settings", href: "/settings", icon: Settings, section: "settings" },
 ];
+
+interface MeResponse {
+  id: string;
+  email: string;
+  role: string;
+  resolved_permissions: Record<string, string>;
+}
 
 export function AppSidebar() {
   const [location] = useLocation();
   const { user, signOut } = useAuth();
+
+  const { data: me } = useQuery<MeResponse>({
+    queryKey: ["/api/users/me"],
+    staleTime: 30000,
+  });
 
   const { data: credits } = useQuery<Array<{
     provider: string;
@@ -51,6 +64,16 @@ export function AppSidebar() {
   const totalUsed = credits?.reduce((s, c) => s + (c.credits_used || 0), 0) ?? 0;
   const totalAllocated = credits?.reduce((s, c) => s + (c.credits_allocated || 0), 0) ?? 1;
   const usagePct = Math.round((totalUsed / totalAllocated) * 100);
+
+  // Filter nav items based on user permissions
+  const visibleItems = navItems.filter((item) => {
+    if (!me) return true; // Show all while loading
+    if (!item.section) return true; // No section restriction (e.g. Monitoring)
+    const perm = me.resolved_permissions?.[item.section];
+    return perm && perm !== "none";
+  });
+
+  const isSuperAdmin = me?.role === "super_admin";
 
   return (
     <Sidebar data-testid="app-sidebar">
@@ -68,7 +91,7 @@ export function AppSidebar() {
         <SidebarGroup>
           <SidebarGroupContent>
             <SidebarMenu>
-              {navItems.map((item) => {
+              {visibleItems.map((item) => {
                 const isActive = location === item.href ||
                   (item.href !== "/" && location.startsWith(item.href));
                 return (
@@ -82,6 +105,20 @@ export function AppSidebar() {
                   </SidebarMenuItem>
                 );
               })}
+              {isSuperAdmin && (
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    asChild
+                    isActive={location === "/users"}
+                    data-testid="nav-users"
+                  >
+                    <Link href="/users">
+                      <Shield className="h-4 w-4" />
+                      <span>Users</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>

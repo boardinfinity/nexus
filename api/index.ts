@@ -19,7 +19,91 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 // Supabase client using anon key (for auth verification)
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
 
-async function verifyAuth(req: VercelRequest): Promise<{ authenticated: boolean; email?: string }> {
+// ==================== RBAC: Types, Defaults, Helpers ====================
+
+interface NexusUser {
+  id: string;
+  email: string;
+  name: string | null;
+  role: string;
+  is_active: boolean;
+  permissions: Record<string, string> | null;
+  restricted_college_ids: string[] | null;
+  restricted_regions: string[] | null;
+}
+
+interface AuthResult {
+  authenticated: boolean;
+  email?: string;
+  nexusUser?: NexusUser;
+}
+
+const ALL_SECTIONS = [
+  "dashboard", "jobs", "companies", "people", "upload", "pipelines",
+  "schedules", "taxonomy", "jd_analyzer", "data_quality", "surveys",
+  "colleges", "reports", "placeintel", "settings", "users",
+] as const;
+
+const ROLE_DEFAULTS: Record<string, Record<string, string>> = {
+  super_admin: Object.fromEntries(ALL_SECTIONS.map(s => [s, "full"])),
+  admin: Object.fromEntries(ALL_SECTIONS.map(s => [s, s === "users" ? "none" : "full"])),
+  editor: {
+    dashboard: "read", jobs: "write", companies: "write", people: "write",
+    upload: "write", pipelines: "read", schedules: "read", taxonomy: "write",
+    jd_analyzer: "read", data_quality: "read", surveys: "read", colleges: "write",
+    reports: "write", placeintel: "read", settings: "none", users: "none",
+  },
+  viewer: {
+    dashboard: "read", jobs: "read", companies: "read", people: "read",
+    upload: "none", pipelines: "none", schedules: "none", taxonomy: "read",
+    jd_analyzer: "read", data_quality: "read", surveys: "read", colleges: "read",
+    reports: "read", placeintel: "read", settings: "none", users: "none",
+  },
+  college_rep: {
+    dashboard: "read", jobs: "none", companies: "none", people: "none",
+    upload: "none", pipelines: "none", schedules: "none", taxonomy: "none",
+    jd_analyzer: "none", data_quality: "none", surveys: "none", colleges: "read",
+    reports: "none", placeintel: "read", settings: "none", users: "none",
+  },
+};
+
+const PERM_HIERARCHY: Record<string, number> = { none: 0, read: 1, write: 2, full: 3 };
+
+function getResolvedPermissions(user: NexusUser): Record<string, string> {
+  if (user.permissions && Object.keys(user.permissions).length > 0) {
+    // Merge: custom overrides on top of role defaults
+    const defaults = ROLE_DEFAULTS[user.role] || ROLE_DEFAULTS.viewer;
+    return { ...defaults, ...user.permissions };
+  }
+  return ROLE_DEFAULTS[user.role] || ROLE_DEFAULTS.viewer;
+}
+
+function hasPermission(user: NexusUser, section: string, level: "read" | "write" | "full"): boolean {
+  if (user.role === "super_admin") return true;
+  const perms = getResolvedPermissions(user);
+  const sectionPerm = perms[section] || "none";
+  return (PERM_HIERARCHY[sectionPerm] || 0) >= (PERM_HIERARCHY[level] || 0);
+}
+
+function requirePermission(section: string, level: "read" | "write" | "full") {
+  return (auth: AuthResult, res: VercelResponse): boolean => {
+    if (!auth.nexusUser || !hasPermission(auth.nexusUser, section, level)) {
+      res.status(403).json({ error: "You don't have access to this section" });
+      return false;
+    }
+    return true;
+  };
+}
+
+function requireSuperAdmin(auth: AuthResult, res: VercelResponse): boolean {
+  if (!auth.nexusUser || auth.nexusUser.role !== "super_admin") {
+    res.status(403).json({ error: "Only super admins can access this resource" });
+    return false;
+  }
+  return true;
+}
+
+async function verifyAuth(req: VercelRequest): Promise<AuthResult> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
     return { authenticated: false };
@@ -28,11 +112,32 @@ async function verifyAuth(req: VercelRequest): Promise<{ authenticated: boolean;
   try {
     const { data: { user }, error } = await supabase.auth.getUser(token);
     if (error || !user) return { authenticated: false };
-    // Only allow @boardinfinity.com emails
+
+    // Must be @boardinfinity.com domain
     if (!user.email?.endsWith("@boardinfinity.com")) {
       return { authenticated: false };
     }
-    return { authenticated: true, email: user.email };
+
+    // Look up in nexus_users table
+    const { data: nexusUser, error: lookupErr } = await supabase
+      .from("nexus_users")
+      .select("id, email, name, role, is_active, permissions, restricted_college_ids, restricted_regions")
+      .eq("email", user.email)
+      .single();
+
+    if (lookupErr || !nexusUser) {
+      // Not registered in nexus_users → blocked
+      return { authenticated: false };
+    }
+
+    if (!nexusUser.is_active) {
+      return { authenticated: false };
+    }
+
+    // Update last_login_at (fire-and-forget)
+    supabase.from("nexus_users").update({ last_login_at: new Date().toISOString() }).eq("id", nexusUser.id).then(() => {});
+
+    return { authenticated: true, email: user.email, nexusUser: nexusUser as NexusUser };
   } catch {
     return { authenticated: false };
   }
@@ -216,7 +321,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Authenticate all requests
   const auth = await verifyAuth(req);
   if (!auth.authenticated) {
-    return res.status(401).json({ error: "Unauthorized. Please sign in with a @boardinfinity.com email." });
+    return res.status(401).json({ error: "Access denied. Contact your administrator to get access." });
   }
 
   try {
@@ -316,6 +421,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Auto-enrich companies from job data
     if (path === "/companies/auto-enrich" && req.method === "POST") {
+      if (!requirePermission("companies", "write")(auth, res)) return;
       const { data: companies, error: compErr } = await supabase
         .from("companies")
         .select("id, name");
@@ -417,6 +523,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // Deduplicate companies by normalized name
     if (path === "/companies/deduplicate" && req.method === "POST") {
+      if (!requirePermission("companies", "full")(auth, res)) return;
       const { data: companies, error: fetchErr } = await supabase
         .from("companies")
         .select("id, name, name_normalized, domain, website, linkedin_url, logo_url, industry, sub_industry, company_type, founded_year, size_range, employee_count, headquarters_city, headquarters_state, headquarters_country, description, specialities, enrichment_score");
@@ -523,6 +630,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path.match(/^\/pipelines\/run$/) && req.method === "POST") {
+      if (!requirePermission("pipelines", "full")(auth, res)) return;
       const { pipeline_type, config } = req.body || {};
       if (!pipeline_type) return res.status(400).json({ error: "pipeline_type is required" });
 
@@ -684,6 +792,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path.match(/^\/pipelines\/[^/]+\/cancel$/) && req.method === "POST") {
+      if (!requirePermission("pipelines", "full")(auth, res)) return;
       const id = path.split("/")[2];
       const { error } = await supabase
         .from("pipeline_runs")
@@ -1077,6 +1186,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ==================== CSV UPLOAD ====================
     if (path === "/upload/start" && req.method === "POST") {
+      if (!requirePermission("upload", "write")(auth, res)) return;
       const { filename, source_type, total_rows } = req.body || {};
       if (!filename || !source_type || !total_rows) {
         return res.status(400).json({ error: "filename, source_type, and total_rows are required" });
@@ -1102,6 +1212,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path === "/upload/batch" && req.method === "POST") {
+      if (!requirePermission("upload", "write")(auth, res)) return;
       const { upload_id, source_type, rows } = req.body || {};
       if (!upload_id || !source_type || !Array.isArray(rows) || rows.length === 0) {
         return res.status(400).json({ error: "upload_id, source_type, and rows[] are required" });
@@ -1282,6 +1393,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     if (path.match(/^\/schedules\/[^/]+$/) && req.method === "DELETE") {
+      if (!requirePermission("schedules", "full")(auth, res)) return;
       const id = path.split("/").pop();
       // Unlink pipeline_runs from this schedule
       await supabase.from("pipeline_runs").update({ schedule_id: null }).eq("schedule_id", id);
@@ -1974,6 +2086,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/admin/survey/invite
     if (path === "/admin/survey/invite" && req.method === "POST") {
+      if (!requirePermission("surveys", "write")(auth, res)) return;
       const { emails } = req.body || {};
       if (!emails || !Array.isArray(emails) || emails.length === 0) {
         return res.status(400).json({ error: "emails array is required" });
@@ -2057,6 +2170,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/admin/survey/remind
     if (path === "/admin/survey/remind" && req.method === "POST") {
+      if (!requirePermission("surveys", "write")(auth, res)) return;
       const { email } = req.body || {};
       if (!email) return res.status(400).json({ error: "email is required" });
 
@@ -2184,6 +2298,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/reports — create report record
     if (path === "/reports" && req.method === "POST") {
+      if (!requirePermission("reports", "write")(auth, res)) return;
       const { title, source_org, report_year, report_type, region, file_url, file_type, file_size_bytes } = req.body || {};
       if (!title || !file_url) {
         return res.status(400).json({ error: "title and file_url are required" });
@@ -2275,6 +2390,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // DELETE /api/reports/:id — delete report
     if (path.match(/^\/reports\/[^/]+$/) && req.method === "DELETE") {
+      if (!requirePermission("reports", "full")(auth, res)) return;
       const id = path.split("/")[2];
       const { error } = await supabase
         .from("secondary_reports")
@@ -2522,6 +2638,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/college/upload-catalog — Register a catalog upload (file already in Supabase Storage)
     if (path === "/college/upload-catalog" && req.method === "POST") {
+      if (!requirePermission("colleges", "write")(auth, res)) return;
       const { file_name, file_path, file_size_bytes } = req.body || {};
       if (!file_name || !file_path) {
         return res.status(400).json({ error: "file_name and file_path are required" });
@@ -2544,6 +2661,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/college/process-phase — Phased catalog processing (one phase per call)
     if (path === "/college/process-phase" && req.method === "POST") {
+      if (!requirePermission("colleges", "write")(auth, res)) return;
       const { upload_id, phase, college_name, college_short_name, catalog_year } = req.body || {};
       if (!upload_id || !phase) return res.status(400).json({ error: "upload_id and phase are required" });
 
@@ -3114,6 +3232,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ==================== JOB STATUS CHECKER ====================
     if (path === "/pipelines/check-job-status" && req.method === "POST") {
+      if (!requirePermission("pipelines", "full")(auth, res)) return;
       const { batch_size = 50 } = req.body || {};
       const limit = Math.min(parseInt(batch_size) || 50, 200);
 
@@ -3294,6 +3413,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/placeintel/admin/invite — generate invite + create respondent
     if (path === "/placeintel/admin/invite" && req.method === "POST") {
+      if (!requirePermission("placeintel", "write")(auth, res)) return;
       const { college_id, email, name } = req.body || {};
       if (!college_id || !email) return res.status(400).json({ error: "college_id and email are required" });
 
@@ -3397,6 +3517,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // POST /api/placeintel/sync-board-hub — sync Higher-ed accounts from Board Hub
     if (path === "/placeintel/sync-board-hub" && req.method === "POST") {
+      if (!requirePermission("placeintel", "full")(auth, res)) return;
       const boardHubUrl = "https://puoyoiefrjedrzolekem.supabase.co/rest/v1/accounts";
       const boardHubKey = process.env.BOARD_HUB_SUPABASE_KEY;
       if (!boardHubKey) return res.status(500).json({ error: "BOARD_HUB_SUPABASE_KEY not configured" });
@@ -3445,6 +3566,122 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       return res.json({ success: true, total_accounts: accounts.length, new_count, updated_count, skipped_count });
+    }
+
+    // ==================== USER MANAGEMENT ====================
+
+    // GET /api/users/me — Current user profile + resolved permissions
+    if (path === "/users/me" && req.method === "GET") {
+      if (!auth.nexusUser) return res.status(401).json({ error: "Not authenticated" });
+      const resolved = getResolvedPermissions(auth.nexusUser);
+      return res.json({
+        ...auth.nexusUser,
+        resolved_permissions: resolved,
+        role_defaults: ROLE_DEFAULTS[auth.nexusUser.role] || {},
+      });
+    }
+
+    // GET /api/users — List all users (super_admin only)
+    if (path.match(/^\/users\/?$/) && req.method === "GET") {
+      if (!requireSuperAdmin(auth, res)) return;
+      const { data, error } = await supabase
+        .from("nexus_users")
+        .select("*")
+        .order("created_at", { ascending: true });
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data || []);
+    }
+
+    // POST /api/users — Create user (super_admin only)
+    if (path.match(/^\/users\/?$/) && req.method === "POST") {
+      if (!requireSuperAdmin(auth, res)) return;
+      const { email, name, role, permissions, restricted_college_ids, restricted_regions } = req.body || {};
+      if (!email) return res.status(400).json({ error: "Email is required" });
+      if (!email.endsWith("@boardinfinity.com")) {
+        return res.status(400).json({ error: "Only @boardinfinity.com emails can be added" });
+      }
+      const validRoles = ["admin", "editor", "viewer", "college_rep"];
+      if (role && !validRoles.includes(role)) {
+        return res.status(400).json({ error: `Invalid role. Must be one of: ${validRoles.join(", ")}` });
+      }
+      const { data, error } = await supabase
+        .from("nexus_users")
+        .insert({
+          email: email.toLowerCase().trim(),
+          name: name || null,
+          role: role || "viewer",
+          permissions: permissions || null,
+          restricted_college_ids: restricted_college_ids || null,
+          restricted_regions: restricted_regions || null,
+          invited_by: auth.email,
+        })
+        .select()
+        .single();
+      if (error) {
+        if (error.code === "23505") return res.status(409).json({ error: "User with this email already exists" });
+        return res.status(500).json({ error: error.message });
+      }
+      return res.status(201).json(data);
+    }
+
+    // PATCH /api/users/:id — Update user (super_admin only)
+    if (path.match(/^\/users\/[^/]+$/) && req.method === "PATCH") {
+      if (!requireSuperAdmin(auth, res)) return;
+      const userId = path.split("/").pop()!;
+      const { name, role, is_active, permissions, restricted_college_ids, restricted_regions } = req.body || {};
+
+      // Prevent editing self out of super_admin
+      if (userId === auth.nexusUser?.id && role && role !== "super_admin") {
+        return res.status(400).json({ error: "Cannot change your own role from super_admin" });
+      }
+
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updates.name = name;
+      if (role !== undefined) {
+        const validRoles = ["super_admin", "admin", "editor", "viewer", "college_rep"];
+        if (!validRoles.includes(role)) return res.status(400).json({ error: "Invalid role" });
+        updates.role = role;
+      }
+      if (is_active !== undefined) updates.is_active = is_active;
+      if (permissions !== undefined) updates.permissions = permissions;
+      if (restricted_college_ids !== undefined) updates.restricted_college_ids = restricted_college_ids;
+      if (restricted_regions !== undefined) updates.restricted_regions = restricted_regions;
+
+      const { data, error } = await supabase
+        .from("nexus_users")
+        .update(updates)
+        .eq("id", userId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      if (!data) return res.status(404).json({ error: "User not found" });
+      return res.json(data);
+    }
+
+    // DELETE /api/users/:id — Deactivate user (super_admin only)
+    if (path.match(/^\/users\/[^/]+$/) && req.method === "DELETE") {
+      if (!requireSuperAdmin(auth, res)) return;
+      const userId = path.split("/").pop()!;
+
+      // Prevent deactivating yourself
+      if (userId === auth.nexusUser?.id) {
+        return res.status(400).json({ error: "Cannot deactivate your own account" });
+      }
+
+      const { data, error } = await supabase
+        .from("nexus_users")
+        .update({ is_active: false, updated_at: new Date().toISOString() })
+        .eq("id", userId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      if (!data) return res.status(404).json({ error: "User not found" });
+      return res.json(data);
+    }
+
+    // GET /api/users/role-defaults — Get role default permissions
+    if (path === "/users/role-defaults" && req.method === "GET") {
+      return res.json(ROLE_DEFAULTS);
     }
 
     return res.status(404).json({ error: "Not found", path });

@@ -32,6 +32,7 @@ import SurveyLanding from "@/pages/survey-landing";
 import SurveyForm from "@/pages/survey-form";
 import PlacementForm from "@/pages/placement-form";
 import PlaceIntelAdmin from "@/pages/placeintel-admin";
+import UsersPage from "@/pages/users";
 import { Loader2 } from "lucide-react";
 
 function AppRouter() {
@@ -57,6 +58,7 @@ function AppRouter() {
       <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
       <Route path="/reports" component={Reports} />
       <Route path="/placeintel-admin" component={PlaceIntelAdmin} />
+      <Route path="/users" component={UsersPage} />
       <Route component={NotFound} />
     </Switch>
   );
