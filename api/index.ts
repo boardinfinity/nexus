@@ -40,7 +40,7 @@ async function verifyAuth(req: VercelRequest): Promise<{ authenticated: boolean;
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(200).end();
 
@@ -2508,6 +2508,248 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       return res.json({ nodes, edges });
+    }
+
+    // ==================== COLLEGE CRUD ENDPOINTS ====================
+
+    // PATCH /api/colleges/:id — Update college info
+    if (path.match(/^\/colleges\/[^/]+$/) && !path.includes("/programs") && !path.includes("/courses") && req.method === "PATCH") {
+      const collegeId = path.split("/")[2];
+      const { name, short_name, country, city, website, catalog_year } = req.body || {};
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updates.name = name;
+      if (short_name !== undefined) updates.short_name = short_name;
+      if (country !== undefined) updates.country = country;
+      if (city !== undefined) updates.city = city;
+      if (website !== undefined) updates.website = website;
+      if (catalog_year !== undefined) updates.catalog_year = catalog_year;
+
+      const { data, error } = await supabase
+        .from("colleges")
+        .update(updates)
+        .eq("id", collegeId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // POST /api/colleges/:id/programs — Create program
+    if (path.match(/^\/colleges\/[^/]+\/programs$/) && req.method === "POST") {
+      const collegeId = path.split("/")[2];
+      const { name, school_id, degree_type, abbreviation, major, duration_years, total_credit_points, description, learning_outcomes } = req.body || {};
+      if (!name) return res.status(400).json({ error: "name is required" });
+      if (!degree_type) return res.status(400).json({ error: "degree_type is required" });
+
+      const { data, error } = await supabase
+        .from("college_programs")
+        .insert({
+          college_id: collegeId,
+          name,
+          school_id: school_id || null,
+          degree_type,
+          abbreviation: abbreviation || null,
+          major: major || null,
+          duration_years: duration_years || null,
+          total_credit_points: total_credit_points || null,
+          description: description || null,
+          learning_outcomes: learning_outcomes || [],
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.status(201).json(data);
+    }
+
+    // PATCH /api/colleges/:id/programs/:pid — Update program
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+$/) && req.method === "PATCH") {
+      const parts = path.split("/");
+      const programId = parts[4];
+      const { name, school_id, degree_type, abbreviation, major, duration_years, total_credit_points, description, learning_outcomes } = req.body || {};
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (name !== undefined) updates.name = name;
+      if (school_id !== undefined) updates.school_id = school_id;
+      if (degree_type !== undefined) updates.degree_type = degree_type;
+      if (abbreviation !== undefined) updates.abbreviation = abbreviation;
+      if (major !== undefined) updates.major = major;
+      if (duration_years !== undefined) updates.duration_years = duration_years;
+      if (total_credit_points !== undefined) updates.total_credit_points = total_credit_points;
+      if (description !== undefined) updates.description = description;
+      if (learning_outcomes !== undefined) updates.learning_outcomes = learning_outcomes;
+
+      const { data, error } = await supabase
+        .from("college_programs")
+        .update(updates)
+        .eq("id", programId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // DELETE /api/colleges/:id/programs/:pid — Delete program
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+$/) && req.method === "DELETE") {
+      const parts = path.split("/");
+      const programId = parts[4];
+      // Delete related program_courses first
+      await supabase.from("program_courses").delete().eq("program_id", programId);
+      const { error } = await supabase.from("college_programs").delete().eq("id", programId);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ success: true });
+    }
+
+    // POST /api/colleges/:id/courses — Create course
+    if (path.match(/^\/colleges\/[^/]+\/courses$/) && req.method === "POST") {
+      const collegeId = path.split("/")[2];
+      const { code, name, credit_points, description, prerequisites, hours_format } = req.body || {};
+      if (!code) return res.status(400).json({ error: "code is required" });
+      if (!name) return res.status(400).json({ error: "name is required" });
+
+      // Parse department prefix and level from code
+      const codeMatch = code.match(/^([A-Z]+)(\d+)/);
+      const department_prefix = codeMatch ? codeMatch[1] : null;
+      const level = codeMatch ? Math.floor(parseInt(codeMatch[2]) / 100) * 100 : null;
+
+      // Parse prerequisite codes from prerequisites string
+      const prerequisite_codes = prerequisites
+        ? (prerequisites.match(/[A-Z]{2,5}\d{3,4}/g) || [])
+        : [];
+
+      const { data, error } = await supabase
+        .from("college_courses")
+        .insert({
+          college_id: collegeId,
+          code,
+          name,
+          credit_points: credit_points || 6,
+          description: description || null,
+          prerequisites: prerequisites || null,
+          prerequisite_codes,
+          hours_format: hours_format || null,
+          department_prefix,
+          level,
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.status(201).json(data);
+    }
+
+    // PATCH /api/colleges/:id/courses/:cid — Update course
+    if (path.match(/^\/colleges\/[^/]+\/courses\/[^/]+$/) && req.method === "PATCH") {
+      const parts = path.split("/");
+      const courseId = parts[4];
+      const { code, name, credit_points, description, prerequisites, hours_format } = req.body || {};
+      const updates: Record<string, any> = { updated_at: new Date().toISOString() };
+      if (code !== undefined) {
+        updates.code = code;
+        const codeMatch = code.match(/^([A-Z]+)(\d+)/);
+        updates.department_prefix = codeMatch ? codeMatch[1] : null;
+        updates.level = codeMatch ? Math.floor(parseInt(codeMatch[2]) / 100) * 100 : null;
+      }
+      if (name !== undefined) updates.name = name;
+      if (credit_points !== undefined) updates.credit_points = credit_points;
+      if (description !== undefined) updates.description = description;
+      if (prerequisites !== undefined) {
+        updates.prerequisites = prerequisites;
+        updates.prerequisite_codes = prerequisites
+          ? (prerequisites.match(/[A-Z]{2,5}\d{3,4}/g) || [])
+          : [];
+      }
+      if (hours_format !== undefined) updates.hours_format = hours_format;
+
+      const { data, error } = await supabase
+        .from("college_courses")
+        .update(updates)
+        .eq("id", courseId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // DELETE /api/colleges/:id/courses/:cid — Delete course
+    if (path.match(/^\/colleges\/[^/]+\/courses\/[^/]+$/) && req.method === "DELETE") {
+      const parts = path.split("/");
+      const courseId = parts[4];
+      // Check if course is assigned to programs
+      const { count } = await supabase
+        .from("program_courses")
+        .select("id", { count: "exact", head: true })
+        .eq("course_id", courseId);
+      // Delete related records
+      await supabase.from("course_skills").delete().eq("course_id", courseId);
+      await supabase.from("program_courses").delete().eq("course_id", courseId);
+      const { error } = await supabase.from("college_courses").delete().eq("id", courseId);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ success: true, had_program_assignments: (count || 0) > 0 });
+    }
+
+    // POST /api/colleges/:id/programs/:pid/courses — Add course to program
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+\/courses$/) && req.method === "POST") {
+      const parts = path.split("/");
+      const programId = parts[4];
+      const { course_id, course_type, year_of_study, sort_order } = req.body || {};
+      if (!course_id) return res.status(400).json({ error: "course_id is required" });
+
+      // Check for duplicates
+      const { data: existing } = await supabase
+        .from("program_courses")
+        .select("id")
+        .eq("program_id", programId)
+        .eq("course_id", course_id)
+        .maybeSingle();
+      if (existing) return res.status(400).json({ error: "Course already assigned to this program" });
+
+      const { data, error } = await supabase
+        .from("program_courses")
+        .insert({
+          program_id: programId,
+          course_id,
+          course_type: course_type || "core",
+          year_of_study: year_of_study || null,
+          sort_order: sort_order || 0,
+        })
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.status(201).json(data);
+    }
+
+    // PATCH /api/colleges/:id/programs/:pid/courses/:cid — Update program-course assignment
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+\/courses\/[^/]+$/) && req.method === "PATCH") {
+      const parts = path.split("/");
+      const programId = parts[4];
+      const courseId = parts[6];
+      const { course_type, year_of_study, sort_order } = req.body || {};
+      const updates: Record<string, any> = {};
+      if (course_type !== undefined) updates.course_type = course_type;
+      if (year_of_study !== undefined) updates.year_of_study = year_of_study;
+      if (sort_order !== undefined) updates.sort_order = sort_order;
+
+      const { data, error } = await supabase
+        .from("program_courses")
+        .update(updates)
+        .eq("program_id", programId)
+        .eq("course_id", courseId)
+        .select()
+        .single();
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(data);
+    }
+
+    // DELETE /api/colleges/:id/programs/:pid/courses/:cid — Remove course from program
+    if (path.match(/^\/colleges\/[^/]+\/programs\/[^/]+\/courses\/[^/]+$/) && req.method === "DELETE") {
+      const parts = path.split("/");
+      const programId = parts[4];
+      const courseId = parts[6];
+      const { error } = await supabase
+        .from("program_courses")
+        .delete()
+        .eq("program_id", programId)
+        .eq("course_id", courseId);
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json({ success: true });
     }
 
     return res.status(404).json({ error: "Not found", path });

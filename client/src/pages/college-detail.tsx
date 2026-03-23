@@ -1,9 +1,12 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { authFetch } from "@/lib/queryClient";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { authFetch, apiRequest } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -11,8 +14,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   ArrowLeft, BookOpen, Code2, Sparkles, MapPin, Calendar,
   GraduationCap, Loader2, Search, ExternalLink, BarChart3,
+  Pencil, Trash2, Plus,
 } from "lucide-react";
 import { Link } from "wouter";
 import { ResponsiveContainer, Tooltip as RTooltip, Cell, PieChart, Pie, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend } from "recharts";
@@ -24,6 +35,8 @@ const DEGREE_COLORS: Record<string, string> = {
   graduate_certificate: "bg-amber-100 text-amber-700",
   diploma: "bg-green-100 text-green-700",
 };
+
+const DEGREE_TYPES = ["bachelor", "master", "phd", "graduate_certificate", "diploma"];
 
 const SKILL_COLORS = ["#3b82f6", "#8b5cf6", "#10b981", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#6366f1"];
 
@@ -47,10 +60,13 @@ interface Program {
   abbreviation: string | null;
   major: string | null;
   school_name: string | null;
+  school_id: string | null;
   course_count: number;
   skill_count: number;
   duration_years: number | null;
   total_credit_points: number | null;
+  description: string | null;
+  learning_outcomes: string[];
 }
 
 interface Course {
@@ -61,15 +77,368 @@ interface Course {
   department_prefix: string | null;
   level: number | null;
   skill_count: number;
+  description: string | null;
+  prerequisites: string | null;
+  hours_format: string | null;
 }
 
+// ==================== Edit College Dialog ====================
+function EditCollegeDialog({ open, onOpenChange, college }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  college: CollegeDetail;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const [name, setName] = useState(college.name);
+  const [shortName, setShortName] = useState(college.short_name || "");
+  const [country, setCountry] = useState(college.country || "");
+  const [city, setCity] = useState(college.city || "");
+  const [website, setWebsite] = useState(college.website || "");
+  const [catalogYear, setCatalogYear] = useState(college.catalog_year || "");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("PATCH", `/api/colleges/${college.id}`, {
+        name, short_name: shortName || null, country: country || null,
+        city: city || null, website: website || null, catalog_year: catalogYear || null,
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "College updated" });
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", college.id] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit College</DialogTitle>
+          <DialogDescription>Update college information.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Name *</Label>
+            <Input className="h-8 text-xs" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Short Name</Label>
+              <Input className="h-8 text-xs" value={shortName} onChange={(e) => setShortName(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Catalog Year</Label>
+              <Input className="h-8 text-xs" value={catalogYear} onChange={(e) => setCatalogYear(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Country</Label>
+              <Input className="h-8 text-xs" value={country} onChange={(e) => setCountry(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">City</Label>
+              <Input className="h-8 text-xs" value={city} onChange={(e) => setCity(e.target.value)} />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Website</Label>
+            <Input className="h-8 text-xs" value={website} onChange={(e) => setWebsite(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" onClick={() => mutation.mutate()} disabled={!name || mutation.isPending}>
+            {mutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+            Save
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ==================== Program Dialog (Create/Edit) ====================
+function ProgramDialog({ open, onOpenChange, collegeId, schools, program }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  collegeId: string;
+  schools: any[];
+  program?: Program | null;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const isEdit = !!program;
+
+  const [name, setName] = useState(program?.name || "");
+  const [schoolId, setSchoolId] = useState(program?.school_id || "none");
+  const [degreeType, setDegreeType] = useState(program?.degree_type || "bachelor");
+  const [abbreviation, setAbbreviation] = useState(program?.abbreviation || "");
+  const [major, setMajor] = useState(program?.major || "");
+  const [durationYears, setDurationYears] = useState(program?.duration_years?.toString() || "");
+  const [totalCreditPoints, setTotalCreditPoints] = useState(program?.total_credit_points?.toString() || "");
+  const [description, setDescription] = useState(program?.description || "");
+  const [learningOutcomes, setLearningOutcomes] = useState((program?.learning_outcomes || []).join("\n"));
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        name,
+        school_id: schoolId === "none" ? null : schoolId,
+        degree_type: degreeType,
+        abbreviation: abbreviation || null,
+        major: major || null,
+        duration_years: durationYears ? parseFloat(durationYears) : null,
+        total_credit_points: totalCreditPoints ? parseInt(totalCreditPoints) : null,
+        description: description || null,
+        learning_outcomes: learningOutcomes ? learningOutcomes.split("\n").filter((s) => s.trim()) : [],
+      };
+      if (isEdit) {
+        const res = await apiRequest("PATCH", `/api/colleges/${collegeId}/programs/${program.id}`, body);
+        return res.json();
+      } else {
+        const res = await apiRequest("POST", `/api/colleges/${collegeId}/programs`, body);
+        return res.json();
+      }
+    },
+    onSuccess: () => {
+      toast({ title: isEdit ? "Program updated" : "Program created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId, "programs"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Edit Program" : "Add Program"}</DialogTitle>
+          <DialogDescription>{isEdit ? "Update program details." : "Create a new program."}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="space-y-1">
+            <Label className="text-xs">Name *</Label>
+            <Input className="h-8 text-xs" placeholder="e.g. Bachelor of Computer Science" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Degree Type *</Label>
+              <Select value={degreeType} onValueChange={setDegreeType}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {DEGREE_TYPES.map((d) => (
+                    <SelectItem key={d} value={d}>{d.replace(/_/g, " ")}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">School</Label>
+              <Select value={schoolId} onValueChange={setSchoolId}>
+                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No school</SelectItem>
+                  {schools.map((s: any) => (
+                    <SelectItem key={s.id} value={s.id}>{s.name}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Abbreviation</Label>
+              <Input className="h-8 text-xs" placeholder="e.g. BCS" value={abbreviation} onChange={(e) => setAbbreviation(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Major/Specialization</Label>
+              <Input className="h-8 text-xs" placeholder="e.g. Data Science" value={major} onChange={(e) => setMajor(e.target.value)} />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Duration (years)</Label>
+              <Input className="h-8 text-xs" type="number" value={durationYears} onChange={(e) => setDurationYears(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Total Credit Points</Label>
+              <Input className="h-8 text-xs" type="number" value={totalCreditPoints} onChange={(e) => setTotalCreditPoints(e.target.value)} />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Description</Label>
+            <Textarea className="text-xs min-h-[60px]" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Learning Outcomes (one per line)</Label>
+            <Textarea className="text-xs min-h-[80px]" placeholder="Enter each learning outcome on a new line" value={learningOutcomes} onChange={(e) => setLearningOutcomes(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" onClick={() => mutation.mutate()} disabled={!name || !degreeType || mutation.isPending}>
+            {mutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+            {isEdit ? "Save" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ==================== Course Dialog (Create/Edit) ====================
+function CourseDialog({ open, onOpenChange, collegeId, course }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  collegeId: string;
+  course?: Course | null;
+}) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const isEdit = !!course;
+
+  const [code, setCode] = useState(course?.code || "");
+  const [name, setName] = useState(course?.name || "");
+  const [creditPoints, setCreditPoints] = useState(course?.credit_points?.toString() || "6");
+  const [description, setDescription] = useState(course?.description || "");
+  const [prerequisites, setPrerequisites] = useState(course?.prerequisites || "");
+  const [hoursFormat, setHoursFormat] = useState(course?.hours_format || "");
+
+  const mutation = useMutation({
+    mutationFn: async () => {
+      const body = {
+        code, name,
+        credit_points: parseInt(creditPoints) || 6,
+        description: description || null,
+        prerequisites: prerequisites || null,
+        hours_format: hoursFormat || null,
+      };
+      if (isEdit) {
+        const res = await apiRequest("PATCH", `/api/colleges/${collegeId}/courses/${course.id}`, body);
+        return res.json();
+      } else {
+        const res = await apiRequest("POST", `/api/colleges/${collegeId}/courses`, body);
+        return res.json();
+      }
+    },
+    onSuccess: () => {
+      toast({ title: isEdit ? "Course updated" : "Course created" });
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId, "courses"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId] });
+      onOpenChange(false);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{isEdit ? "Edit Course" : "Add Course"}</DialogTitle>
+          <DialogDescription>{isEdit ? "Update course details." : "Create a new course."}</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 py-2">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Code *</Label>
+              <Input className="h-8 text-xs font-mono" placeholder="e.g. ACCY121" value={code} onChange={(e) => setCode(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Credit Points</Label>
+              <Input className="h-8 text-xs" type="number" value={creditPoints} onChange={(e) => setCreditPoints(e.target.value)} />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Name *</Label>
+            <Input className="h-8 text-xs" placeholder="e.g. Introduction to Accounting" value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Description</Label>
+            <Textarea className="text-xs min-h-[60px]" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Prerequisites</Label>
+            <Input className="h-8 text-xs" placeholder="e.g. ACCY121 & ACCY122" value={prerequisites} onChange={(e) => setPrerequisites(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Hours Format</Label>
+            <Input className="h-8 text-xs" placeholder="e.g. L-2, T-2" value={hoursFormat} onChange={(e) => setHoursFormat(e.target.value)} />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>Cancel</Button>
+          <Button size="sm" onClick={() => mutation.mutate()} disabled={!code || !name || mutation.isPending}>
+            {mutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+            {isEdit ? "Save" : "Create"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// ==================== Delete Confirmation Dialog ====================
+function DeleteConfirmDialog({ open, onOpenChange, title, description, onConfirm, isPending }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  title: string;
+  description: string;
+  onConfirm: () => void;
+  isPending: boolean;
+}) {
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={onConfirm}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            disabled={isPending}
+          >
+            {isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+            Delete
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+// ==================== Main College Detail Page ====================
 export default function CollegeDetail({ params }: { params: { id: string } }) {
   const collegeId = params.id;
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
   const [tab, setTab] = useState("programs");
   const [courseSearch, setCourseSearch] = useState("");
   const [prefixFilter, setPrefixFilter] = useState("all");
   const [levelFilter, setLevelFilter] = useState("all");
   const [compareIds, setCompareIds] = useState<string[]>([]);
+
+  // Dialog states
+  const [editCollegeOpen, setEditCollegeOpen] = useState(false);
+  const [programDialogOpen, setProgramDialogOpen] = useState(false);
+  const [editingProgram, setEditingProgram] = useState<Program | null>(null);
+  const [courseDialogOpen, setCourseDialogOpen] = useState(false);
+  const [editingCourse, setEditingCourse] = useState<Course | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<{ type: "program" | "course"; id: string; name: string } | null>(null);
 
   const { data: college, isLoading } = useQuery<CollegeDetail>({
     queryKey: ["/api/colleges", collegeId],
@@ -135,6 +504,30 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
     enabled: compareIds.length >= 2 && tab === "analytics",
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: async () => {
+      if (!deleteTarget) return;
+      if (deleteTarget.type === "program") {
+        await apiRequest("DELETE", `/api/colleges/${collegeId}/programs/${deleteTarget.id}`);
+      } else {
+        await apiRequest("DELETE", `/api/colleges/${collegeId}/courses/${deleteTarget.id}`);
+      }
+    },
+    onSuccess: () => {
+      toast({ title: `${deleteTarget?.type === "program" ? "Program" : "Course"} deleted` });
+      if (deleteTarget?.type === "program") {
+        queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId, "programs"] });
+      } else {
+        queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId, "courses"] });
+      }
+      queryClient.invalidateQueries({ queryKey: ["/api/colleges", collegeId] });
+      setDeleteTarget(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Error", description: err.message, variant: "destructive" });
+    },
+  });
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-20">
@@ -189,6 +582,9 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight">{college.name}</h1>
             {college.short_name && <Badge variant="secondary">{college.short_name}</Badge>}
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditCollegeOpen(true)}>
+              <Pencil className="h-3.5 w-3.5" />
+            </Button>
           </div>
           <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
             {(college.city || college.country) && (
@@ -252,16 +648,21 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
 
         {/* Programs Tab */}
         <TabsContent value="programs" className="space-y-6">
+          <div className="flex justify-end">
+            <Button size="sm" onClick={() => { setEditingProgram(null); setProgramDialogOpen(true); }}>
+              <Plus className="h-3.5 w-3.5 mr-1" />Add Program
+            </Button>
+          </div>
           {Object.entries(programsBySchool).map(([school, progs]) => (
             <div key={school}>
               <h3 className="text-lg font-semibold mb-3">{school}</h3>
               <div className="grid gap-3 md:grid-cols-2">
                 {progs.map((p) => (
-                  <Link key={p.id} href={`/colleges/${collegeId}/programs/${p.id}`}>
-                    <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-                      <CardContent className="pt-4 pb-4">
-                        <div className="flex items-start justify-between">
-                          <div>
+                  <Card key={p.id} className="hover:border-primary/50 transition-colors">
+                    <CardContent className="pt-4 pb-4">
+                      <div className="flex items-start justify-between">
+                        <Link href={`/colleges/${collegeId}/programs/${p.id}`}>
+                          <div className="cursor-pointer flex-1">
                             <p className="font-medium">{p.name}</p>
                             <div className="flex items-center gap-2 mt-1">
                               <Badge className={DEGREE_COLORS[p.degree_type] || "bg-gray-100 text-gray-700"}>
@@ -270,16 +671,24 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
                               {p.abbreviation && <Badge variant="outline">{p.abbreviation}</Badge>}
                             </div>
                           </div>
+                        </Link>
+                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={(e) => { e.preventDefault(); setEditingProgram(p); setProgramDialogOpen(true); }}>
+                            <Pencil className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={(e) => { e.preventDefault(); setDeleteTarget({ type: "program", id: p.id, name: p.name }); }}>
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
                         </div>
-                        <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
-                          <span>{p.course_count} courses</span>
-                          <span>{p.skill_count} skills</span>
-                          {p.duration_years && <span>{p.duration_years}yr</span>}
-                          {p.total_credit_points && <span>{p.total_credit_points}cp</span>}
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </Link>
+                      </div>
+                      <div className="flex items-center gap-4 mt-3 text-xs text-muted-foreground">
+                        <span>{p.course_count} courses</span>
+                        <span>{p.skill_count} skills</span>
+                        {p.duration_years && <span>{p.duration_years}yr</span>}
+                        {p.total_credit_points && <span>{p.total_credit_points}cp</span>}
+                      </div>
+                    </CardContent>
+                  </Card>
                 ))}
               </div>
             </div>
@@ -307,6 +716,9 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
                 {[100, 200, 300, 400].map((l) => <SelectItem key={l} value={String(l)}>{l}-level</SelectItem>)}
               </SelectContent>
             </Select>
+            <Button size="sm" onClick={() => { setEditingCourse(null); setCourseDialogOpen(true); }}>
+              <Plus className="h-3.5 w-3.5 mr-1" />Add Course
+            </Button>
           </div>
           <Card>
             <Table>
@@ -317,23 +729,34 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
                   <TableHead>Credits</TableHead>
                   <TableHead>Level</TableHead>
                   <TableHead>Skills</TableHead>
+                  <TableHead className="w-[80px]">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {(courses || []).map((c) => (
-                  <TableRow key={c.id} className="cursor-pointer" onClick={() => window.location.hash = `#/colleges/${collegeId}/courses/${c.id}`}>
-                    <TableCell className="font-mono font-medium">{c.code}</TableCell>
-                    <TableCell>{c.name}</TableCell>
+                  <TableRow key={c.id}>
+                    <TableCell className="font-mono font-medium cursor-pointer" onClick={() => window.location.hash = `#/colleges/${collegeId}/courses/${c.id}`}>{c.code}</TableCell>
+                    <TableCell className="cursor-pointer" onClick={() => window.location.hash = `#/colleges/${collegeId}/courses/${c.id}`}>{c.name}</TableCell>
                     <TableCell>{c.credit_points}</TableCell>
                     <TableCell>{c.level}</TableCell>
                     <TableCell>
                       <Badge variant="secondary">{c.skill_count}</Badge>
                     </TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => { setEditingCourse(c); setCourseDialogOpen(true); }}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setDeleteTarget({ type: "course", id: c.id, name: `${c.code} — ${c.name}` })}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 ))}
                 {(!courses || courses.length === 0) && (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-muted-foreground py-8">No courses found</TableCell>
+                    <TableCell colSpan={6} className="text-center text-muted-foreground py-8">No courses found</TableCell>
                   </TableRow>
                 )}
               </TableBody>
@@ -456,6 +879,38 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* Dialogs */}
+      {editCollegeOpen && (
+        <EditCollegeDialog open={editCollegeOpen} onOpenChange={setEditCollegeOpen} college={college} />
+      )}
+      {programDialogOpen && (
+        <ProgramDialog
+          open={programDialogOpen}
+          onOpenChange={setProgramDialogOpen}
+          collegeId={collegeId}
+          schools={college.schools}
+          program={editingProgram}
+        />
+      )}
+      {courseDialogOpen && (
+        <CourseDialog
+          open={courseDialogOpen}
+          onOpenChange={setCourseDialogOpen}
+          collegeId={collegeId}
+          course={editingCourse}
+        />
+      )}
+      {deleteTarget && (
+        <DeleteConfirmDialog
+          open={!!deleteTarget}
+          onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+          title={`Delete ${deleteTarget.type === "program" ? "Program" : "Course"}`}
+          description={`Are you sure you want to delete "${deleteTarget.name}"? This action cannot be undone.${deleteTarget.type === "course" ? " This will also remove it from any programs it's assigned to." : ""}`}
+          onConfirm={() => deleteMutation.mutate()}
+          isPending={deleteMutation.isPending}
+        />
+      )}
     </div>
   );
 }
