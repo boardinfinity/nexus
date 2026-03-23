@@ -6834,3 +6834,4 @@ async function handlePlaceIntelRoutes(path: string, req: VercelRequest, res: Ver
 
   return res.status(404).json({ error: "PlaceIntel endpoint not found", path });
 }
+// Board Hub service_role key configured
