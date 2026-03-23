@@ -30,6 +30,8 @@ import ProgramDetail from "@/pages/program-detail";
 import CourseDetailPage from "@/pages/course-detail";
 import SurveyLanding from "@/pages/survey-landing";
 import SurveyForm from "@/pages/survey-form";
+import PlacementForm from "@/pages/placement-form";
+import PlaceIntelAdmin from "@/pages/placeintel-admin";
 import { Loader2 } from "lucide-react";
 
 function AppRouter() {
@@ -54,6 +56,7 @@ function AppRouter() {
       <Route path="/colleges/:id/programs/:pid">{(params) => <ProgramDetail params={params} />}</Route>
       <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
       <Route path="/reports" component={Reports} />
+      <Route path="/placeintel-admin" component={PlaceIntelAdmin} />
       <Route component={NotFound} />
     </Switch>
   );
@@ -96,6 +99,15 @@ function RootRouter() {
       <Switch>
         <Route path="/survey" component={SurveyLanding} />
         <Route path="/survey/form" component={SurveyForm} />
+      </Switch>
+    );
+  }
+
+  // PlaceIntel form is standalone — uses its own OTP auth, no main app auth
+  if (location.startsWith("/placement-form/")) {
+    return (
+      <Switch>
+        <Route path="/placement-form/:college_id">{(params) => <PlacementForm params={params} />}</Route>
       </Switch>
     );
   }

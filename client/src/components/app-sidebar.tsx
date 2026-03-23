@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
   BookOpen, Sparkles, Upload, CalendarClock,
-  ClipboardList, ShieldCheck, FileText, GraduationCap,
+  ClipboardList, ShieldCheck, FileText, GraduationCap, ClipboardCheck,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -28,6 +28,7 @@ const navItems = [
   { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles },
   { title: "Monitoring", href: "/monitoring", icon: Activity },
   { title: "Survey Admin", href: "/survey-admin", icon: ClipboardList },
+  { title: "PlaceIntel", href: "/placeintel-admin", icon: ClipboardCheck },
   { title: "Colleges", href: "/colleges", icon: GraduationCap },
   { title: "Reports", href: "/reports", icon: FileText },
   { title: "Settings", href: "/settings", icon: Settings },
