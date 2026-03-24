@@ -33,45 +33,16 @@ export async function handleCompaniesRoutes(path: string, req: VercelRequest, re
 
     let enriched = 0;
     for (const company of companies || []) {
-      const { data: jobs } = await supabase
-        .from("jobs")
-        .select("id, location_city, location_state, location_country, employment_type")
-        .eq("company_id", company.id);
+      // Use RPC to get aggregated job stats instead of fetching all rows
+      const { data: stats } = await supabase.rpc("get_company_job_stats", { p_company_id: company.id });
+      const jobStats = Array.isArray(stats) ? stats[0] : stats;
 
-      if (!jobs || jobs.length === 0) continue;
-
-      const locationCounts: Record<string, number> = {};
-      const countryCounts: Record<string, number> = {};
-      for (const j of jobs) {
-        if (j.location_city) locationCounts[j.location_city] = (locationCounts[j.location_city] || 0) + 1;
-        if (j.location_country) countryCounts[j.location_country] = (countryCounts[j.location_country] || 0) + 1;
-      }
-      const topCity = Object.entries(locationCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-      const topCountry = Object.entries(countryCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-      const topState = jobs.find(j => j.location_city === topCity)?.location_state || null;
-
-      const jobIds = jobs.map(j => j.id);
-      const { data: skills } = await supabase
-        .from("job_skills")
-        .select("skill_name")
-        .in("job_id", jobIds.slice(0, 100));
-
-      const skillCounts: Record<string, number> = {};
-      for (const s of skills || []) {
-        skillCounts[s.skill_name] = (skillCounts[s.skill_name] || 0) + 1;
-      }
-      const topSkills = Object.entries(skillCounts)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 10)
-        .map(([name]) => name);
+      if (!jobStats || jobStats.job_count === 0) continue;
 
       const updates: Record<string, any> = {
         updated_at: new Date().toISOString(),
       };
-      if (topCity) updates.headquarters_city = topCity;
-      if (topState) updates.headquarters_state = topState;
-      if (topCountry) updates.headquarters_country = topCountry;
-      if (topSkills.length > 0) updates.specialities = topSkills;
+      if (jobStats.top_location) updates.headquarters_city = jobStats.top_location;
 
       const { data: current } = await supabase.from("companies").select("*").eq("id", company.id).single();
       if (current) {
@@ -93,35 +64,27 @@ export async function handleCompaniesRoutes(path: string, req: VercelRequest, re
 
   if (path === "/companies/deduplicate" && req.method === "POST") {
     if (!requirePermission("companies", "full")(auth, res)) return;
-    const { data: companies, error: fetchErr } = await supabase
-      .from("companies")
-      .select("id, name, name_normalized, domain, website, linkedin_url, logo_url, industry, sub_industry, company_type, founded_year, size_range, employee_count, headquarters_city, headquarters_state, headquarters_country, description, specialities, enrichment_score");
-    if (fetchErr) return res.status(500).json({ error: fetchErr.message });
 
-    for (const c of companies || []) {
-      if (!c.name_normalized && c.name) {
-        const norm = c.name.toLowerCase()
-          .replace(/\s*(pvt\.?\s*ltd\.?|ltd\.?|inc\.?|llc|corp\.?|corporation|private\s+limited|limited|india)\s*$/gi, "")
-          .replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
-        c.name_normalized = norm;
-        await supabase.from("companies").update({ name_normalized: norm }).eq("id", c.id);
-      }
-    }
-
-    const groups: Record<string, typeof companies> = {};
-    for (const c of companies || []) {
-      const key = c.name_normalized || c.name?.toLowerCase() || c.id;
-      if (!groups[key]) groups[key] = [];
-      groups[key].push(c);
-    }
+    // Use RPC to find duplicate groups by normalized name instead of fetching all companies
+    const { data: dupGroups, error: dupErr } = await supabase.rpc("find_duplicate_companies");
+    if (dupErr) return res.status(500).json({ error: dupErr.message });
 
     let merged = 0;
-    for (const [, group] of Object.entries(groups)) {
-      if (group.length <= 1) continue;
+    for (const group of dupGroups || []) {
+      const companyIds: string[] = group.company_ids;
+      if (companyIds.length <= 1) continue;
 
-      group.sort((a: any, b: any) => (b.enrichment_score || 0) - (a.enrichment_score || 0));
-      const keeper = group[0];
-      const duplicates = group.slice(1);
+      // Fetch full details only for duplicate groups
+      const { data: groupCompanies } = await supabase
+        .from("companies")
+        .select("id, name, name_normalized, domain, website, linkedin_url, logo_url, industry, sub_industry, company_type, founded_year, size_range, employee_count, headquarters_city, headquarters_state, headquarters_country, description, specialities, enrichment_score")
+        .in("id", companyIds);
+
+      if (!groupCompanies || groupCompanies.length <= 1) continue;
+
+      groupCompanies.sort((a: any, b: any) => (b.enrichment_score || 0) - (a.enrichment_score || 0));
+      const keeper = groupCompanies[0];
+      const duplicates = groupCompanies.slice(1);
 
       const fillFields = ["domain", "website", "linkedin_url", "logo_url", "industry", "sub_industry", "company_type", "founded_year", "size_range", "employee_count", "headquarters_city", "headquarters_state", "headquarters_country", "description"];
       const updates: Record<string, any> = {};
@@ -145,7 +108,7 @@ export async function handleCompaniesRoutes(path: string, req: VercelRequest, re
       merged += duplicates.length;
     }
 
-    return res.json({ success: true, merged, groups_found: Object.values(groups).filter((g: any) => g.length > 1).length });
+    return res.json({ success: true, merged, groups_found: (dupGroups || []).length });
   }
 
   if (path.match(/^\/companies\/[^/]+$/) && req.method === "PATCH") {

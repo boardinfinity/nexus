@@ -965,7 +965,9 @@ async function extractImplicitData(description: string, title: string, companyNa
 // ==================== JD ANALYSIS PIPELINE (Feature 5 — Enhanced jd_enrichment) ====================
 
 async function executeJDEnrichment(runId: string, config: any) {
-  const batchSize = Math.min(parseInt(config.batch_size) || 25, 100);
+  const batchSize = Math.min(parseInt(config.batch_size) || 50, 200);
+  const GPT_BATCH = 5; // jobs per GPT call
+  const CONCURRENCY = 3; // parallel GPT calls
 
   const { data: jobs, error } = await supabase
     .from("jobs")
@@ -992,137 +994,167 @@ async function executeJDEnrichment(runId: string, config: any) {
   let processed = 0;
   let failed = 0;
 
-  // Process in parallel batches of 5
-  for (let i = 0; i < validJobs.length; i += 5) {
-    const batch = validJobs.slice(i, i + 5);
-    const results = await Promise.allSettled(
-      batch.map(async (job) => {
-        // Call GPT-4o-mini with enhanced extraction prompt
-        const response = await fetch("https://api.openai.com/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${OPENAI_API_KEY}`,
-          },
-          body: JSON.stringify({
-            model: "gpt-5.4-nano",
-            messages: [
-              {
-                role: "system",
-                content: `You are an expert job description analyst. Extract structured information from job descriptions and return JSON.
+  // Helper: process a batch of jobs in a single GPT call (batch skill + field extraction)
+  async function processBatchGPT(batch: typeof validJobs) {
+    const descriptions = batch.map(j =>
+      `[JOB_ID:${j.id}]\nTitle: ${j.title}\nCompany: ${j.company_name || "Unknown"}\nDescription: ${j.description!.slice(0, 2000)}`
+    ).join("\n\n===\n\n");
+
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${OPENAI_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-5.4-nano",
+        messages: [
+          {
+            role: "system",
+            content: `You are an expert job description analyst. Extract structured information from EACH job description below and return JSON.
 
 Return a JSON object with:
-- skills: array of { name: string, type: "technical" | "soft" | "domain" | "tool", required: boolean, confidence: number (0-1) }
-  Extract 10-40 skills. Be specific (e.g. "React.js" not "frontend", "PostgreSQL" not "database").
-- experience: { min_years: number|null, max_years: number|null, level: "entry"|"mid"|"senior"|"lead"|"executive"|null }
-- education: string[] (e.g. ["Bachelor's in CS", "Master's preferred"])
-- certifications: string[]
-- industry: string|null (e.g. "fintech", "healthcare")
-- tools_platforms: string[] (specific tools mentioned)
-- work_mode: "remote"|"hybrid"|"onsite"|null
-- responsibilities: string[] (top 5-8 key responsibilities, brief)
-- seniority: "intern"|"entry"|"mid"|"senior"|"lead"|"manager"|"director"|"executive"|null
-- functions: string[] (job function areas, e.g. ["engineering", "data science", "product management"])`,
-              },
-              {
-                role: "user",
-                content: `Job Title: ${job.title}\nCompany: ${job.company_name || "Unknown"}\n\nJob Description:\n${job.description!.slice(0, 6000)}`,
-              },
-            ],
-            temperature: 0.2,
-            max_completion_tokens: 3000,
-            response_format: { type: "json_object" },
-          }),
-        });
+{ "jobs": [
+  {
+    "job_id": "the JOB_ID from the input",
+    "skills": [{ "name": string, "type": "technical"|"soft"|"domain"|"tool", "required": boolean, "confidence": number (0-1) }],
+    "experience": { "min_years": number|null, "max_years": number|null, "level": "entry"|"mid"|"senior"|"lead"|"executive"|null },
+    "education": string[],
+    "certifications": string[],
+    "industry": string|null,
+    "tools_platforms": string[],
+    "work_mode": "remote"|"hybrid"|"onsite"|null,
+    "responsibilities": string[],
+    "seniority": "intern"|"entry"|"mid"|"senior"|"lead"|"manager"|"director"|"executive"|null,
+    "functions": string[]
+  }
+]}
 
-        if (!response.ok) {
-          const errText = await response.text();
-          throw new Error(`OpenAI API error: ${response.status} ${errText}`);
-        }
+Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "PostgreSQL" not "database").`,
+          },
+          {
+            role: "user",
+            content: descriptions,
+          },
+        ],
+        temperature: 0.2,
+        max_completion_tokens: 4000,
+        response_format: { type: "json_object" },
+      }),
+    });
 
-        const aiData = await response.json();
-        const tokenUsage = aiData.usage || {};
-        const content = aiData.choices?.[0]?.message?.content || "{}";
-        const extracted = JSON.parse(content);
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`OpenAI API error: ${response.status} ${errText}`);
+    }
 
-        // Match extracted skills against taxonomy
-        const skills = extracted.skills || [];
-        for (const skill of skills) {
-          if (skill.confidence < 0.6) continue;
+    const aiData = await response.json();
+    const tokenUsage = aiData.usage || {};
+    const content = aiData.choices?.[0]?.message?.content || "{}";
+    const parsed = JSON.parse(content);
+    const jobResults: any[] = parsed.jobs || [];
 
-          let taxonomySkillId: string | null = null;
+    // Map results back to individual jobs
+    const resultMap = new Map<string, any>();
+    for (const jr of jobResults) {
+      if (jr.job_id) resultMap.set(jr.job_id, jr);
+    }
 
-          // Exact match (case-insensitive)
-          const { data: exactMatch } = await supabase
-            .from("taxonomy_skills")
-            .select("id")
-            .ilike("name", skill.name)
-            .limit(1)
-            .maybeSingle();
+    // Process each job's extracted data
+    for (const job of batch) {
+      const extracted = resultMap.get(job.id);
+      if (!extracted) {
+        failed++;
+        continue;
+      }
 
-          if (exactMatch) {
-            taxonomySkillId = exactMatch.id;
-          } else {
-            // Fuzzy match via find_similar_skill RPC
-            try {
-              const { data: fuzzyMatch } = await supabase
-                .rpc("find_similar_skill", { search_term: skill.name })
-                .limit(1)
-                .maybeSingle();
-              if ((fuzzyMatch as any)?.id) {
-                taxonomySkillId = (fuzzyMatch as any).id;
-              }
-            } catch {
-              // RPC may not exist — skip fuzzy matching
+      // Match extracted skills against taxonomy
+      const skills = extracted.skills || [];
+      for (const skill of skills) {
+        if (skill.confidence < 0.6) continue;
+
+        let taxonomySkillId: string | null = null;
+
+        const { data: exactMatch } = await supabase
+          .from("taxonomy_skills")
+          .select("id")
+          .ilike("name", skill.name)
+          .limit(1)
+          .maybeSingle();
+
+        if (exactMatch) {
+          taxonomySkillId = exactMatch.id;
+        } else {
+          try {
+            const { data: fuzzyMatch } = await supabase
+              .rpc("find_similar_skill", { search_term: skill.name })
+              .limit(1)
+              .maybeSingle();
+            if ((fuzzyMatch as any)?.id) {
+              taxonomySkillId = (fuzzyMatch as any).id;
             }
+          } catch {
+            // RPC may not exist — skip fuzzy matching
           }
-
-          await supabase.from("job_skills").upsert({
-            job_id: job.id,
-            skill_name: skill.name,
-            skill_category: skill.type || "technical",
-            confidence_score: skill.confidence,
-            extraction_method: "ai_enhanced",
-            taxonomy_skill_id: taxonomySkillId,
-            is_required: skill.required ?? null,
-          }, { onConflict: "job_id,skill_name" });
         }
 
-        // Update job record with all structured fields
-        const updateFields: any = {
-          enrichment_status: "complete",
-        };
-        if (extracted.experience?.min_years != null) updateFields.min_experience_years = extracted.experience.min_years;
-        if (extracted.experience?.max_years != null) updateFields.max_experience_years = extracted.experience.max_years;
-        if (extracted.education?.length) updateFields.education_requirements = extracted.education;
-        if (extracted.certifications?.length) updateFields.certifications_required = extracted.certifications;
-        if (extracted.work_mode) updateFields.work_mode = extracted.work_mode;
-        if (extracted.industry) updateFields.industry_domain = extracted.industry;
-        if (extracted.tools_platforms?.length) updateFields.tools_platforms = extracted.tools_platforms;
-        if (extracted.seniority) updateFields.seniority_level = extracted.seniority;
+        await supabase.from("job_skills").upsert({
+          job_id: job.id,
+          skill_name: skill.name,
+          skill_category: skill.type || "technical",
+          confidence_score: skill.confidence,
+          extraction_method: "ai_enhanced",
+          taxonomy_skill_id: taxonomySkillId,
+          is_required: skill.required ?? null,
+        }, { onConflict: "job_id,skill_name" });
+      }
 
-        await supabase.from("jobs").update(updateFields).eq("id", job.id);
+      // Update job record with structured fields
+      const updateFields: any = {
+        enrichment_status: "complete",
+      };
+      if (extracted.experience?.min_years != null) updateFields.min_experience_years = extracted.experience.min_years;
+      if (extracted.experience?.max_years != null) updateFields.max_experience_years = extracted.experience.max_years;
+      if (extracted.education?.length) updateFields.education_requirements = extracted.education;
+      if (extracted.certifications?.length) updateFields.certifications_required = extracted.certifications;
+      if (extracted.work_mode) updateFields.work_mode = extracted.work_mode;
+      if (extracted.industry) updateFields.industry_domain = extracted.industry;
+      if (extracted.tools_platforms?.length) updateFields.tools_platforms = extracted.tools_platforms;
+      if (extracted.seniority) updateFields.seniority_level = extracted.seniority;
 
-        // Log enrichment
-        await supabase.from("enrichment_logs").insert({
-          entity_type: "job",
-          entity_id: job.id,
-          provider: "openai",
-          operation: "jd_analysis",
-          status: "success",
-          credits_used: tokenUsage.total_tokens || 0,
-          details: { skills_extracted: skills.length, model: "gpt-5.4-nano", tokens: tokenUsage },
-        });
-      })
+      await supabase.from("jobs").update(updateFields).eq("id", job.id);
+
+      await supabase.from("enrichment_logs").insert({
+        entity_type: "job",
+        entity_id: job.id,
+        provider: "openai",
+        operation: "jd_analysis",
+        status: "success",
+        credits_used: Math.round((tokenUsage.total_tokens || 0) / batch.length),
+        details: { skills_extracted: skills.length, model: "gpt-5.4-nano", tokens: tokenUsage, batch_size: batch.length },
+      });
+
+      processed++;
+    }
+  }
+
+  // Split jobs into GPT batches of 5, then run 3 GPT calls concurrently
+  const gptBatches: (typeof validJobs)[] = [];
+  for (let i = 0; i < validJobs.length; i += GPT_BATCH) {
+    gptBatches.push(validJobs.slice(i, i + GPT_BATCH));
+  }
+
+  for (let i = 0; i < gptBatches.length; i += CONCURRENCY) {
+    const concurrentBatches = gptBatches.slice(i, i + CONCURRENCY);
+    const results = await Promise.allSettled(
+      concurrentBatches.map(batch => processBatchGPT(batch))
     );
 
     for (const r of results) {
-      if (r.status === "fulfilled") {
-        processed++;
-      } else {
-        failed++;
-        console.error("[JD Analysis] Error:", r.reason?.message || r.reason);
-        // Log failure for any job in the batch that failed
+      if (r.status === "rejected") {
+        // Count all jobs in the failed batch as failures
+        failed += GPT_BATCH;
+        console.error("[JD Analysis] Batch error:", r.reason?.message || r.reason);
       }
     }
 
@@ -1131,8 +1163,8 @@ Return a JSON object with:
       failed_items: failed,
     }).eq("id", runId);
 
-    // Rate limit: 2 second delay between batches
-    if (i + 5 < validJobs.length) {
+    // Rate limit: 2 second delay between concurrent rounds
+    if (i + CONCURRENCY < gptBatches.length) {
       await new Promise(r => setTimeout(r, 2000));
     }
   }
