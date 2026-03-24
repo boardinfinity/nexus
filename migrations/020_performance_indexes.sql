@@ -47,7 +47,7 @@ AS $$
   SELECT json_build_object(
     'total', (SELECT COUNT(*) FROM taxonomy_skills),
     'by_category', (
-      SELECT json_object_agg(category, cnt)
+      SELECT COALESCE(json_object_agg(category, cnt), '{}'::json)
       FROM (
         SELECT category, COUNT(*) AS cnt
         FROM taxonomy_skills

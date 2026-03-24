@@ -10,7 +10,7 @@ CREATE OR REPLACE FUNCTION get_colleges_with_stats(
 RETURNS TABLE(
   id uuid, name text, short_name text, country text, city text,
   website text, catalog_year text, board_hub_account_id text,
-  catalog_status text, created_at timestamptz,
+  created_at timestamptz,
   program_count bigint, course_count bigint, skill_count bigint
 ) AS $$
 BEGIN
@@ -18,7 +18,7 @@ BEGIN
   SELECT
     c.id, c.name, c.short_name, c.country, c.city,
     c.website, c.catalog_year, c.board_hub_account_id,
-    c.catalog_status, c.created_at,
+    c.created_at,
     COALESCE(p.cnt, 0) AS program_count,
     COALESCE(cr.cnt, 0) AS course_count,
     COALESCE(s.cnt, 0) AS skill_count
