@@ -142,7 +142,7 @@ export default function Taxonomy() {
       <div className="grid gap-4 md:grid-cols-4">
         <Card>
           <CardContent className="pt-4">
-            <div className="text-2xl font-bold">{stats?.total?.toLocaleString() || "—"}</div>
+            <div className="text-2xl font-bold">{stats?.total != null ? stats.total.toLocaleString() : "—"}</div>
             <p className="text-xs text-muted-foreground">Total Skills</p>
           </CardContent>
         </Card>
@@ -151,7 +151,7 @@ export default function Taxonomy() {
             <div className="flex items-center gap-2">
               <Flame className="h-5 w-5 text-orange-500" />
               <div>
-                <div className="text-2xl font-bold">{stats?.hot_technologies || "—"}</div>
+                <div className="text-2xl font-bold">{stats?.hot_technologies != null ? stats.hot_technologies.toLocaleString() : "—"}</div>
                 <p className="text-xs text-muted-foreground">Hot Technologies</p>
               </div>
             </div>

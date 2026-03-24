@@ -29,7 +29,7 @@ export async function handlePeopleRoutes(path: string, req: VercelRequest, res: 
 
   if (path.match(/^\/people\/[^/]+$/) && req.method === "GET") {
     const id = path.split("/").pop();
-    const { data, error } = await supabase.from("people").select("*").eq("id", id).single();
+    const { data, error } = await supabase.from("people").select("*, company:companies!current_company_id(name)").eq("id", id).single();
     if (error) return res.status(404).json({ error: "Person not found" });
     return res.json(data);
   }

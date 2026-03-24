@@ -233,7 +233,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleSettingsRoutes(path, req, res, auth);
     } else if (path.startsWith("/users")) {
       result = await handleUsersRoutes(path, req, res, auth);
-    } else if (path.startsWith("/taxonomy") || path.startsWith("/skills")) {
+    } else if (path.startsWith("/taxonomy") || path.startsWith("/skills") || path === "/analyze-jd") {
       result = await handleTaxonomyRoutes(path, req, res, auth);
     } else if (path.startsWith("/analytics") || path.startsWith("/export")) {
       result = await handleAnalyticsRoutes(path, req, res, auth);

@@ -78,15 +78,19 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/analytics/jobs-by-source" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const { data, error } = await supabase.rpc('get_jobs_by_source', {
-        p_source: source || null,
-        p_country: country || null,
-        p_status: status || null,
-        p_date_from: date_from || null,
-        p_date_to: date_to || null,
-      });
-      if (error) return res.status(500).json({ error: error.message });
-      return res.json(data || []);
+      try {
+        const { data, error } = await supabase.rpc('get_jobs_by_source', {
+          p_source: source || null,
+          p_country: country || null,
+          p_status: status || null,
+          p_date_from: date_from || null,
+          p_date_to: date_to || null,
+        });
+        if (error) return res.json([]);
+        return res.json(data || []);
+      } catch {
+        return res.json([]);
+      }
     }
 
     if (path === "/analytics/jobs-by-region" && req.method === "GET") {
@@ -183,7 +187,7 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
           p_date_from: date_from || null,
           p_date_to: date_to || null,
         });
-        if (error) return res.status(500).json({ error: error.message });
+        if (error) return res.json([]);
         return res.json(data || []);
       } catch {
         return res.json([]);
@@ -192,17 +196,21 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/analytics/timeline" && req.method === "GET") {
       const { granularity = "day", days = "30", source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const { data, error } = await supabase.rpc('get_jobs_timeline', {
-        p_days: parseInt(days),
-        p_granularity: granularity,
-        p_source: source || null,
-        p_country: country || null,
-        p_status: status || null,
-        p_date_from: date_from || null,
-        p_date_to: date_to || null,
-      });
-      if (error) return res.status(500).json({ error: error.message });
-      return res.json(data || []);
+      try {
+        const { data, error } = await supabase.rpc('get_jobs_timeline', {
+          p_days: parseInt(days),
+          p_granularity: granularity,
+          p_source: source || null,
+          p_country: country || null,
+          p_status: status || null,
+          p_date_from: date_from || null,
+          p_date_to: date_to || null,
+        });
+        if (error) return res.json([]);
+        return res.json(data || []);
+      } catch {
+        return res.json([]);
+      }
     }
 
     if (path === "/analytics/pipeline-health" && req.method === "GET") {
