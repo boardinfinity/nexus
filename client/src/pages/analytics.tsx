@@ -11,7 +11,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   Briefcase, FileText, Brain, CheckCircle, Building2,
-  Search, Download, ChevronLeft, ChevronRight,
+  Search, Download, ChevronLeft, ChevronRight, BarChart3, Globe, Layers, Activity,
 } from "lucide-react";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
@@ -309,21 +309,29 @@ export default function Analytics() {
               <CardTitle className="text-sm font-medium">Jobs by Source</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={bySource || []}>
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis dataKey="source" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
-                    <YAxis className="text-xs" />
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Bar dataKey="count" radius={[4, 4, 0, 0]}>
-                      {(bySource || []).map((_, i) => (
-                        <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {!bySource?.length ? (
+                <div className="flex flex-col items-center justify-center h-[300px] text-muted-foreground">
+                  <BarChart3 className="h-8 w-8 mb-2 opacity-50" />
+                  <p className="text-sm">No data available</p>
+                  <p className="text-xs">Run pipelines to populate this chart</p>
+                </div>
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={bySource}>
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis dataKey="source" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
+                      <YAxis className="text-xs" />
+                      <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                        {(bySource || []).map((_, i) => (
+                          <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -334,17 +342,25 @@ export default function Analytics() {
               <CardTitle className="text-sm font-medium">Jobs by Region (Top 10)</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="h-[300px]">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={byRegion || []} layout="vertical">
-                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                    <XAxis type="number" className="text-xs" />
-                    <YAxis type="category" dataKey="country" className="text-xs" width={100} />
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#8b5cf6" />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
+              {!byRegion?.length ? (
+                <div className="flex flex-col items-center justify-center h-[300px] text-muted-foreground">
+                  <Globe className="h-8 w-8 mb-2 opacity-50" />
+                  <p className="text-sm">No data available</p>
+                  <p className="text-xs">Location data appears as jobs are ingested</p>
+                </div>
+              ) : (
+                <div className="h-[300px]">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={byRegion} layout="vertical">
+                      <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                      <XAxis type="number" className="text-xs" />
+                      <YAxis type="category" dataKey="country" className="text-xs" width={100} />
+                      <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Bar dataKey="count" radius={[0, 4, 4, 0]} fill="#8b5cf6" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -377,24 +393,32 @@ export default function Analytics() {
             </div>
           </CardHeader>
           <CardContent>
-            <div className="h-[250px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeline || []}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis
-                    dataKey="date"
-                    className="text-xs"
-                    tickFormatter={(v) => new Date(v).toLocaleDateString("en", { month: "short", day: "numeric" })}
-                  />
-                  <YAxis className="text-xs" />
-                  <Tooltip
-                    labelFormatter={(v) => new Date(v).toLocaleDateString()}
-                    contentStyle={{ fontSize: 12 }}
-                  />
-                  <Area type="monotone" dataKey="count" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.15} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
+            {!timeline?.length ? (
+              <div className="flex flex-col items-center justify-center h-[250px] text-muted-foreground">
+                <Activity className="h-8 w-8 mb-2 opacity-50" />
+                <p className="text-sm">No data available</p>
+                <p className="text-xs">Timeline data will appear as jobs are ingested</p>
+              </div>
+            ) : (
+              <div className="h-[250px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={timeline}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis
+                      dataKey="date"
+                      className="text-xs"
+                      tickFormatter={(v) => new Date(v).toLocaleDateString("en", { month: "short", day: "numeric" })}
+                    />
+                    <YAxis className="text-xs" />
+                    <Tooltip
+                      labelFormatter={(v) => new Date(v).toLocaleDateString()}
+                      contentStyle={{ fontSize: 12 }}
+                    />
+                    <Area type="monotone" dataKey="count" stroke="#0ea5e9" fill="#0ea5e9" fillOpacity={0.15} strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -439,29 +463,37 @@ export default function Analytics() {
               <CardTitle className="text-sm font-medium">Enrichment Funnel</CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="h-[400px] flex items-center justify-center">
-                <ResponsiveContainer width="100%" height="100%">
-                  <PieChart>
-                    <Pie
-                      data={funnel || []}
-                      dataKey="count"
-                      nameKey="status"
-                      cx="50%"
-                      cy="50%"
-                      innerRadius={80}
-                      outerRadius={130}
-                      paddingAngle={3}
-                      label={({ status, count }) => `${status} (${count.toLocaleString()})`}
-                    >
-                      {(funnel || []).map((entry, i) => (
-                        <Cell key={i} fill={FUNNEL_COLORS[entry.status] || COLORS[i % COLORS.length]} />
-                      ))}
-                    </Pie>
-                    <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
-                    <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: 16, maxWidth: 150, overflow: "visible" }} />
-                  </PieChart>
-                </ResponsiveContainer>
-              </div>
+              {!funnel?.length ? (
+                <div className="flex flex-col items-center justify-center h-[400px] text-muted-foreground">
+                  <Layers className="h-8 w-8 mb-2 opacity-50" />
+                  <p className="text-sm">No data available</p>
+                  <p className="text-xs">Run the enrichment pipeline to see status breakdown</p>
+                </div>
+              ) : (
+                <div className="h-[400px] flex items-center justify-center">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <PieChart>
+                      <Pie
+                        data={funnel}
+                        dataKey="count"
+                        nameKey="status"
+                        cx="50%"
+                        cy="50%"
+                        innerRadius={80}
+                        outerRadius={130}
+                        paddingAngle={3}
+                        label={({ status, count }) => `${status} (${count.toLocaleString()})`}
+                      >
+                        {(funnel || []).map((entry, i) => (
+                          <Cell key={i} fill={FUNNEL_COLORS[entry.status] || COLORS[i % COLORS.length]} />
+                        ))}
+                      </Pie>
+                      <Tooltip contentStyle={{ fontSize: 12 }} formatter={(v: number) => [v.toLocaleString(), "Jobs"]} />
+                      <Legend layout="vertical" align="right" verticalAlign="middle" wrapperStyle={{ paddingLeft: 16, maxWidth: 150, overflow: "visible" }} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}
@@ -474,20 +506,28 @@ export default function Analytics() {
             <CardTitle className="text-sm font-medium">Pipeline Health (Last 30 Days)</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={pipelineHealth || []}>
-                  <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
-                  <XAxis dataKey="pipeline_type" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
-                  <YAxis className="text-xs" />
-                  <Tooltip contentStyle={{ fontSize: 12 }} />
-                  <Legend />
-                  <Bar dataKey="completed" name="Completed" fill="#10b981" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="failed" name="Failed" fill="#ef4444" radius={[4, 4, 0, 0]} />
-                  <Bar dataKey="running" name="Running" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
+            {!pipelineHealth?.length ? (
+              <div className="flex flex-col items-center justify-center h-[300px] text-muted-foreground">
+                <Activity className="h-8 w-8 mb-2 opacity-50" />
+                <p className="text-sm">No data available</p>
+                <p className="text-xs">Pipeline health will appear after running your first pipeline</p>
+              </div>
+            ) : (
+              <div className="h-[300px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={pipelineHealth}>
+                    <CartesianGrid strokeDasharray="3 3" className="stroke-muted" />
+                    <XAxis dataKey="pipeline_type" className="text-xs" tickFormatter={(v) => v.replace(/_/g, " ")} />
+                    <YAxis className="text-xs" />
+                    <Tooltip contentStyle={{ fontSize: 12 }} />
+                    <Legend />
+                    <Bar dataKey="completed" name="Completed" fill="#10b981" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="failed" name="Failed" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                    <Bar dataKey="running" name="Running" fill="#0ea5e9" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

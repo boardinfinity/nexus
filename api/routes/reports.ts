@@ -200,6 +200,30 @@ export async function handleReportRoutes(
     return res.json(data || []);
   }
 
+  // PATCH /api/reports/:id — update report metadata
+  if (path.match(/^\/reports\/[^/]+$/) && req.method === "PATCH") {
+    if (!requirePermission("reports", "write")(auth, res)) return;
+    const id = path.split("/")[2];
+    const { report_type, region, title, source_org, report_year } = req.body || {};
+    const updates: Record<string, any> = {};
+    if (report_type !== undefined) updates.report_type = report_type || null;
+    if (region !== undefined) updates.region = region || null;
+    if (title !== undefined) updates.title = title;
+    if (source_org !== undefined) updates.source_org = source_org || null;
+    if (report_year !== undefined) updates.report_year = report_year ? parseInt(report_year) : null;
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: "No fields to update" });
+    }
+    const { data, error } = await supabase
+      .from("secondary_reports")
+      .update(updates)
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
+  }
+
   // DELETE /api/reports/:id — delete report
   if (path.match(/^\/reports\/[^/]+$/) && req.method === "DELETE") {
     if (!requirePermission("reports", "full")(auth, res)) return;

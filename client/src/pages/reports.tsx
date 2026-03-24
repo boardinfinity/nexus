@@ -20,7 +20,7 @@ import { Label } from "@/components/ui/label";
 import {
   FileText, Upload, Search, ChevronLeft, ChevronRight, ArrowLeft,
   Loader2, Trash2, Play, CheckCircle2, XCircle, Clock, AlertTriangle,
-  TrendingUp, TrendingDown, Minus, ArrowUpRight, Sparkles,
+  TrendingUp, TrendingDown, Minus, ArrowUpRight, Sparkles, Pencil, Check, X,
 } from "lucide-react";
 
 const REPORT_TYPES = [
@@ -93,9 +93,46 @@ export default function Reports() {
   const [page, setPage] = useState(1);
   const [selectedReport, setSelectedReport] = useState<Report | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editType, setEditType] = useState("");
+  const [editRegion, setEditRegion] = useState("");
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  const updateMutation = useMutation({
+    mutationFn: async ({ id, report_type, region }: { id: string; report_type: string; region: string }) => {
+      const res = await apiRequest("PATCH", `/api/reports/${id}`, { report_type, region });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Report updated", description: "Report metadata has been saved." });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+      setEditingId(null);
+    },
+    onError: (err: Error) => {
+      toast({ title: "Update failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  function startEditReport(report: Report, e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingId(report.id);
+    setEditType(report.report_type || "");
+    setEditRegion(report.region || "");
+  }
+
+  function saveEditReport(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (editingId) {
+      updateMutation.mutate({ id: editingId, report_type: editType, region: editRegion });
+    }
+  }
+
+  function cancelEditReport(e: React.MouseEvent) {
+    e.stopPropagation();
+    setEditingId(null);
+  }
 
   const params = new URLSearchParams();
   params.set("page", String(page));
@@ -213,11 +250,12 @@ export default function Reports() {
               const statusConf = STATUS_CONFIG[report.processing_status] || STATUS_CONFIG.pending;
               const StatusIcon = statusConf.icon;
               const typeLabel = REPORT_TYPES.find((t) => t.value === report.report_type)?.label || report.report_type || "—";
+              const isEditing = editingId === report.id;
               return (
                 <Card
                   key={report.id}
                   className="cursor-pointer hover:shadow-md transition-shadow"
-                  onClick={() => setSelectedReport(report)}
+                  onClick={() => !isEditing && setSelectedReport(report)}
                   data-testid={`report-card-${report.id}`}
                 >
                   <CardContent className="flex items-center justify-between py-4">
@@ -229,18 +267,60 @@ export default function Reports() {
                           {statusConf.label}
                         </Badge>
                       </div>
-                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                        {report.source_org && <span>{report.source_org}</span>}
-                        {report.report_year && <span>{report.report_year}</span>}
-                        <span>{typeLabel}</span>
-                        {report.region && <span>{report.region}</span>}
-                        {(report.skill_count ?? 0) > 0 && (
-                          <span className="text-primary font-medium">{report.skill_count} skills</span>
-                        )}
-                        {report.file_size_bytes && (
-                          <span>{(report.file_size_bytes / 1048576).toFixed(1)} MB</span>
-                        )}
-                      </div>
+                      {isEditing ? (
+                        <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                          <Select value={editType} onValueChange={setEditType}>
+                            <SelectTrigger className="h-7 w-[150px] text-xs">
+                              <SelectValue placeholder="Select type..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {REPORT_TYPES.map((t) => (
+                                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Select value={editRegion} onValueChange={setEditRegion}>
+                            <SelectTrigger className="h-7 w-[130px] text-xs">
+                              <SelectValue placeholder="Select region..." />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {REGIONS.map((r) => (
+                                <SelectItem key={r} value={r}>{r}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={saveEditReport} disabled={updateMutation.isPending}>
+                            {updateMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3 text-green-600" />}
+                          </Button>
+                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEditReport}>
+                            <X className="h-3 w-3 text-red-600" />
+                          </Button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                          {report.source_org && <span>{report.source_org}</span>}
+                          {report.report_year && <span>{report.report_year}</span>}
+                          <span>{typeLabel}</span>
+                          <span>{report.region || "—"}</span>
+                          {(report.skill_count ?? 0) > 0 && (
+                            <span className="text-primary font-medium">{report.skill_count} skills</span>
+                          )}
+                          {report.file_size_bytes && (
+                            <span>{(report.file_size_bytes / 1048576).toFixed(1)} MB</span>
+                          )}
+                          {(!report.report_type || !report.region) && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-5 w-5 opacity-40 hover:opacity-100"
+                              onClick={(e) => startEditReport(report, e)}
+                              title="Edit type/region"
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </div>
                     {report.processing_status === "processing" && report.total_chunks && (
                       <div className="w-24 ml-4">

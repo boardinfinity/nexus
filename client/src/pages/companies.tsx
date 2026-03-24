@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Search, Sparkles, Loader2, Save, Merge } from "lucide-react";
+import { Search, Sparkles, Loader2, Save, Merge, Briefcase } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import type { Company } from "@shared/schema";
 
@@ -49,6 +49,17 @@ export default function Companies() {
     enabled: !!selected?.id,
   });
 
+  const { data: jobCount } = useQuery<number>({
+    queryKey: ["/api/companies", selected?.id, "job-count"],
+    queryFn: async () => {
+      const res = await authFetch(`/api/jobs?search=${encodeURIComponent(selected?.name || "")}&limit=1`);
+      if (!res.ok) return 0;
+      const result = await res.json();
+      return result.total || 0;
+    },
+    enabled: !!selected?.name,
+  });
+
   const enrichMutation = useMutation({
     mutationFn: async () => {
       const res = await apiRequest("POST", "/api/companies/auto-enrich", {});
@@ -56,6 +67,23 @@ export default function Companies() {
     },
     onSuccess: (data) => {
       toast({ title: "Auto-enrichment complete", description: `Enriched ${data.enriched} of ${data.total} companies from job data.` });
+      queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Enrichment failed", description: err.message, variant: "destructive" });
+    },
+  });
+
+  const enrichSingleMutation = useMutation({
+    mutationFn: async () => {
+      const res = await apiRequest("POST", "/api/pipelines/run", {
+        pipeline_type: "company_enrichment",
+        config: { batch_size: 1, company_ids: selected?.id ? [selected.id] : [] },
+      });
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Enrichment started", description: "Company enrichment has been triggered." });
       queryClient.invalidateQueries({ queryKey: ["/api/companies"] });
     },
     onError: (err: Error) => {
@@ -256,42 +284,73 @@ export default function Companies() {
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
                   {[
+                    ["Website", detail?.website],
                     ["Industry", detail?.industry],
                     ["Sub-Industry", detail?.sub_industry],
                     ["Type", detail?.company_type],
-                    ["Employees", detail?.employee_count?.toLocaleString()],
                     ["Size Range", detail?.size_range],
+                    ["Employees", detail?.employee_count?.toLocaleString()],
                     ["Founded", detail?.founded_year],
-                    ["HQ", [detail?.headquarters_city, detail?.headquarters_state, detail?.headquarters_country].filter(Boolean).join(", ")],
-                    ["Website", detail?.website],
+                    ["Location", [detail?.headquarters_city, detail?.headquarters_state, detail?.headquarters_country].filter(Boolean).join(", ")],
                     ["LinkedIn", detail?.linkedin_url],
-                  ].map(([label, val]) => val ? (
+                  ].map(([label, val]) => (
                     <div key={label as string} className="flex justify-between">
                       <span className="text-muted-foreground">{label}</span>
-                      <span className="text-right max-w-[200px] truncate">{val as string}</span>
+                      {val ? (
+                        (label === "Website" || label === "LinkedIn") ? (
+                          <a href={String(val).startsWith("http") ? String(val) : `https://${val}`} target="_blank" rel="noreferrer" className="text-primary truncate max-w-[200px]">
+                            {val as string}
+                          </a>
+                        ) : (
+                          <span className="text-right max-w-[200px] truncate">{val as string}</span>
+                        )
+                      ) : (
+                        <span className="text-muted-foreground/50 italic text-xs">Not enriched</span>
+                      )}
                     </div>
-                  ) : null)}
+                  ))}
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground flex items-center gap-1"><Briefcase className="h-3 w-3" /> Jobs</span>
+                    <span className="font-medium">{jobCount !== undefined ? `${jobCount} linked jobs` : "—"}</span>
+                  </div>
                 </CardContent>
               </Card>
-              {detail?.description && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-xs text-muted-foreground uppercase">Description</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <p className="text-sm">{detail.description}</p>
-                  </CardContent>
-                </Card>
-              )}
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-xs text-muted-foreground uppercase">Enrichment Score</CardTitle>
+                  <CardTitle className="text-xs text-muted-foreground uppercase">Description</CardTitle>
                 </CardHeader>
                 <CardContent>
+                  {detail?.description ? (
+                    <p className="text-sm">{detail.description}</p>
+                  ) : (
+                    <p className="text-sm text-muted-foreground/50 italic">Not enriched</p>
+                  )}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs text-muted-foreground uppercase">Enrichment</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
                   <div className="flex items-center gap-3">
+                    <span className="text-sm text-muted-foreground">Score:</span>
                     <Progress value={detail?.enrichment_score ?? 0} className="h-3 flex-1" />
                     <span className="text-lg font-bold">{detail?.enrichment_score ?? 0}%</span>
                   </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full gap-1.5"
+                    onClick={() => enrichSingleMutation.mutate()}
+                    disabled={enrichSingleMutation.isPending}
+                  >
+                    {enrichSingleMutation.isPending ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Sparkles className="h-3.5 w-3.5" />
+                    )}
+                    Enrich Company
+                  </Button>
                 </CardContent>
               </Card>
             </div>

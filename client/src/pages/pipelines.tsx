@@ -325,7 +325,7 @@ export default function Pipelines() {
           <PipelineTrigger
             type="jd_enrichment"
             title="JD Analysis"
-            description="Extract skills & structured data from JDs using GPT-4o-mini"
+            description="Extract skills & structured data from JDs using AI"
             icon={Brain}
             fields={[
               { name: "batch_size", label: "Batch Size", type: "number", placeholder: "25", defaultValue: "25" },
