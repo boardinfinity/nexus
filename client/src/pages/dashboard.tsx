@@ -189,7 +189,7 @@ export default function Dashboard() {
   }
 
   // ── Dashboard queries ──
-  const { data: stats } = useQuery<DashboardStats>({
+  const { data: stats, isError: statsError, refetch: refetchStats } = useQuery<DashboardStats>({
     queryKey: ["/api/dashboard/stats"],
   });
 
@@ -340,40 +340,47 @@ export default function Dashboard() {
       {/* ═══ SECTION: Overview KPIs ═══ */}
       <SectionHeader icon={BarChart3} title="Overview" subtitle="Key performance indicators at a glance" />
 
-      <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
-        <div className="cursor-pointer" onClick={() => navigate("/jobs")}>
-          <KPICard
-            title="Total Jobs"
-            value={stats?.total_jobs ?? 0}
-            icon={Briefcase}
-            subtitle="Across all sources"
-          />
+      {statsError ? (
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+          <p>Failed to load dashboard stats</p>
+          <Button variant="outline" size="sm" onClick={() => refetchStats()} className="mt-2">Try Again</Button>
         </div>
-        <div className="cursor-pointer" onClick={() => navigate("/companies")}>
-          <KPICard
-            title="Total Companies"
-            value={stats?.total_companies ?? 0}
-            icon={Building2}
-            subtitle="In database"
-          />
+      ) : (
+        <div className="grid gap-4 grid-cols-2 lg:grid-cols-4">
+          <div className="cursor-pointer" onClick={() => navigate("/jobs")}>
+            <KPICard
+              title="Total Jobs"
+              value={stats?.total_jobs ?? 0}
+              icon={Briefcase}
+              subtitle="Across all sources"
+            />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate("/companies")}>
+            <KPICard
+              title="Total Companies"
+              value={stats?.total_companies ?? 0}
+              icon={Building2}
+              subtitle="In database"
+            />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate("/people")}>
+            <KPICard
+              title="Total People"
+              value={stats?.total_people ?? 0}
+              icon={Users}
+              subtitle="Contacts tracked"
+            />
+          </div>
+          <div className="cursor-pointer" onClick={() => navigate("/pipelines")}>
+            <KPICard
+              title="Active Pipelines"
+              value={stats?.active_pipelines ?? 0}
+              icon={GitBranch}
+              subtitle="Currently running"
+            />
+          </div>
         </div>
-        <div className="cursor-pointer" onClick={() => navigate("/people")}>
-          <KPICard
-            title="Total People"
-            value={stats?.total_people ?? 0}
-            icon={Users}
-            subtitle="Contacts tracked"
-          />
-        </div>
-        <div className="cursor-pointer" onClick={() => navigate("/pipelines")}>
-          <KPICard
-            title="Active Pipelines"
-            value={stats?.active_pipelines ?? 0}
-            icon={GitBranch}
-            subtitle="Currently running"
-          />
-        </div>
-      </div>
+      )}
 
       {overviewLoading ? (
         <div className="grid gap-4 grid-cols-2 md:grid-cols-3">

@@ -592,31 +592,40 @@ export async function handleCollegeRoutes(path: string, req: VercelRequest, res:
     return res.json(data);
   }
 
-  // GET /api/colleges — List all colleges with stats
+  // GET /api/colleges — List all colleges with stats (single RPC, no N+1)
   if (path === "/colleges" && req.method === "GET") {
-    const { data: colleges, error } = await supabase
-      .from("colleges")
-      .select("*")
-      .order("created_at", { ascending: false });
-    if (error) return res.status(500).json({ error: error.message });
+    const { search, page = "1", limit = "50" } = req.query as Record<string, string>;
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(200, Math.max(1, parseInt(limit) || 50));
+    const offset = (pageNum - 1) * limitNum;
 
-    // Fetch counts for each college
-    const enriched = await Promise.all((colleges || []).map(async (c: any) => {
-      const [programs, courses, skills] = await Promise.all([
-        supabase.from("college_programs").select("id", { count: "exact", head: true }).eq("college_id", c.id),
-        supabase.from("college_courses").select("id", { count: "exact", head: true }).eq("college_id", c.id),
-        supabase.from("course_skills").select("id", { count: "exact", head: true })
-          .in("course_id", (await supabase.from("college_courses").select("id").eq("college_id", c.id)).data?.map((r: any) => r.id) || []),
-      ]);
-      return {
+    const [statsResult, countResult] = await Promise.all([
+      supabase.rpc("get_colleges_with_stats", {
+        p_limit: limitNum,
+        p_offset: offset,
+        p_search: search || null,
+      }),
+      supabase.rpc("get_colleges_count", { p_search: search || null }),
+    ]);
+
+    if (statsResult.error) {
+      // Fallback: simple query without stats if RPC not yet applied
+      const { data: colleges, error, count } = await supabase
+        .from("colleges")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false })
+        .range(offset, offset + limitNum - 1);
+      if (error) return res.status(500).json({ error: error.message });
+      const fallback = (colleges || []).map((c: any) => ({
         ...c,
-        program_count: programs.count || 0,
-        course_count: courses.count || 0,
-        skill_count: skills.count || 0,
-      };
-    }));
+        program_count: 0,
+        course_count: 0,
+        skill_count: 0,
+      }));
+      return res.json(fallback);
+    }
 
-    return res.json(enriched);
+    return res.json(statsResult.data || []);
   }
 
   // GET /api/colleges/:id — College detail with schools and programs

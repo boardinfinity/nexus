@@ -73,7 +73,7 @@ export function AppSidebar() {
     return perm && perm !== "none";
   });
 
-  const isSuperAdmin = me?.role === "super_admin";
+  const canManageUsers = me?.role === "super_admin" || me?.role === "admin";
 
   return (
     <Sidebar data-testid="app-sidebar">
@@ -105,7 +105,7 @@ export function AppSidebar() {
                   </SidebarMenuItem>
                 );
               })}
-              {isSuperAdmin && (
+              {canManageUsers && (
                 <SidebarMenuItem>
                   <SidebarMenuButton
                     asChild

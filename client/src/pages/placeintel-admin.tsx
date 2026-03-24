@@ -50,7 +50,7 @@ export default function PlaceIntelAdmin() {
   const [selectedCollegeId, setSelectedCollegeId] = useState<string | null>(null);
 
   // Fetch colleges
-  const { data: colleges = [], isLoading } = useQuery<any[]>({
+  const { data: colleges = [], isLoading, isError, refetch } = useQuery<any[]>({
     queryKey: ["/api/placeintel/admin/colleges", statusFilter, stateFilter, tierFilter, search],
     queryFn: async () => {
       const params = new URLSearchParams();
@@ -246,7 +246,12 @@ export default function PlaceIntelAdmin() {
       {/* Table */}
       <Card>
         <CardContent className="p-0">
-          {isLoading ? (
+          {isError ? (
+            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+              <p>Failed to load data</p>
+              <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">Try Again</Button>
+            </div>
+          ) : isLoading ? (
             <div className="flex items-center justify-center py-12">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>

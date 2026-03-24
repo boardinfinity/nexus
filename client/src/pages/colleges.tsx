@@ -84,7 +84,7 @@ export default function Colleges() {
   const [finalResults, setFinalResults] = useState<Record<string, any> | null>(null);
   const [collegeId, setCollegeId] = useState<string | null>(null);
 
-  const { data: colleges, isLoading } = useQuery<College[]>({
+  const { data: colleges, isLoading, isError, refetch } = useQuery<College[]>({
     queryKey: ["/api/colleges"],
     queryFn: async () => {
       const res = await authFetch("/api/colleges");
@@ -247,7 +247,12 @@ export default function Colleges() {
         </div>
       </div>
 
-      {isLoading ? (
+      {isError ? (
+        <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+          <p>Failed to load colleges</p>
+          <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">Try Again</Button>
+        </div>
+      ) : isLoading ? (
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>

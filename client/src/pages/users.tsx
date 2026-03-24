@@ -100,7 +100,7 @@ export default function UsersPage() {
   const [editPermissions, setEditPermissions] = useState<Record<string, string>>({});
   const [showPermEditor, setShowPermEditor] = useState(false);
 
-  const { data: users, isLoading } = useQuery<NexusUser[]>({
+  const { data: users, isLoading, isError, refetch } = useQuery<NexusUser[]>({
     queryKey: ["/api/users"],
   });
 
@@ -228,7 +228,12 @@ export default function UsersPage() {
           <CardTitle className="text-base">Team Members ({users?.length || 0})</CardTitle>
         </CardHeader>
         <CardContent>
-          {isLoading ? (
+          {isError ? (
+            <div className="flex flex-col items-center justify-center py-8 text-muted-foreground">
+              <p>Failed to load users</p>
+              <Button variant="outline" size="sm" onClick={() => refetch()} className="mt-2">Try Again</Button>
+            </div>
+          ) : isLoading ? (
             <div className="flex justify-center py-8">
               <Loader2 className="h-6 w-6 animate-spin" />
             </div>

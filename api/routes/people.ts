@@ -9,7 +9,7 @@ export async function handlePeopleRoutes(path: string, req: VercelRequest, res: 
 
     let query = supabase
       .from("people")
-      .select("id, full_name, first_name, last_name, email, linkedin_url, current_title, seniority, function, location_city, location_country, is_hiring_manager, is_recruiter, enrichment_status, enrichment_score, created_at", { count: "exact" });
+      .select("id, full_name, first_name, last_name, email, linkedin_url, current_title, current_company_id, seniority, function, location_city, location_country, is_hiring_manager, is_recruiter, enrichment_status, enrichment_score, created_at, company:companies!current_company_id(name)", { count: "exact" });
 
     if (search) query = query.ilike("full_name", `%${search}%`);
     if (seniority) query = query.eq("seniority", seniority);
