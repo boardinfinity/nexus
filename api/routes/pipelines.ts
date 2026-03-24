@@ -207,14 +207,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
   // ==================== MONITORING ====================
   if (path === "/monitoring/queue-stats" && req.method === "GET") {
-    const { data: pending } = await supabase.from("job_queue").select("id", { count: "exact", head: true }).eq("status", "pending");
-    const { data: processing } = await supabase.from("job_queue").select("id", { count: "exact", head: true }).eq("status", "processing");
-    const { data: deadLetter } = await supabase.from("job_queue").select("id", { count: "exact", head: true }).eq("status", "dead_letter");
-
-    // Use count from headers - simplified approach
-    const { count: pendingCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "pending");
-    const { count: processingCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "processing");
-    const { count: deadLetterCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "dead_letter");
+    const [{ count: pendingCount }, { count: processingCount }, { count: deadLetterCount }] = await Promise.all([
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "processing"),
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "dead_letter"),
+    ]);
 
     return res.json({
       pending: pendingCount || 0,
@@ -444,109 +441,137 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
   );
   const rawResults = await resultsRes.json();
 
-  // Apify practicaltools/linkedin-jobs returns nested structure:
-  // [{scrapedAt, total, jobs: [{jobId, title, company, location, datePosted, url, ...}]}]
-  // Flatten to get the actual job items
+  // Flatten nested structure
   const jobs: any[] = [];
   for (const item of rawResults) {
     if (Array.isArray(item.jobs)) {
       jobs.push(...item.jobs);
     } else {
-      // Fallback: treat item itself as a job if no nested structure
       jobs.push(item);
     }
   }
 
-  // Process and upsert jobs
   let processed = 0;
   let failed = 0;
   let skipped = 0;
 
   await supabase.from("pipeline_runs").update({ total_items: jobs.length }).eq("id", runId);
 
-  for (const item of jobs) {
+  // Pre-fetch existing job external_ids in batch to avoid N+1 duplicate checks
+  const externalIds = jobs.map((item, i) =>
+    String(item.jobId || item.id || item.url || `li-${Date.now()}-${i}`)
+  );
+  const { data: existingJobs } = await supabase
+    .from("jobs")
+    .select("external_id")
+    .eq("source", "linkedin")
+    .in("external_id", externalIds);
+  const existingIdSet = new Set((existingJobs || []).map((j: any) => j.external_id));
+
+  // Pre-fetch existing companies by name in batch
+  const companyNames = [...new Set(jobs.map(item => item.company || item.companyName).filter(Boolean))];
+  const companyMap = new Map<string, string>();
+  if (companyNames.length > 0) {
+    const { data: existingCompanies } = await supabase
+      .from("companies")
+      .select("id, name")
+      .in("name", companyNames);
+    for (const c of existingCompanies || []) {
+      companyMap.set(c.name, c.id);
+    }
+  }
+
+  // Batch insert new companies
+  const newCompanyNames = companyNames.filter(name => !companyMap.has(name));
+  if (newCompanyNames.length > 0) {
+    const companyRows = newCompanyNames.map(name => {
+      const item = jobs.find(j => (j.company || j.companyName) === name);
+      return {
+        name,
+        linkedin_url: item?.companyUrl || null,
+        domain: item?.companyDomain || null,
+        enrichment_status: "pending",
+      };
+    });
+    // Batch insert in chunks of 100
+    for (let i = 0; i < companyRows.length; i += 100) {
+      const batch = companyRows.slice(i, i + 100);
+      const { data: inserted } = await supabase
+        .from("companies")
+        .upsert(batch, { onConflict: "name" })
+        .select("id, name");
+      for (const c of inserted || []) {
+        companyMap.set(c.name, c.id);
+      }
+    }
+  }
+
+  // Batch insert jobs (skip existing)
+  const BATCH_SIZE = 100;
+  const newJobs: any[] = [];
+  for (let i = 0; i < jobs.length; i++) {
+    const item = jobs[i];
+    const externalId = externalIds[i];
+
+    if (existingIdSet.has(externalId)) {
+      skipped++;
+      continue;
+    }
+
+    const companyName = item.company || item.companyName || null;
+    const companyId = companyName ? (companyMap.get(companyName) || null) : null;
+
+    newJobs.push({
+      external_id: externalId,
+      source: "linkedin",
+      title: item.title || "Unknown",
+      description: item.description || null,
+      company_id: companyId,
+      company_name: companyName,
+      location_raw: item.location || item.formattedLocation || null,
+      location_city: item.city || null,
+      location_state: item.state || null,
+      location_country: item.country || config.location || null,
+      employment_type: mapEmploymentType(item.employmentType || item.jobType),
+      seniority_level: mapSeniority(item.seniorityLevel || item.experienceLevel),
+      salary_min: item.salaryMin || null,
+      salary_max: item.salaryMax || null,
+      salary_currency: item.salaryCurrency || null,
+      posted_at: item.datePosted || item.postedAt || item.publishedAt || null,
+      application_url: item.applyUrl || item.applicationUrl || null,
+      source_url: item.url || item.link || null,
+      recruiter_name: item.recruiterName || null,
+      recruiter_url: item.recruiterUrl || null,
+      enrichment_status: item.description ? "partial" : "pending",
+      raw_data: item,
+    });
+  }
+
+  // Batch insert new jobs in chunks
+  for (let i = 0; i < newJobs.length; i += BATCH_SIZE) {
+    const batch = newJobs.slice(i, i + BATCH_SIZE);
     try {
-      const externalId = item.jobId || item.id || item.url || `li-${Date.now()}-${processed}`;
-
-      // Check for duplicate
-      const { data: existing } = await supabase
-        .from("jobs")
-        .select("id")
-        .eq("external_id", String(externalId))
-        .eq("source", "linkedin")
-        .maybeSingle();
-
-      if (existing) {
-        skipped++;
-        continue;
-      }
-
-      // Upsert company if we have company info
-      const companyName = item.company || item.companyName || null;
-      let companyId = null;
-      if (companyName) {
-        // Try to find existing company first
-        const { data: existingCompany } = await supabase
-          .from("companies")
-          .select("id")
-          .eq("name", companyName)
-          .maybeSingle();
-        if (existingCompany) {
-          companyId = existingCompany.id;
-        } else {
-          const { data: newCompany } = await supabase
-            .from("companies")
-            .insert({
-              name: companyName,
-              linkedin_url: item.companyUrl || null,
-              domain: item.companyDomain || null,
-              enrichment_status: "pending",
-            })
-            .select("id")
-            .maybeSingle();
-          companyId = newCompany?.id;
+      const { data: inserted, error } = await supabase.from("jobs").insert(batch).select("id");
+      if (error) {
+        // Fallback to individual inserts for this batch on error
+        for (const job of batch) {
+          try {
+            await supabase.from("jobs").insert(job);
+            processed++;
+          } catch { failed++; }
         }
+      } else {
+        processed += (inserted || []).length;
       }
-
-      // Insert job - map Apify output fields correctly
-      await supabase.from("jobs").insert({
-        external_id: String(externalId),
-        source: "linkedin",
-        title: item.title || "Unknown",
-        description: item.description || null,
-        company_id: companyId,
-        company_name: companyName,
-        location_raw: item.location || item.formattedLocation || null,
-        location_city: item.city || null,
-        location_state: item.state || null,
-        location_country: item.country || config.location || null,
-        employment_type: mapEmploymentType(item.employmentType || item.jobType),
-        seniority_level: mapSeniority(item.seniorityLevel || item.experienceLevel),
-        salary_min: item.salaryMin || null,
-        salary_max: item.salaryMax || null,
-        salary_currency: item.salaryCurrency || null,
-        posted_at: item.datePosted || item.postedAt || item.publishedAt || null,
-        application_url: item.applyUrl || item.applicationUrl || null,
-        source_url: item.url || item.link || null,
-        recruiter_name: item.recruiterName || null,
-        recruiter_url: item.recruiterUrl || null,
-        enrichment_status: item.description ? "partial" : "pending",
-        raw_data: item,
-      });
-
-      processed++;
-    } catch (e) {
-      failed++;
+    } catch {
+      failed += batch.length;
     }
 
-    // Update progress every 10 items
-    if ((processed + failed + skipped) % 10 === 0) {
-      await supabase.from("pipeline_runs").update({
-        processed_items: processed,
-        failed_items: failed,
-        skipped_items: skipped,
-      }).eq("id", runId);
-    }
+    await supabase.from("pipeline_runs").update({
+      processed_items: processed,
+      failed_items: failed,
+      skipped_items: skipped,
+    }).eq("id", runId);
   }
 
   // Update credits
@@ -964,6 +989,28 @@ async function extractImplicitData(description: string, title: string, companyNa
   }
 }
 
+// ==================== TAXONOMY CACHE ====================
+
+// In-memory taxonomy cache (~8,888 rows, ~1MB) with 10-minute TTL
+let taxonomyCache: Map<string, { id: string; category: string }> | null = null;
+let taxonomyCacheTime = 0;
+const TAXONOMY_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
+async function getTaxonomyMap(): Promise<Map<string, { id: string; category: string }>> {
+  if (taxonomyCache && Date.now() - taxonomyCacheTime < TAXONOMY_CACHE_TTL) {
+    return taxonomyCache;
+  }
+  const { data } = await supabase.from("taxonomy_skills").select("id, name, category");
+  const map = new Map<string, { id: string; category: string }>();
+  for (const row of data || []) {
+    // Store both exact name and lowercase for matching
+    map.set(row.name.toLowerCase(), { id: row.id, category: row.category });
+  }
+  taxonomyCache = map;
+  taxonomyCacheTime = Date.now();
+  return map;
+}
+
 // ==================== JD ANALYSIS PIPELINE (Feature 5 — Enhanced jd_enrichment) ====================
 
 async function executeJDEnrichment(runId: string, config: any) {
@@ -1062,6 +1109,9 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
       if (jr.job_id) resultMap.set(jr.job_id, jr);
     }
 
+    // Pre-load taxonomy for in-memory matching
+    const taxMap = await getTaxonomyMap();
+
     // Process each job's extracted data
     for (const job of batch) {
       const extracted = resultMap.get(job.id);
@@ -1070,37 +1120,23 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
         continue;
       }
 
-      // Match extracted skills against taxonomy
+      // Match extracted skills against taxonomy using in-memory map
       const skills = extracted.skills || [];
+      const skillRows: any[] = [];
+      const unmatchedSkills: string[] = [];
+
       for (const skill of skills) {
         if (skill.confidence < 0.6) continue;
 
-        let taxonomySkillId: string | null = null;
+        const normalizedName = (skill.name || "").toLowerCase();
+        const taxMatch = taxMap.get(normalizedName);
+        let taxonomySkillId: string | null = taxMatch?.id || null;
 
-        const { data: exactMatch } = await supabase
-          .from("taxonomy_skills")
-          .select("id")
-          .ilike("name", skill.name)
-          .limit(1)
-          .maybeSingle();
-
-        if (exactMatch) {
-          taxonomySkillId = exactMatch.id;
-        } else {
-          try {
-            const { data: fuzzyMatch } = await supabase
-              .rpc("find_similar_skill", { search_term: skill.name })
-              .limit(1)
-              .maybeSingle();
-            if ((fuzzyMatch as any)?.id) {
-              taxonomySkillId = (fuzzyMatch as any).id;
-            }
-          } catch {
-            // RPC may not exist — skip fuzzy matching
-          }
+        if (!taxonomySkillId) {
+          unmatchedSkills.push(skill.name);
         }
 
-        await supabase.from("job_skills").upsert({
+        skillRows.push({
           job_id: job.id,
           skill_name: skill.name,
           skill_category: skill.type || "technical",
@@ -1108,7 +1144,30 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
           extraction_method: "ai_enhanced",
           taxonomy_skill_id: taxonomySkillId,
           is_required: skill.required ?? null,
-        }, { onConflict: "job_id,skill_name" });
+        });
+      }
+
+      // Fuzzy match only for unmatched skills (batch RPC call)
+      if (unmatchedSkills.length > 0) {
+        for (const skillName of unmatchedSkills) {
+          try {
+            const { data: fuzzyMatch } = await supabase
+              .rpc("find_similar_skill", { search_term: skillName })
+              .limit(1)
+              .maybeSingle();
+            if ((fuzzyMatch as any)?.id) {
+              const row = skillRows.find(r => r.skill_name === skillName);
+              if (row) row.taxonomy_skill_id = (fuzzyMatch as any).id;
+            }
+          } catch {
+            // RPC may not exist — skip fuzzy matching
+          }
+        }
+      }
+
+      // Batch upsert all skills for this job
+      if (skillRows.length > 0) {
+        await supabase.from("job_skills").upsert(skillRows, { onConflict: "job_id,skill_name" });
       }
 
       // Update job record with structured fields
@@ -1194,71 +1253,120 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
 
   const universityName = config?.university_name || config?.university_slug || "Unknown University";
 
+  // Pre-fetch existing people by LinkedIn URL in batch
+  const linkedinUrls = profiles
+    .map(p => p.linkedinUrl || p.profileUrl)
+    .filter(Boolean) as string[];
+  const existingPeopleMap = new Map<string, string>();
+  if (linkedinUrls.length > 0) {
+    // Fetch in batches of 500 to avoid query limits
+    for (let i = 0; i < linkedinUrls.length; i += 500) {
+      const batch = linkedinUrls.slice(i, i + 500);
+      const { data: existingPeople } = await supabase
+        .from("people")
+        .select("id, linkedin_url")
+        .in("linkedin_url", batch);
+      for (const p of existingPeople || []) {
+        if (p.linkedin_url) existingPeopleMap.set(p.linkedin_url, p.id);
+      }
+    }
+  }
+
+  // Pre-fetch existing alumni records for these people
+  const existingPersonIds = [...existingPeopleMap.values()];
+  const existingAlumniSet = new Set<string>();
+  if (existingPersonIds.length > 0) {
+    for (let i = 0; i < existingPersonIds.length; i += 500) {
+      const batch = existingPersonIds.slice(i, i + 500);
+      const { data: existingAlumni } = await supabase
+        .from("alumni")
+        .select("person_id")
+        .in("person_id", batch);
+      for (const a of existingAlumni || []) {
+        existingAlumniSet.add(a.person_id);
+      }
+    }
+  }
+
+  // Pre-fetch existing companies by name in batch
+  const companyNames = [...new Set(
+    profiles
+      .map(p => Array.isArray(p.experience) ? p.experience[0]?.companyName : null)
+      .filter(Boolean)
+  )];
+  const companyMap = new Map<string, string>();
+  if (companyNames.length > 0) {
+    for (let i = 0; i < companyNames.length; i += 500) {
+      const batch = companyNames.slice(i, i + 500);
+      const { data: existingCompanies } = await supabase
+        .from("companies")
+        .select("id, name")
+        .in("name", batch);
+      for (const c of existingCompanies || []) {
+        companyMap.set(c.name, c.id);
+      }
+    }
+  }
+
+  // Batch insert new companies
+  const newCompanyNames = companyNames.filter(name => !companyMap.has(name));
+  if (newCompanyNames.length > 0) {
+    for (let i = 0; i < newCompanyNames.length; i += 100) {
+      const batch = newCompanyNames.slice(i, i + 100).map(name => {
+        const profile = profiles.find(p =>
+          Array.isArray(p.experience) && p.experience[0]?.companyName === name
+        );
+        return {
+          name,
+          linkedin_url: profile?.experience?.[0]?.companyUrl || null,
+          enrichment_status: "pending",
+        };
+      });
+      const { data: inserted } = await supabase
+        .from("companies")
+        .upsert(batch, { onConflict: "name" })
+        .select("id, name");
+      for (const c of inserted || []) {
+        companyMap.set(c.name, c.id);
+      }
+    }
+  }
+
+  // Process profiles — still sequential for person inserts (need IDs for alumni records)
+  // but company and duplicate lookups are now O(1) via pre-fetched maps
   for (const profile of profiles) {
     try {
       const linkedinUrl = profile.linkedinUrl || profile.profileUrl || null;
       const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(" ") || profile.fullName || "Unknown";
 
-      // Check for duplicate person by LinkedIn URL
-      if (linkedinUrl) {
-        const { data: existing } = await supabase
-          .from("people")
-          .select("id")
-          .eq("linkedin_url", linkedinUrl)
-          .maybeSingle();
+      // Check for duplicate person using pre-fetched map
+      if (linkedinUrl && existingPeopleMap.has(linkedinUrl)) {
+        const existingPersonId = existingPeopleMap.get(linkedinUrl)!;
 
-        if (existing) {
-          // Person exists — just ensure alumni record exists
-          const { data: existingAlumni } = await supabase
-            .from("alumni")
-            .select("id")
-            .eq("person_id", existing.id)
-            .ilike("university_name", `%${universityName.split("-").join("%")}%`)
-            .maybeSingle();
-
-          if (!existingAlumni) {
-            // Extract education for this university
-            const eduEntry = findEducationEntry(profile.education, universityName);
-            await supabase.from("alumni").insert({
-              person_id: existing.id,
-              university_name: eduEntry?.schoolName || formatUniversityName(universityName),
-              degree: eduEntry?.degree || null,
-              field_of_study: eduEntry?.fieldOfStudy || null,
-              graduation_year: eduEntry?.endYear || null,
-              start_year: eduEntry?.startYear || null,
-              current_status: profile.headline || "unknown",
-            });
-            processed++;
-          } else {
-            skipped++;
-          }
-          continue;
+        if (!existingAlumniSet.has(existingPersonId)) {
+          const eduEntry = findEducationEntry(profile.education, universityName);
+          await supabase.from("alumni").insert({
+            person_id: existingPersonId,
+            university_name: eduEntry?.schoolName || formatUniversityName(universityName),
+            degree: eduEntry?.degree || null,
+            field_of_study: eduEntry?.fieldOfStudy || null,
+            graduation_year: eduEntry?.endYear || null,
+            start_year: eduEntry?.startYear || null,
+            current_status: profile.headline || "unknown",
+          });
+          existingAlumniSet.add(existingPersonId);
+          processed++;
+        } else {
+          skipped++;
         }
+        continue;
       }
 
-      // Resolve company if current experience exists
+      // Resolve company from pre-fetched map
       let companyId = null;
       const currentExp = Array.isArray(profile.experience) ? profile.experience[0] : null;
       if (currentExp?.companyName) {
-        const { data: existingCompany } = await supabase
-          .from("companies")
-          .select("id")
-          .eq("name", currentExp.companyName)
-          .maybeSingle();
-        if (existingCompany) {
-          companyId = existingCompany.id;
-        } else {
-          const { data: newCompany } = await supabase
-            .from("companies")
-            .insert({
-              name: currentExp.companyName,
-              linkedin_url: currentExp.companyUrl || null,
-              enrichment_status: "pending",
-            })
-            .select("id")
-            .maybeSingle();
-          companyId = newCompany?.id;
-        }
+        companyId = companyMap.get(currentExp.companyName) || null;
       }
 
       // Insert person
@@ -1295,6 +1403,9 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
         continue;
       }
 
+      // Track newly inserted person in maps
+      if (linkedinUrl) existingPeopleMap.set(linkedinUrl, newPerson.id);
+
       // Insert alumni record
       const eduEntry = findEducationEntry(profile.education, universityName);
       await supabase.from("alumni").insert({
@@ -1312,7 +1423,7 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
       failed++;
     }
 
-    if ((processed + failed + skipped) % 10 === 0) {
+    if ((processed + failed + skipped) % 50 === 0) {
       await supabase.from("pipeline_runs").update({
         processed_items: processed,
         failed_items: failed,

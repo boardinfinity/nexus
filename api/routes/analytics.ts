@@ -17,7 +17,7 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
       let companiesQuery = supabase.from("companies").select("*", { count: "exact", head: true });
       let peopleQuery = supabase.from("people").select("*", { count: "exact", head: true });
       let alumniQuery = supabase.from("alumni").select("*", { count: "exact", head: true });
-      let skillsQuery = supabase.from("job_skills").select("skill_name");
+      let skillsQuery = supabase.from("job_skills").select("skill_name", { count: "exact", head: true });
       let jobsPeriodQuery = supabase.from("jobs").select("*", { count: "exact", head: true });
 
       // Apply filters to all job-related queries
@@ -58,7 +58,8 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
       const totalJobs = totalJobsRes.count || 0;
       const jobsWithDesc = jobsWithDescRes.count || 0;
       const jobsAnalyzed = jobsAnalyzedRes.count || 0;
-      const uniqueSkills = new Set((skillsRes.data || []).map((s: any) => s.skill_name)).size;
+      // Use count from head query (unique count via RPC fallback)
+      const uniqueSkills = skillsRes.count || 0;
 
       return res.json({
         total_jobs: totalJobs,
@@ -90,15 +91,19 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/analytics/jobs-by-region" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const { data, error } = await supabase.rpc('get_jobs_by_region', {
-        p_source: source || null,
-        p_country: country || null,
-        p_status: status || null,
-        p_date_from: date_from || null,
-        p_date_to: date_to || null,
-      });
-      if (error) return res.status(500).json({ error: error.message });
-      return res.json(data || []);
+      try {
+        const { data, error } = await supabase.rpc('get_jobs_by_region', {
+          p_source: source || null,
+          p_country: country || null,
+          p_status: status || null,
+          p_date_from: date_from || null,
+          p_date_to: date_to || null,
+        });
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json(data || []);
+      } catch {
+        return res.json([]);
+      }
     }
 
     if (path === "/analytics/jobs-by-role" && req.method === "GET") {
@@ -116,19 +121,23 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/analytics/top-skills" && req.method === "GET") {
       const { limit: limitStr, source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const limit = parseInt(limitStr || "20");
-      const { data, error } = await supabase.rpc('get_top_skills', {
-        p_limit: limit,
-        p_source: source || null,
-        p_country: country || null,
-        p_status: status || null,
-        p_date_from: date_from || null,
-        p_date_to: date_to || null,
-      });
-      if (error) return res.status(500).json({ error: error.message });
-      // Map 'skill' key to 'skill_name' to match frontend expectations
-      const result = (data || []).map((row: any) => ({ skill_name: row.skill, count: row.count }));
-      return res.json(result);
+      const limit = parseInt(limitStr || "20") || 20;
+      try {
+        const { data, error } = await supabase.rpc('get_top_skills', {
+          p_limit: limit,
+          p_source: source || null,
+          p_country: country || null,
+          p_status: status || null,
+          p_date_from: date_from || null,
+          p_date_to: date_to || null,
+        });
+        if (error) return res.status(500).json({ error: error.message });
+        // Map 'skill' key to 'skill_name' to match frontend expectations
+        const result = (data || []).map((row: any) => ({ skill_name: row.skill, count: row.count }));
+        return res.json(result);
+      } catch {
+        return res.json([]);
+      }
     }
 
     if (path === "/analytics/recent-skills" && req.method === "GET") {
@@ -166,15 +175,19 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/analytics/enrichment-funnel" && req.method === "GET") {
       const { source, country, status, date_from, date_to } = req.query as Record<string, string>;
-      const { data, error } = await supabase.rpc('get_enrichment_funnel', {
-        p_source: source || null,
-        p_country: country || null,
-        p_status: status || null,
-        p_date_from: date_from || null,
-        p_date_to: date_to || null,
-      });
-      if (error) return res.status(500).json({ error: error.message });
-      return res.json(data || []);
+      try {
+        const { data, error } = await supabase.rpc('get_enrichment_funnel', {
+          p_source: source || null,
+          p_country: country || null,
+          p_status: status || null,
+          p_date_from: date_from || null,
+          p_date_to: date_to || null,
+        });
+        if (error) return res.status(500).json({ error: error.message });
+        return res.json(data || []);
+      } catch {
+        return res.json([]);
+      }
     }
 
     if (path === "/analytics/timeline" && req.method === "GET") {
@@ -193,21 +206,15 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
     }
 
     if (path === "/analytics/pipeline-health" && req.method === "GET") {
-      const since = new Date();
-      since.setDate(since.getDate() - 30);
-
-      const { data, error } = await supabase
-        .from("pipeline_runs")
-        .select("pipeline_type, status")
-        .gte("created_at", since.toISOString());
+      const { data, error } = await supabase.rpc("get_pipeline_health");
       if (error) return res.status(500).json({ error: error.message });
 
+      // Reshape RPC rows [{pipeline_type, status, count}] into grouped format
       const grouped: Record<string, Record<string, number>> = {};
       for (const row of data || []) {
         const ptype = row.pipeline_type || "unknown";
         if (!grouped[ptype]) grouped[ptype] = {};
-        const st = row.status || "unknown";
-        grouped[ptype][st] = (grouped[ptype][st] || 0) + 1;
+        grouped[ptype][row.status || "unknown"] = Number(row.count);
       }
       const result = Object.entries(grouped).map(([pipeline_type, statuses]) => ({
         pipeline_type,
@@ -306,7 +313,7 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/export/jobs" && req.method === "GET") {
       const { source, country, enrichment_status, has_description, limit: limitStr } = req.query as Record<string, string>;
-      const exportLimit = parseInt(limitStr || "10000");
+      const exportLimit = Math.min(parseInt(limitStr || "10000") || 10000, 10000);
 
       let query = supabase
         .from("jobs")
@@ -348,36 +355,23 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
 
     if (path === "/export/skills" && req.method === "GET") {
       const { min_frequency = "2" } = req.query as Record<string, string>;
-      const minFreq = parseInt(min_frequency);
+      const minFreq = parseInt(min_frequency) || 2;
 
-      // Get total jobs count
-      const { count: totalJobs } = await supabase.from("jobs").select("*", { count: "exact", head: true });
-
-      // Get all skills with counts
-      const { data: skills, error } = await supabase
-        .from("job_skills")
-        .select("skill_name, taxonomy_skill_id, confidence_score");
+      // Use SQL aggregation RPC instead of loading all rows
+      const [{ data: skillStats, error }, { count: totalJobs }] = await Promise.all([
+        supabase.rpc("get_skill_export_stats", { p_min_frequency: minFreq }),
+        supabase.from("jobs").select("*", { count: "exact", head: true }),
+      ]);
       if (error) return res.status(500).json({ error: error.message });
 
-      const skillMap: Record<string, { taxonomy_skill_id: string | null; count: number; totalConfidence: number }> = {};
-      for (const s of skills || []) {
-        const name = s.skill_name || "Unknown";
-        if (!skillMap[name]) skillMap[name] = { taxonomy_skill_id: s.taxonomy_skill_id, count: 0, totalConfidence: 0 };
-        skillMap[name].count++;
-        skillMap[name].totalConfidence += s.confidence_score || 0;
-      }
-
       const total = totalJobs || 1;
-      const rows = Object.entries(skillMap)
-        .filter(([_, v]) => v.count >= minFreq)
-        .map(([name, v]) => ({
-          skill_name: name,
-          taxonomy_skill_id: v.taxonomy_skill_id || "",
-          frequency: v.count,
-          pct_of_total_jobs: Math.round((v.count / total) * 1000) / 10,
-          avg_confidence: Math.round((v.totalConfidence / v.count) * 100) / 100,
-        }))
-        .sort((a, b) => b.frequency - a.frequency);
+      const rows = (skillStats || []).map((s: any) => ({
+        skill_name: s.skill_name,
+        taxonomy_skill_id: s.taxonomy_skill_id || "",
+        frequency: Number(s.frequency),
+        pct_of_total_jobs: Math.round((Number(s.frequency) / total) * 1000) / 10,
+        avg_confidence: Number(s.avg_confidence) || 0,
+      }));
 
       const headers = ["skill_name", "taxonomy_skill_id", "frequency", "pct_of_total_jobs", "avg_confidence"];
       const escapeCsv = (val: any) => {

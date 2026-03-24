@@ -52,43 +52,15 @@ export async function handleTaxonomyRoutes(
   }
 
   if (path === "/taxonomy/stats" && req.method === "GET") {
-    // Category counts
-    const { data: catData, error: catErr } = await supabase
-      .from("taxonomy_skills")
-      .select("category");
-    if (catErr) return res.status(500).json({ error: catErr.message });
-
-    const categoryCounts: Record<string, number> = {};
-    for (const row of catData || []) {
-      categoryCounts[row.category] = (categoryCounts[row.category] || 0) + 1;
-    }
-
-    // Hot technology count
-    const { count: hotCount } = await supabase
-      .from("taxonomy_skills")
-      .select("id", { count: "exact", head: true })
-      .eq("is_hot_technology", true);
-
-    // Top skills by job count
-    const { data: topSkills, error: topErr } = await supabase
-      .from("job_skills")
-      .select("skill_name, taxonomy_skill_id");
-    if (topErr) return res.status(500).json({ error: topErr.message });
-
-    const skillCounts: Record<string, number> = {};
-    for (const row of topSkills || []) {
-      skillCounts[row.skill_name] = (skillCounts[row.skill_name] || 0) + 1;
-    }
-    const topSkillsList = Object.entries(skillCounts)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 20)
-      .map(([name, count]) => ({ name, job_count: count }));
+    // Use single RPC for all taxonomy stats (SQL aggregation)
+    const { data, error } = await supabase.rpc("get_taxonomy_stats");
+    if (error) return res.status(500).json({ error: error.message });
 
     return res.json({
-      total: (catData || []).length,
-      by_category: categoryCounts,
-      hot_technologies: hotCount || 0,
-      top_skills: topSkillsList,
+      total: data?.total || 0,
+      by_category: data?.by_category || {},
+      hot_technologies: data?.hot_technologies || 0,
+      top_skills: (data?.top_skills || []).map((s: any) => ({ name: s.name, job_count: Number(s.job_count) })),
     });
   }
 

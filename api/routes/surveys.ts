@@ -408,93 +408,47 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
 
     // GET /api/admin/survey/dashboard
     if (path === "/admin/survey/dashboard" && req.method === "GET") {
-      const [
-        { data: respondents },
-        { data: allResponses },
-        { data: allRatings },
-      ] = await Promise.all([
-        supabase.from("survey_respondents").select("*"),
-        supabase.from("survey_responses").select("respondent_id, section_key"),
-        supabase.from("survey_skill_ratings").select("respondent_id, skill_name, importance_rating, demonstration_rating"),
-      ]);
+      // Use SQL aggregation RPC for dashboard stats
+      const { data: dbStats, error: statsErr } = await supabase.rpc("get_survey_dashboard_stats");
+      if (statsErr) return res.status(500).json({ error: statsErr.message });
 
-      const respList = respondents || [];
-      const responseList = allResponses || [];
-      const ratingList = allRatings || [];
+      const stats = dbStats || {};
+      const totalRespondents = stats.total_respondents || 0;
+      const respondentsWithName = stats.respondents_with_name || 0;
+      const respondentsWithLogin = stats.respondents_with_login || 0;
 
-      // Build per-respondent section sets
-      const respondentSections: Record<string, Set<string>> = {};
-      for (const r of responseList) {
-        if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
-        respondentSections[r.respondent_id].add(r.section_key);
-      }
-      // Profile section: check if respondent has full_name set
-      for (const resp of respList) {
-        if (resp.full_name) {
-          if (!respondentSections[resp.id]) respondentSections[resp.id] = new Set();
-          respondentSections[resp.id].add("profile");
-        }
-      }
-
-      let totalInvited = 0, totalRegistered = 0, totalStarted = 0, totalCompleted = 0;
-      for (const resp of respList) {
-        const sections = respondentSections[resp.id] ? [...respondentSections[resp.id]] : [];
-        const status = determineSurveyStatus(resp, sections);
-        totalInvited++;
-        if (status === "registered" || status === "started" || status === "completed") totalRegistered++;
-        if (status === "started" || status === "completed") totalStarted++;
-        if (status === "completed") totalCompleted++;
-      }
-
-      // Sections completion counts
+      // Compute status counts from SQL-aggregated data
+      // "completed" = respondent who has responses in 5+ distinct sections
+      // We use the sections_completion to approximate
       const sectionsCompletion: Record<string, number> = {};
       for (const section of ADMIN_SURVEY_SECTIONS) {
-        sectionsCompletion[section] = 0;
+        sectionsCompletion[section] = (stats.sections_completion || {})[section] || 0;
       }
-      for (const respId of Object.keys(respondentSections)) {
-        for (const section of respondentSections[respId]) {
-          if (sectionsCompletion[section] !== undefined) sectionsCompletion[section]++;
-        }
-      }
+      // Add profile section count from respondents with full_name
+      sectionsCompletion["profile"] = respondentsWithName;
 
-      // Responses by industry and company size
-      const industryCounts: Record<string, number> = {};
-      const companySizeCounts: Record<string, number> = {};
-      for (const resp of respList) {
-        if (resp.industry) industryCounts[resp.industry] = (industryCounts[resp.industry] || 0) + 1;
-        if (resp.company_size) companySizeCounts[resp.company_size] = (companySizeCounts[resp.company_size] || 0) + 1;
-      }
-
-      // Skill ratings summary
-      const skillAggs: Record<string, { impSum: number; demSum: number; count: number }> = {};
-      for (const r of ratingList) {
-        if (!skillAggs[r.skill_name]) skillAggs[r.skill_name] = { impSum: 0, demSum: 0, count: 0 };
-        skillAggs[r.skill_name].impSum += r.importance_rating || 0;
-        skillAggs[r.skill_name].demSum += r.demonstration_rating || 0;
-        skillAggs[r.skill_name].count++;
-      }
-      const skillEntries = Object.entries(skillAggs).map(([skill, agg]) => ({
-        skill,
-        importance: Math.round((agg.impSum / agg.count) * 10) / 10,
-        demonstration: Math.round((agg.demSum / agg.count) * 10) / 10,
-        gap: Math.round(((agg.impSum - agg.demSum) / agg.count) * 10) / 10,
-      }));
-      const topImportance = [...skillEntries].sort((a, b) => b.importance - a.importance).slice(0, 10);
-      const topGap = [...skillEntries].sort((a, b) => b.gap - a.gap).slice(0, 10);
+      // Skill ratings summary from RPC
+      const skillRatings = stats.skill_ratings_summary || [];
+      const topImportance = [...skillRatings]
+        .sort((a: any, b: any) => (b.importance || 0) - (a.importance || 0))
+        .slice(0, 10);
+      const topGap = [...skillRatings]
+        .sort((a: any, b: any) => (b.gap || 0) - (a.gap || 0))
+        .slice(0, 10);
 
       return res.json({
-        total_invited: totalInvited,
-        total_registered: totalRegistered,
-        total_started: totalStarted,
-        total_completed: totalCompleted,
-        completion_rate: totalInvited > 0 ? Math.round((totalCompleted / totalInvited) * 1000) / 10 : 0,
+        total_invited: totalRespondents,
+        total_registered: respondentsWithLogin,
+        total_started: respondentsWithName,
+        total_completed: Math.min(respondentsWithName, sectionsCompletion["skill_ratings"] || 0),
+        completion_rate: totalRespondents > 0 ? Math.round((respondentsWithName / totalRespondents) * 1000) / 10 : 0,
         sections_completion: sectionsCompletion,
-        responses_by_industry: Object.entries(industryCounts).map(([industry, count]) => ({ industry, count })).sort((a, b) => b.count - a.count),
-        responses_by_company_size: Object.entries(companySizeCounts).map(([company_size, count]) => ({ company_size, count })).sort((a, b) => b.count - a.count),
+        responses_by_industry: stats.responses_by_industry || [],
+        responses_by_company_size: stats.responses_by_company_size || [],
         skill_ratings_summary: {
-          top_importance: topImportance.map(s => ({ skill: s.skill, avg: s.importance })),
-          top_gap: topGap.map(s => ({ skill: s.skill, gap: s.gap })),
-          total_skills_rated: ratingList.length,
+          top_importance: topImportance.map((s: any) => ({ skill: s.skill, avg: Number(s.importance) })),
+          top_gap: topGap.map((s: any) => ({ skill: s.skill, gap: Number(s.gap) })),
+          total_skills_rated: stats.total_ratings || 0,
         },
       });
     }
@@ -502,30 +456,51 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
     // GET /api/admin/survey/respondents
     if (path === "/admin/survey/respondents" && req.method === "GET") {
       const { page = "1", limit = "20", status: filterStatus, search } = req.query as Record<string, string>;
-      const pageNum = parseInt(page);
-      const limitNum = parseInt(limit);
+      const pageNum = parseInt(page) || 1;
+      const limitNum = Math.min(parseInt(limit) || 20, 100);
+      const offset = (pageNum - 1) * limitNum;
 
-      const [{ data: respondents }, { data: allResponses }, { data: allRatings }] = await Promise.all([
-        supabase.from("survey_respondents").select("*").order("created_at", { ascending: false }),
-        supabase.from("survey_responses").select("respondent_id, section_key"),
-        supabase.from("survey_skill_ratings").select("respondent_id"),
-      ]);
+      // Use server-side pagination for respondents
+      let respondentsQuery = supabase
+        .from("survey_respondents")
+        .select("*", { count: "exact" })
+        .order("created_at", { ascending: false });
+
+      // Apply search filter at SQL level
+      if (search) {
+        respondentsQuery = respondentsQuery.or(
+          `email.ilike.%${search}%,full_name.ilike.%${search}%,company_name.ilike.%${search}%`
+        );
+      }
+
+      respondentsQuery = respondentsQuery.range(offset, offset + limitNum - 1);
+
+      const { data: respondents, count, error: rErr } = await respondentsQuery;
+      if (rErr) return res.status(500).json({ error: rErr.message });
 
       const respList = respondents || [];
-      const responseList = allResponses || [];
-      const ratingList = allRatings || [];
+      const respIds = respList.map((r: any) => r.id);
+
+      // Only fetch responses/ratings for the current page of respondents
+      const [{ data: pageResponses }, { data: pageRatings }] = await Promise.all([
+        respIds.length > 0
+          ? supabase.from("survey_responses").select("respondent_id, section_key").in("respondent_id", respIds)
+          : Promise.resolve({ data: [] }),
+        respIds.length > 0
+          ? supabase.from("survey_skill_ratings").select("respondent_id").in("respondent_id", respIds)
+          : Promise.resolve({ data: [] }),
+      ]);
 
       // Build per-respondent data
       const respondentSections: Record<string, Set<string>> = {};
       const respondentRatingCounts: Record<string, number> = {};
-      for (const r of responseList) {
+      for (const r of pageResponses || []) {
         if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
         respondentSections[r.respondent_id].add(r.section_key);
       }
-      for (const r of ratingList) {
+      for (const r of pageRatings || []) {
         respondentRatingCounts[r.respondent_id] = (respondentRatingCounts[r.respondent_id] || 0) + 1;
       }
-      // Profile section check
       for (const resp of respList) {
         if (resp.full_name) {
           if (!respondentSections[resp.id]) respondentSections[resp.id] = new Set();
@@ -550,26 +525,12 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
         };
       });
 
-      // Apply search filter
-      if (search) {
-        const s = search.toLowerCase();
-        enriched = enriched.filter((r: any) =>
-          (r.email && r.email.toLowerCase().includes(s)) ||
-          (r.full_name && r.full_name.toLowerCase().includes(s)) ||
-          (r.company_name && r.company_name.toLowerCase().includes(s))
-        );
-      }
-
-      // Apply status filter
+      // Apply status filter client-side (status is derived, not a DB column)
       if (filterStatus && filterStatus !== "all") {
         enriched = enriched.filter((r: any) => r.status === filterStatus);
       }
 
-      const total = enriched.length;
-      const offset = (pageNum - 1) * limitNum;
-      const paginated = enriched.slice(offset, offset + limitNum);
-
-      return res.json({ respondents: paginated, total, page: pageNum });
+      return res.json({ respondents: enriched, total: count || 0, page: pageNum });
     }
 
     // GET /api/admin/survey/respondent/:id

@@ -12,9 +12,11 @@ export async function handleSettingsRoutes(path: string, req: VercelRequest, res
   }
 
   if (path === "/monitoring/queue-stats" && req.method === "GET") {
-    const { count: pendingCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "pending");
-    const { count: processingCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "processing");
-    const { count: deadLetterCount } = await supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "dead_letter");
+    const [{ count: pendingCount }, { count: processingCount }, { count: deadLetterCount }] = await Promise.all([
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "pending"),
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "processing"),
+      supabase.from("job_queue").select("*", { count: "exact", head: true }).eq("status", "dead_letter"),
+    ]);
     return res.json({ pending: pendingCount || 0, processing: processingCount || 0, dead_letter: deadLetterCount || 0 });
   }
 
