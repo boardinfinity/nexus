@@ -14,8 +14,8 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
       .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, posted_at, enrichment_status, job_status, status_checked_at, source_url, created_at", { count: "exact" });
 
     if (search) query = query.ilike("title", `%${search}%`);
-    if (source) query = query.eq("source", source);
-    if (enrichment_status) query = query.eq("enrichment_status", enrichment_status);
+    if (source) query = query.ilike("source", source);
+    if (enrichment_status) query = query.ilike("enrichment_status", enrichment_status);
     if (seniority_level) query = query.eq("seniority_level", seniority_level);
     if (employment_type) query = query.eq("employment_type", employment_type);
     if (location_country) query = query.ilike("location_country", `%${location_country}%`);

@@ -281,9 +281,24 @@ export async function handleUploadRoutes(path: string, req: VercelRequest, res: 
     if (!upload_id || !source_type || !Array.isArray(rows) || rows.length === 0) {
         return res.status(400).json({ error: "upload_id, source_type, and rows[] are required" });
     }
-    const batchResult = await processUploadBatch(rows, source_type, upload_id);
-    await finalizeUpload(upload_id);
-    return res.json({ batch_result: batchResult });
+    try {
+      const batchResult = await processUploadBatch(rows, source_type, upload_id);
+      await finalizeUpload(upload_id);
+      return res.json({ batch_result: batchResult });
+    } catch (err: any) {
+      // Mark upload as failed so it doesn't stay stuck in "processing"
+      const { data: current } = await supabase
+        .from("csv_uploads")
+        .select("processed_rows, skipped_rows, failed_rows")
+        .eq("id", upload_id)
+        .single();
+      await supabase.from("csv_uploads").update({
+        status: "failed",
+        completed_at: new Date().toISOString(),
+        error_log: [{ error: err.message || "Batch processing crashed", rows_at_failure: current?.processed_rows || 0 }],
+      }).eq("id", upload_id);
+      return res.status(500).json({ error: err.message || "Upload batch processing failed" });
+    }
   }
 
   if (path.match(/^\/upload\/template\/(clay_linkedin|google_jobs|custom)$/) && req.method === "GET") {
@@ -296,6 +311,24 @@ export async function handleUploadRoutes(path: string, req: VercelRequest, res: 
     res.setHeader("Content-Type", "text/csv");
     res.setHeader("Content-Disposition", `attachment; filename="template_${source}.csv"`);
     return res.send(templates[source] + "\n");
+  }
+
+  // PATCH /upload/:id — fix stuck uploads (mark as failed/completed)
+  if (path.match(/^\/upload\/[0-9a-f-]+$/) && req.method === "PATCH") {
+    if (!requirePermission("upload", "write")(auth, res)) return;
+    const id = path.split("/").pop();
+    const { status: newStatus } = req.body || {};
+    if (!newStatus || !["completed", "failed"].includes(newStatus)) {
+      return res.status(400).json({ error: "status must be 'completed' or 'failed'" });
+    }
+    const { data, error } = await supabase
+      .from("csv_uploads")
+      .update({ status: newStatus, completed_at: new Date().toISOString() })
+      .eq("id", id)
+      .select()
+      .single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json(data);
   }
 
   if (path.match(/^\/upload\/[0-9a-f-]+$/) && req.method === "GET") {

@@ -12,8 +12,12 @@ export async function handleTaxonomyRoutes(
   if (!requireReader(auth, "taxonomy", res)) return;
 
   if (path === "/taxonomy" && req.method === "GET") {
-    const { category, source, search, page = "1", limit = "50" } = req.query as Record<string, string>;
+    const { category, source, search, page = "1", limit = "50", sort = "name", order = "asc" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
+    const ascending = order !== "desc";
+    const allowedSortCols = ["name", "category", "subcategory", "source", "created_at"];
+    const sortByJobCount = sort === "job_count";
+    const sortCol = allowedSortCols.includes(sort) ? sort : "name";
 
     let query = supabase
       .from("taxonomy_skills")
@@ -23,8 +27,14 @@ export async function handleTaxonomyRoutes(
     if (source) query = query.eq("source", source);
     if (search) query = query.ilike("name", `%${search}%`);
 
+    // Apply ordering — job_count sorting is done in-memory after enrichment
+    if (!sortByJobCount) {
+      query = query.order(sortCol, { ascending });
+    } else {
+      query = query.order("name", { ascending: true });
+    }
+
     const { data, error, count } = await query
-      .order("name")
       .range(offset, offset + parseInt(limit) - 1);
 
     if (error) return res.status(500).json({ error: error.message });
@@ -45,6 +55,14 @@ export async function handleTaxonomyRoutes(
       }
       for (const skill of data) {
         (skill as any).job_count = countMap[(skill as any).id] || 0;
+      }
+
+      // Sort by job_count in-memory if requested
+      if (sortByJobCount) {
+        data.sort((a: any, b: any) => ascending
+          ? (a.job_count || 0) - (b.job_count || 0)
+          : (b.job_count || 0) - (a.job_count || 0)
+        );
       }
     }
 

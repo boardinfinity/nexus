@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText } from "lucide-react";
+import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
 interface TaxonomySkill {
@@ -61,8 +61,25 @@ export default function Taxonomy() {
   const [selectedSkill, setSelectedSkill] = useState<TaxonomySkill | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [sortCol, setSortCol] = useState("name");
+  const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  function toggleSort(col: string) {
+    if (sortCol === col) {
+      setSortOrder(sortOrder === "asc" ? "desc" : "asc");
+    } else {
+      setSortCol(col);
+      setSortOrder(col === "job_count" ? "desc" : "asc");
+    }
+    setPage(1);
+  }
+
+  function SortIcon({ col }: { col: string }) {
+    if (sortCol !== col) return <ArrowUpDown className="h-3 w-3 opacity-40" />;
+    return sortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />;
+  }
 
   const { data: stats } = useQuery<TaxonomyStats>({
     queryKey: ["/api/taxonomy/stats"],
@@ -74,9 +91,9 @@ export default function Taxonomy() {
   });
 
   const { data, isLoading } = useQuery<{ data: TaxonomySkill[]; total: number }>({
-    queryKey: ["/api/taxonomy", page, category, search],
+    queryKey: ["/api/taxonomy", page, category, search, sortCol, sortOrder],
     queryFn: async () => {
-      const params = new URLSearchParams({ page: String(page), limit: "50" });
+      const params = new URLSearchParams({ page: String(page), limit: "50", sort: sortCol, order: sortOrder });
       if (category && category !== "all") params.set("category", category);
       if (search) params.set("search", search);
       const res = await authFetch(`/api/taxonomy?${params}`);
@@ -235,7 +252,11 @@ export default function Taxonomy() {
           <DataTable
             columns={[
               {
-                header: "Name",
+                header: () => (
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("name")}>
+                    Name <SortIcon col="name" />
+                  </button>
+                ),
                 accessor: (r: TaxonomySkill) => (
                   <div className="flex items-center gap-2">
                     {editingId === r.id ? (
@@ -277,7 +298,11 @@ export default function Taxonomy() {
                 ),
               },
               {
-                header: "Category",
+                header: () => (
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("category")}>
+                    Category <SortIcon col="category" />
+                  </button>
+                ),
                 accessor: (r: TaxonomySkill) => (
                   <Badge className={`text-xs ${categoryColors[r.category] || ""}`}>
                     {r.category.replace("_", " ")}
@@ -285,15 +310,35 @@ export default function Taxonomy() {
                 ),
               },
               {
-                header: "Jobs",
+                header: () => (
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("job_count")}>
+                    Jobs <SortIcon col="job_count" />
+                  </button>
+                ),
                 accessor: (r: TaxonomySkill) => (
                   <Badge variant="outline" className="text-[11px]">
                     {r.job_count || 0}
                   </Badge>
                 ),
               },
-              { header: "Subcategory", accessor: (r: TaxonomySkill) => r.subcategory || "—", className: "text-muted-foreground text-sm" },
-              { header: "Source", accessor: (r: TaxonomySkill) => r.source.toUpperCase(), className: "text-xs font-mono" },
+              {
+                header: () => (
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("subcategory")}>
+                    Subcategory <SortIcon col="subcategory" />
+                  </button>
+                ),
+                accessor: (r: TaxonomySkill) => r.subcategory || "—",
+                className: "text-muted-foreground text-sm",
+              },
+              {
+                header: () => (
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("source")}>
+                    Source <SortIcon col="source" />
+                  </button>
+                ),
+                accessor: (r: TaxonomySkill) => r.source.toUpperCase(),
+                className: "text-xs font-mono",
+              },
             ]}
             data={data?.data ?? []}
             isLoading={isLoading}

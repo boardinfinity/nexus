@@ -37,7 +37,7 @@ export default function Jobs() {
   if (search) params.set("search", search);
   if (source !== "all") params.set("source", source);
   if (status !== "all") params.set("enrichment_status", status);
-  if (seniority !== "all") params.set("seniority", seniority);
+  if (seniority !== "all") params.set("seniority_level", seniority);
 
   const { data, isLoading } = useQuery<{ data: Job[]; total: number }>({
     queryKey: ["/api/jobs", params.toString()],
@@ -132,7 +132,7 @@ export default function Jobs() {
             <SelectItem value="all">All Statuses</SelectItem>
             <SelectItem value="pending">Pending</SelectItem>
             <SelectItem value="partial">Partial</SelectItem>
-            <SelectItem value="complete">Complete</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
             <SelectItem value="failed">Failed</SelectItem>
           </SelectContent>
         </Select>
@@ -142,10 +142,10 @@ export default function Jobs() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Levels</SelectItem>
-            <SelectItem value="entry">Entry</SelectItem>
-            <SelectItem value="mid">Mid</SelectItem>
-            <SelectItem value="senior">Senior</SelectItem>
-            <SelectItem value="lead">Lead</SelectItem>
+            <SelectItem value="internship">Internship</SelectItem>
+            <SelectItem value="associate">Associate</SelectItem>
+            <SelectItem value="entry_level">Entry Level</SelectItem>
+            <SelectItem value="mid_senior">Mid-Senior</SelectItem>
             <SelectItem value="director">Director</SelectItem>
             <SelectItem value="executive">Executive</SelectItem>
           </SelectContent>

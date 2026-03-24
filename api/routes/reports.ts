@@ -103,8 +103,6 @@ export async function handleReportRoutes(
   res: VercelResponse,
   auth: AuthResult
 ): Promise<VercelResponse | undefined> {
-  if (!requireReader(auth, "reports", res)) return;
-
   // POST /api/reports — create report record
   if (path === "/reports" && req.method === "POST") {
     if (!requirePermission("reports", "write")(auth, res)) return;

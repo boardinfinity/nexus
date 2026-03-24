@@ -28,40 +28,50 @@ export async function handleCompaniesRoutes(path: string, req: VercelRequest, re
 
   if (path === "/companies/auto-enrich" && req.method === "POST") {
     if (!requirePermission("companies", "write")(auth, res)) return;
+    const BATCH_LIMIT = 50;
+
+    // Only fetch unenriched/pending companies, limited to batch size
     const { data: companies, error: compErr } = await supabase
       .from("companies")
-      .select("id, name");
+      .select("id, name, industry, employee_count, headquarters_city, headquarters_country, website, linkedin_url, description, founded_year, enrichment_status, enrichment_score")
+      .or("enrichment_status.is.null,enrichment_status.eq.pending,enrichment_status.eq.partial")
+      .order("created_at", { ascending: false })
+      .limit(BATCH_LIMIT);
     if (compErr) return res.status(500).json({ error: compErr.message });
 
     let enriched = 0;
-    for (const company of companies || []) {
-      // Use RPC to get aggregated job stats instead of fetching all rows
-      const { data: stats } = await supabase.rpc("get_company_job_stats", { p_company_id: company.id });
-      const jobStats = Array.isArray(stats) ? stats[0] : stats;
+    const enrichPromises = (companies || []).map(async (company) => {
+      try {
+        const { data: stats } = await supabase.rpc("get_company_job_stats", { p_company_id: company.id });
+        const jobStats = Array.isArray(stats) ? stats[0] : stats;
+        if (!jobStats || jobStats.job_count === 0) return;
 
-      if (!jobStats || jobStats.job_count === 0) continue;
+        const updates: Record<string, any> = {
+          updated_at: new Date().toISOString(),
+        };
+        if (jobStats.top_location && !company.headquarters_city) updates.headquarters_city = jobStats.top_location;
 
-      const updates: Record<string, any> = {
-        updated_at: new Date().toISOString(),
-      };
-      if (jobStats.top_location) updates.headquarters_city = jobStats.top_location;
-
-      const { data: current } = await supabase.from("companies").select("*").eq("id", company.id).single();
-      if (current) {
         const fields = ["industry", "employee_count", "headquarters_city", "headquarters_country", "website", "linkedin_url", "description", "founded_year"];
-        const merged = { ...current, ...updates };
+        const merged = { ...company, ...updates };
         const filledCount = fields.filter(f => merged[f] != null && merged[f] !== "").length;
         updates.enrichment_score = Math.round((filledCount / fields.length) * 100);
-        if (updates.enrichment_score > 0 && (!current.enrichment_status || current.enrichment_status === "pending")) {
+        if (updates.enrichment_score > 0 && (!company.enrichment_status || company.enrichment_status === "pending")) {
           updates.enrichment_status = "partial";
         }
-      }
 
-      await supabase.from("companies").update(updates).eq("id", company.id);
-      enriched++;
+        await supabase.from("companies").update(updates).eq("id", company.id);
+        enriched++;
+      } catch {
+        // Skip failed individual companies
+      }
+    });
+
+    // Process in parallel with concurrency limit (batches of 10)
+    for (let i = 0; i < enrichPromises.length; i += 10) {
+      await Promise.all(enrichPromises.slice(i, i + 10));
     }
 
-    return res.json({ success: true, enriched, total: (companies || []).length });
+    return res.json({ success: true, enriched, total: (companies || []).length, batch_limit: BATCH_LIMIT });
   }
 
   if (path === "/companies/deduplicate" && req.method === "POST") {

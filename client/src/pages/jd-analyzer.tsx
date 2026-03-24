@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,8 +7,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
-import { Loader2, Sparkles, FileText, CheckCircle } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { cn } from "@/lib/utils";
 
 interface ExtractedSkill {
   name: string;
@@ -45,13 +48,28 @@ export default function JDAnalyzer() {
   const [mode, setMode] = useState<"paste" | "select">("paste");
   const [text, setText] = useState("");
   const [selectedJobId, setSelectedJobId] = useState("");
+  const [selectedJobLabel, setSelectedJobLabel] = useState("");
   const [result, setResult] = useState<AnalyzeResult | null>(null);
+  const [jobSearchOpen, setJobSearchOpen] = useState(false);
+  const [jobSearchQuery, setJobSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
   const { toast } = useToast();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
 
-  const { data: jobs } = useQuery<{ data: Job[] }>({
-    queryKey: ["/api/jobs-for-analyzer"],
+  // Debounce search input
+  useEffect(() => {
+    debounceRef.current = setTimeout(() => {
+      setDebouncedSearch(jobSearchQuery);
+    }, 300);
+    return () => clearTimeout(debounceRef.current);
+  }, [jobSearchQuery]);
+
+  const { data: jobs, isLoading: jobsLoading } = useQuery<{ data: Job[] }>({
+    queryKey: ["/api/jobs-search", debouncedSearch],
     queryFn: async () => {
-      const res = await authFetch("/api/jobs?limit=100&page=1");
+      const params = new URLSearchParams({ limit: "50", page: "1" });
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      const res = await authFetch(`/api/jobs?${params}`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
       return res.json();
     },
@@ -125,18 +143,68 @@ export default function JDAnalyzer() {
             ) : (
               <div className="space-y-2">
                 <Label className="text-xs">Select a Job</Label>
-                <Select value={selectedJobId} onValueChange={setSelectedJobId}>
-                  <SelectTrigger data-testid="jd-job-select">
-                    <SelectValue placeholder="Choose a job..." />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(jobs?.data || []).map((job) => (
-                      <SelectItem key={job.id} value={job.id}>
-                        {job.title} {job.company_name ? `@ ${job.company_name}` : ""}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={jobSearchOpen} onOpenChange={setJobSearchOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      variant="outline"
+                      role="combobox"
+                      aria-expanded={jobSearchOpen}
+                      className="w-full justify-between text-sm font-normal h-10"
+                      data-testid="jd-job-select"
+                    >
+                      {selectedJobLabel || "Search and select a job..."}
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+                    <Command shouldFilter={false}>
+                      <CommandInput
+                        placeholder="Type to search jobs..."
+                        value={jobSearchQuery}
+                        onValueChange={setJobSearchQuery}
+                      />
+                      <CommandList>
+                        {jobsLoading ? (
+                          <div className="flex items-center justify-center py-6">
+                            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                          </div>
+                        ) : (
+                          <>
+                            <CommandEmpty>No jobs found.</CommandEmpty>
+                            <CommandGroup>
+                              {(jobs?.data || []).map((job) => (
+                                <CommandItem
+                                  key={job.id}
+                                  value={job.id}
+                                  onSelect={() => {
+                                    setSelectedJobId(job.id);
+                                    setSelectedJobLabel(
+                                      `${job.title}${job.company_name ? ` @ ${job.company_name}` : ""}`
+                                    );
+                                    setJobSearchOpen(false);
+                                  }}
+                                >
+                                  <Check
+                                    className={cn(
+                                      "mr-2 h-4 w-4",
+                                      selectedJobId === job.id ? "opacity-100" : "opacity-0"
+                                    )}
+                                  />
+                                  <span className="truncate">
+                                    {job.title}
+                                    {job.company_name && (
+                                      <span className="text-muted-foreground ml-1">@ {job.company_name}</span>
+                                    )}
+                                  </span>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </>
+                        )}
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
                 <p className="text-[11px] text-muted-foreground">
                   Note: Scraped jobs may not have full descriptions. If analysis fails, switch to "Paste JD Text" and paste the description manually.
                 </p>
@@ -177,7 +245,7 @@ export default function JDAnalyzer() {
             {analyze.isPending && (
               <div className="text-center py-12">
                 <Loader2 className="h-8 w-8 animate-spin mx-auto text-primary" />
-                <p className="text-sm text-muted-foreground mt-2">Extracting skills with GPT-4o-mini...</p>
+                <p className="text-sm text-muted-foreground mt-2">Extracting skills with AI...</p>
               </div>
             )}
 
