@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 import { normalizeText, mapEmploymentTypeExtended, mapSeniorityFromClay, upsertCompanyByName, normalizeCompanyName, parseDomain } from "../lib/helpers";
 
@@ -249,54 +249,7 @@ async function finalizeUpload(uploadId: string) {
 }
 
 export async function handleUploadRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
-  if (path === "/migrate/csv-upload" && req.method === "POST") {
-    const statements = [
-        `CREATE EXTENSION IF NOT EXISTS pg_trgm`,
-        `CREATE TABLE IF NOT EXISTS csv_uploads (
-          id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-          filename TEXT NOT NULL,
-          source_type TEXT NOT NULL,
-          total_rows INTEGER NOT NULL,
-          processed_rows INTEGER DEFAULT 0,
-          skipped_rows INTEGER DEFAULT 0,
-          failed_rows INTEGER DEFAULT 0,
-          error_log JSONB DEFAULT '[]',
-          status TEXT DEFAULT 'processing',
-          uploaded_by TEXT,
-          created_at TIMESTAMPTZ DEFAULT now(),
-          completed_at TIMESTAMPTZ
-        )`,
-        `CREATE INDEX IF NOT EXISTS idx_csv_uploads_status ON csv_uploads (status, created_at DESC)`,
-        `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS title_normalized TEXT`,
-        `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS company_name_normalized TEXT`,
-        `ALTER TABLE jobs ADD COLUMN IF NOT EXISTS salary_unit TEXT`,
-    ];
-    const results: Array<{ sql: string; ok: boolean; error?: string }> = [];
-    for (const sql of statements) {
-        const { error } = await supabase.rpc("exec_sql", { query: sql }).maybeSingle();
-        if (error) {
-          const { error: directError } = await supabase.from("csv_uploads").select("id").limit(0);
-          results.push({ sql: sql.slice(0, 80), ok: !directError, error: error.message });
-        } else {
-          results.push({ sql: sql.slice(0, 80), ok: true });
-        }
-    }
-    return res.json({ message: "Migration attempted", results });
-  }
-
-  if (path === "/migrate/company-dedup" && req.method === "POST") {
-    const statements = [
-        `ALTER TABLE companies ADD COLUMN IF NOT EXISTS name_normalized TEXT`,
-        `CREATE INDEX IF NOT EXISTS idx_companies_name_normalized ON companies(name_normalized)`,
-        `UPDATE companies SET name_normalized = TRIM(REGEXP_REPLACE(REGEXP_REPLACE(LOWER(name), '\\s*(pvt\\.?\\s*ltd\\.?|ltd\\.?|inc\\.?|llc|corp\\.?|corporation|private\\s+limited|limited|india)\\s*$', '', 'gi'), '\\s+', ' ', 'g')) WHERE name_normalized IS NULL`,
-    ];
-    const results: Array<{ sql: string; ok: boolean; error?: string }> = [];
-    for (const sql of statements) {
-        const { error } = await supabase.rpc("exec_sql", { query: sql }).maybeSingle();
-        results.push({ sql: sql.slice(0, 80), ok: !error, error: error?.message });
-    }
-    return res.json({ message: "Company dedup migration attempted", results });
-  }
+  if (!requireReader(auth, "upload", res)) return;
 
   if (path === "/upload/start" && req.method === "POST") {
     if (!requirePermission("upload", "write")(auth, res)) return;

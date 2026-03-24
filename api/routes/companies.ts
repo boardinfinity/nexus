@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader, requireEditor } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export async function handleCompaniesRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "companies", res)) return;
+
   if (path.match(/^\/companies\/?$/) && req.method === "GET") {
     const { search, industry, size_range, headquarters_country, page = "1", limit = "50" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -112,6 +114,7 @@ export async function handleCompaniesRoutes(path: string, req: VercelRequest, re
   }
 
   if (path.match(/^\/companies\/[^/]+$/) && req.method === "PATCH") {
+    if (!requireEditor(auth, "companies", res)) return;
     const id = path.split("/").pop();
     const allowedFields = [
       "industry", "sub_industry", "company_type", "size_range", "employee_count",

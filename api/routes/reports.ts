@@ -1,8 +1,18 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, ANTHROPIC_API_KEY } from "../lib/supabase";
 import { callClaude } from "../lib/openai";
 import { chunkText } from "../lib/helpers";
+
+function isAllowedFileUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname.endsWith('.supabase.co') ||
+           parsed.hostname.endsWith('.supabase.in');
+  } catch {
+    return false;
+  }
+}
 
 async function processReportChunk(
   text: string, title: string, sourceOrg: string, year: number,
@@ -93,12 +103,17 @@ export async function handleReportRoutes(
   res: VercelResponse,
   auth: AuthResult
 ): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "reports", res)) return;
+
   // POST /api/reports — create report record
   if (path === "/reports" && req.method === "POST") {
     if (!requirePermission("reports", "write")(auth, res)) return;
     const { title, source_org, report_year, report_type, region, file_url, file_type, file_size_bytes } = req.body || {};
     if (!title || !file_url) {
       return res.status(400).json({ error: "title and file_url are required" });
+    }
+    if (!isAllowedFileUrl(file_url)) {
+      return res.status(400).json({ error: "Invalid file URL: must be a Supabase storage URL" });
     }
     const { data, error } = await supabase
       .from("secondary_reports")
@@ -219,6 +234,10 @@ export async function handleReportRoutes(
       if (phase === "extract_text") {
         if (report.processing_status === "completed") return res.status(400).json({ error: "Report already processed" });
 
+        if (!isAllowedFileUrl(report.file_url)) {
+          return res.status(400).json({ error: "Invalid file URL: must be a Supabase storage URL" });
+        }
+
         await supabase.from("secondary_reports").update({
           processing_status: "processing",
           error_message: null,
@@ -258,6 +277,10 @@ export async function handleReportRoutes(
 
         if (chunkIndex >= totalChunks) {
           return res.json({ next_phase: "merge_results" });
+        }
+
+        if (!isAllowedFileUrl(report.file_url)) {
+          return res.status(400).json({ error: "Invalid file URL: must be a Supabase storage URL" });
         }
 
         // Re-download and re-parse PDF to get the chunk

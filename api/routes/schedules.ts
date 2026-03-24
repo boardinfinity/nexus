@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { CronExpressionParser } from "cron-parser";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader, requireAdmin } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export function calculateNextRun(frequency: string, cronExpression?: string | null, from?: Date): string {
@@ -28,6 +28,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "custom"];
 
   if (path.match(/^\/schedules\/?$/) && req.method === "GET") {
+    if (!requireReader(auth, "schedules", res)) return;
     const { data, error } = await supabase
         .from("pipeline_schedules")
         .select("*")
@@ -37,6 +38,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   }
 
   if (path.match(/^\/schedules\/?$/) && req.method === "POST") {
+    if (!requireAdmin(auth, res)) return;
     const { name, pipeline_type, config, frequency, cron_expression, max_runs, credit_limit } = req.body || {};
     if (!name) return res.status(400).json({ error: "name is required" });
     if (!pipeline_type || !VALID_PIPELINE_TYPES.includes(pipeline_type)) {
@@ -65,6 +67,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   }
 
   if (path.match(/^\/schedules\/[^/]+$/) && req.method === "PUT") {
+    if (!requireAdmin(auth, res)) return;
     const id = path.split("/").pop();
     const { name, config, frequency, cron_expression, max_runs, credit_limit } = req.body || {};
     if (frequency && !VALID_FREQUENCIES.includes(frequency)) {
@@ -91,6 +94,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   }
 
   if (path.match(/^\/schedules\/[^/]+\/pause$/) && req.method === "POST") {
+    if (!requireAdmin(auth, res)) return;
     const id = path.split("/")[2];
     const { data, error } = await supabase
         .from("pipeline_schedules")
@@ -101,6 +105,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   }
 
   if (path.match(/^\/schedules\/[^/]+\/resume$/) && req.method === "POST") {
+    if (!requireAdmin(auth, res)) return;
     const id = path.split("/")[2];
     const { data: schedule } = await supabase.from("pipeline_schedules").select("*").eq("id", id).single();
     if (!schedule) return res.status(404).json({ error: "Schedule not found" });
@@ -123,6 +128,7 @@ export async function handleScheduleRoutes(path: string, req: VercelRequest, res
   }
 
   if (path.match(/^\/schedules\/[^/]+\/runs$/) && req.method === "GET") {
+    if (!requireReader(auth, "schedules", res)) return;
     const id = path.split("/")[2];
     const limit = req.query?.limit || "20";
     const offset = req.query?.offset || "0";

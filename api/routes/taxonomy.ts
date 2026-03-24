@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, OPENAI_API_KEY } from "../lib/supabase";
-import type { AuthResult } from "../lib/auth";
+import { type AuthResult, requireReader, requireEditor } from "../lib/auth";
 import { extractSkillsWithAI } from "../lib/openai";
 
 export async function handleTaxonomyRoutes(
@@ -9,6 +9,8 @@ export async function handleTaxonomyRoutes(
   res: VercelResponse,
   auth: AuthResult
 ): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "taxonomy", res)) return;
+
   if (path === "/taxonomy" && req.method === "GET") {
     const { category, source, search, page = "1", limit = "50" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -110,6 +112,7 @@ export async function handleTaxonomyRoutes(
 
   // Edit taxonomy skill name
   if (path.match(/^\/taxonomy\/[^/]+$/) && req.method === "PATCH") {
+    if (!requireEditor(auth, "taxonomy", res)) return;
     const id = path.split("/")[2];
     const { name } = req.body || {};
     if (!name) return res.status(400).json({ error: "name is required" });

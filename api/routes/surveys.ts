@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
-import { AuthResult, requirePermission, verifyAuth } from "../lib/auth";
+import { AuthResult, requirePermission, requireAdmin, verifyAuth } from "../lib/auth";
 import { supabase, JWT_SECRET, RESEND_API_KEY } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
 
@@ -121,28 +121,45 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
   }
 
   // ---- POST /api/survey/auth/register ----
-  // Called after Supabase Auth OTP verification succeeds on the frontend.
-  // Creates/upserts a survey_respondents record and issues a survey JWT.
+  // Requires OTP verification before issuing JWT. Accepts email + otp_code.
   if (path === "/survey/auth/register" && req.method === "POST") {
-    const { email } = req.body || {};
+    const { email, otp_code } = req.body || {};
     if (!email || typeof email !== "string") {
       return res.status(400).json({ error: "Email is required" });
     }
+    if (!otp_code) {
+      return res.status(400).json({ error: "OTP code is required. Please request an OTP first." });
+    }
     const normalizedEmail = email.toLowerCase().trim();
 
-    // Upsert respondent (create if first time, update last_login if returning)
+    // Look up the respondent and verify OTP server-side
     const { data: respondent, error } = await supabase
       .from("survey_respondents")
-      .upsert(
-        { email: normalizedEmail, last_login_at: new Date().toISOString() },
-        { onConflict: "email" }
-      )
-      .select("id")
+      .select("id, auth_otp, auth_otp_expires")
+      .eq("email", normalizedEmail)
       .single();
 
     if (error || !respondent) {
-      return res.status(500).json({ error: error?.message || "Failed to register respondent" });
+      return res.status(404).json({ error: "Email not found. Please request a new OTP." });
     }
+    if (!respondent.auth_otp || !respondent.auth_otp_expires) {
+      return res.status(400).json({ error: "No OTP pending. Please request a new one." });
+    }
+    if (new Date(respondent.auth_otp_expires) < new Date()) {
+      return res.status(400).json({ error: "OTP has expired. Please request a new one." });
+    }
+
+    const isValid = await bcrypt.compare(otp_code, respondent.auth_otp);
+    if (!isValid) {
+      return res.status(400).json({ error: "Invalid OTP" });
+    }
+
+    // Clear OTP after successful verification
+    await supabase.from("survey_respondents").update({
+      auth_otp: null,
+      auth_otp_expires: null,
+      last_login_at: new Date().toISOString(),
+    }).eq("id", respondent.id);
 
     const token = jwt.sign(
       { respondent_id: respondent.id, email: normalizedEmail },
@@ -387,6 +404,8 @@ function determineSurveyStatus(respondent: any, responseSectionKeys: string[]): 
 }
 
 export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+    if (!requireAdmin(auth, res)) return;
+
     // GET /api/admin/survey/dashboard
     if (path === "/admin/survey/dashboard" && req.method === "GET") {
       const [

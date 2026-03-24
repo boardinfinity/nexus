@@ -1,9 +1,12 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult } from "../lib/auth";
+import { AuthResult, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export async function handleAnalyticsRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
     // ==================== ANALYTICS ====================
+
+    // Analytics section maps to dashboard permission for read access
+    if (!requireReader(auth, "dashboard", res)) return;
 
     if (path === "/analytics/overview" && req.method === "GET") {
       const { date_from, date_to, source, country, status } = req.query as Record<string, string>;

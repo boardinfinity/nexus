@@ -82,6 +82,30 @@ export function requireSuperAdmin(auth: AuthResult, res: VercelResponse): boolea
   return true;
 }
 
+export function requireAdmin(auth: AuthResult, res: VercelResponse): boolean {
+  if (!auth.nexusUser || (auth.nexusUser.role !== "super_admin" && auth.nexusUser.role !== "admin")) {
+    res.status(403).json({ error: "Admin access required" });
+    return false;
+  }
+  return true;
+}
+
+export function requireEditor(auth: AuthResult, section: string, res: VercelResponse): boolean {
+  if (!auth.nexusUser || !hasPermission(auth.nexusUser, section, "write")) {
+    res.status(403).json({ error: "Insufficient permissions" });
+    return false;
+  }
+  return true;
+}
+
+export function requireReader(auth: AuthResult, section: string, res: VercelResponse): boolean {
+  if (!auth.nexusUser || !hasPermission(auth.nexusUser, section, "read")) {
+    res.status(403).json({ error: "Insufficient permissions" });
+    return false;
+  }
+  return true;
+}
+
 export async function verifyAuth(req: VercelRequest): Promise<AuthResult> {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {

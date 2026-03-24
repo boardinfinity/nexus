@@ -1,11 +1,13 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, APIFY_API_KEY, RAPIDAPI_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
+  if (!requireReader(auth, "pipelines", res)) return;
+
   if (path.match(/^\/pipelines\/?$/) && req.method === "GET") {
     const { page = "1", limit = "20" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);

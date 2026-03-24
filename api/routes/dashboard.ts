@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult } from "../lib/auth";
+import { AuthResult, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export async function handleDashboardRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "dashboard", res)) return;
+
   if (path === "/dashboard/stats" && req.method === "GET") {
     const { data, error } = await supabase.rpc("get_dashboard_stats");
     if (error) return res.status(500).json({ error: error.message });

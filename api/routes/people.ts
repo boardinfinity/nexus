@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase } from "../lib/supabase";
-import type { AuthResult } from "../lib/auth";
+import { type AuthResult, requireReader } from "../lib/auth";
 
 export async function handlePeopleRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "people", res)) return;
+
   if (path.match(/^\/people\/?$/) && req.method === "GET") {
     const { search, seniority, function: fn, is_recruiter, is_hiring_manager, page = "1", limit = "50" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);

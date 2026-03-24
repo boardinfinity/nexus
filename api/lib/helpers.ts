@@ -1,3 +1,4 @@
+import { randomInt } from "crypto";
 import { supabase } from "./supabase";
 
 export function normalizeText(s: string): string {
@@ -170,11 +171,10 @@ export function mapPersonFunction(raw: string | null | undefined): string {
   return "other";
 }
 
-export function generateSecureOtp(length: number): string {
-  const digits = "0123456789";
+export function generateSecureOtp(length: number = 6): string {
   let otp = "";
   for (let i = 0; i < length; i++) {
-    otp += digits[Math.floor(Math.random() * digits.length)];
+    otp += randomInt(0, 10).toString();
   }
   return otp;
 }

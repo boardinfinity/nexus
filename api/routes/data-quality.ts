@@ -1,8 +1,10 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult } from "../lib/auth";
+import { AuthResult, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export async function handleDataQualityRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "data_quality", res)) return;
+
   if (path === "/data-quality/stats" && req.method === "GET") {
     // Use RPCs and aggregation queries instead of fetching all rows
     const [distResult, countResult] = await Promise.all([

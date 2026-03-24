@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireAdmin } from "../lib/auth";
 import { supabase, JWT_SECRET, RESEND_API_KEY } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
 
@@ -145,6 +145,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
   // ---- GET /api/placeintel/profile/:college_id ----
   if (path.match(/^\/placeintel\/profile\/[^/]+$/) && req.method === "GET") {
     const collegeId = path.split("/")[3];
+    if (piAuth.college_id !== collegeId) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const { data: profile } = await supabase.from("placement_profiles").select("*").eq("college_id", collegeId).single();
     const { data: programs } = await supabase.from("placement_programs").select("*").eq("college_id", collegeId).order("program_name");
     return res.json({ profile: profile || null, programs: programs || [] });
@@ -153,6 +156,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
   // ---- POST /api/placeintel/profile/:college_id ---- (create/update — auto-save)
   if (path.match(/^\/placeintel\/profile\/[^/]+$/) && req.method === "POST") {
     const collegeId = path.split("/")[3];
+    if (piAuth.college_id !== collegeId) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const body = req.body || {};
 
     // Remove fields that shouldn't be set by user
@@ -197,6 +203,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
   // ---- POST /api/placeintel/profile/:college_id/submit ----
   if (path.match(/^\/placeintel\/profile\/[^/]+\/submit$/) && req.method === "POST") {
     const collegeId = path.split("/")[3];
+    if (piAuth.college_id !== collegeId) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const { data, error } = await supabase.from("placement_profiles").update({
       status: "submitted",
       submitted_at: new Date().toISOString(),
@@ -209,6 +218,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
   // ---- GET /api/placeintel/programs/:college_id ----
   if (path.match(/^\/placeintel\/programs\/[^/]+$/) && req.method === "GET") {
     const collegeId = path.split("/")[3];
+    if (piAuth.college_id !== collegeId) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const { data, error } = await supabase.from("placement_programs").select("*").eq("college_id", collegeId).order("program_name");
     if (error) return res.status(500).json({ error: error.message });
     return res.json(data || []);
@@ -217,6 +229,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
   // ---- POST /api/placeintel/programs/:college_id ---- (add/update a program)
   if (path.match(/^\/placeintel\/programs\/[^/]+$/) && req.method === "POST") {
     const collegeId = path.split("/")[3];
+    if (piAuth.college_id !== collegeId) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const body = req.body || {};
 
     // Ensure profile exists
@@ -279,6 +294,9 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
     const programId = path.split("/")[3];
     // Get college_id before deleting
     const { data: program } = await supabase.from("placement_programs").select("college_id").eq("id", programId).single();
+    if (program && piAuth.college_id !== program.college_id) {
+      return res.status(403).json({ error: "Access denied: college mismatch" });
+    }
     const { error } = await supabase.from("placement_programs").delete().eq("id", programId);
     if (error) return res.status(500).json({ error: error.message });
 
@@ -299,6 +317,8 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
 }
 
 export async function handlePlaceIntelAdminRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireAdmin(auth, res)) return;
+
   // GET /api/placeintel/admin/colleges — list all colleges with placement status
   if (path === "/placeintel/admin/colleges" && req.method === "GET") {
     const { status: filterStatus, state: filterState, tier: filterTier, search } = req.query as Record<string, string>;

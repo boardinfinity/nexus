@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
-import { AuthResult, requirePermission } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { chunkTextForCatalog } from "../lib/helpers";
@@ -504,6 +504,7 @@ Be specific (not "business skills" but "financial statement analysis"). Only inc
 // ==================== ROUTE HANDLER ====================
 
 export async function handleCollegeRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
+  if (!requireReader(auth, "colleges", res)) return;
 
   // ==================== ALUMNI ====================
   if (path.match(/^\/alumni\/?$/) && req.method === "GET") {

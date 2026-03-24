@@ -23,8 +23,18 @@ import { handleReportRoutes } from "./routes/reports";
 import { handleCollegeRoutes } from "./routes/colleges";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  // Enable CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // Enable CORS — restrict to known domains
+  const allowedOrigins = [
+    "https://nexus-bi-one.vercel.app",
+    "https://nexus-bi-abhay-9478s-projects.vercel.app",
+    "https://nexus-bi-git-main-abhay-9478s-projects.vercel.app",
+  ];
+  const origin = req.headers.origin || "";
+  if (allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  } else {
+    res.setHeader("Access-Control-Allow-Origin", allowedOrigins[0]);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") return res.status(200).end();
@@ -219,7 +229,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handlePipelineRoutes(path, req, res, auth);
     } else if (path.startsWith("/alumni")) {
       result = await handleCollegeRoutes(path, req, res, auth);
-    } else if (path.startsWith("/settings") || path.startsWith("/migrate")) {
+    } else if (path.startsWith("/settings")) {
       result = await handleSettingsRoutes(path, req, res, auth);
     } else if (path.startsWith("/users")) {
       result = await handleUsersRoutes(path, req, res, auth);
