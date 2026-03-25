@@ -15,8 +15,9 @@ import { useToast } from "@/hooks/use-toast";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import {
   GraduationCap, Mail, Download, RefreshCw, Search, CheckCircle2, Clock,
-  Send, Eye, ExternalLink, ShieldCheck, XCircle, Loader2, Building2, Users, BarChart3,
+  Send, Eye, ExternalLink, ShieldCheck, XCircle, Loader2, Building2, Users, BarChart3, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   not_invited: { label: "Not Invited", color: "bg-gray-100 text-gray-700", icon: null },
@@ -174,6 +175,38 @@ export default function PlaceIntelAdmin() {
           </Button>
         </div>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• PlaceIntel collects placement data directly from college placement officers</p>
+            <p>• College reps receive an invite link, verify via OTP, and fill out a multi-section form</p>
+            <p>• Data collected: placement stats, program details, top recruiters, CTC ranges, dream offer policies</p>
+            <p className="pt-1"><strong>Admin workflow:</strong></p>
+            <p>1. "Sync Board Hub" — imports colleges from Board Hub CRM</p>
+            <p>2. Send invites — generates OTP-authenticated links for placement officers</p>
+            <p>3. Monitor submissions — track completion status and review data</p>
+            <p>4. Verify/reject — quality check submitted data</p>
+            <p>5. Export CSV — download all placement data</p>
+            <p className="pt-1"><strong>Form sections (filled by college reps):</strong></p>
+            <p>• College Profile — basic info, accreditation</p>
+            <p>• Programs — degree programs with placement policies</p>
+            <p>• Overall Stats — total placed, average CTC, top recruiters</p>
+            <p>• Additional Info — internship policies, industry preferences</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Each college gets one submission per cycle</p>
+            <p>• OTP links expire after 7 days</p>
+            <p>• Form auto-saves every 30 seconds — partial submissions are preserved</p>
+            <p>• Board Hub sync may timeout for very large datasets</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Summary cards */}
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">

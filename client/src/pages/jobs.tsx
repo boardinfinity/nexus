@@ -9,7 +9,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Search, ExternalLink, Circle, FileText, Brain, Download, Play, Loader2 } from "lucide-react";
+import { Search, ExternalLink, Circle, FileText, Brain, Download, Play, Loader2, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import type { Job } from "@shared/schema";
 
@@ -100,6 +101,32 @@ export default function Jobs() {
         <h1 className="text-2xl font-bold tracking-tight">Jobs</h1>
         <p className="text-sm text-muted-foreground">Browse and manage job listings from all sources</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Jobs are ingested from LinkedIn, Google Jobs, Indeed, or CSV upload</p>
+            <p>• Each job goes through a pipeline: Ingest → Fetch JD → Analyze JD (extract skills)</p>
+            <p>• Click any job to see its description, extracted skills, and trigger Fetch/Analyze actions</p>
+            <p>• Filters: Source (where the job came from), Status (enrichment state), Seniority, Employment Type</p>
+            <p className="pt-1"><strong>Data pipeline:</strong></p>
+            <p>1. "Pending" = just ingested, no JD text yet</p>
+            <p>2. "JD Fetched" = description retrieved from the source URL</p>
+            <p>3. "Analyzed" = AI has extracted skills, seniority, and structured data</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• JD fetch depends on the source URL being accessible — some expire after 30 days</p>
+            <p>• Skill extraction accuracy is ~65-85% for technical skills, lower for soft skills</p>
+            <p>• Employment type is often missing from LinkedIn scrapes — shows "—"</p>
+            <p>• Search matches job title and company name only</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex flex-wrap gap-3">
         <div className="relative flex-1 min-w-[200px]">

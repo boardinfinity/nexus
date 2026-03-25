@@ -7,7 +7,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search } from "lucide-react";
+import { Search, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Person } from "@shared/schema";
 import { authFetch } from "@/lib/queryClient";
 
@@ -58,6 +59,32 @@ export default function People() {
         <h1 className="text-2xl font-bold tracking-tight">People</h1>
         <p className="text-sm text-muted-foreground">Browse recruiters, hiring managers, and professionals</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• People are added via the Alumni Search pipeline (searches LinkedIn by university) or CSV upload</p>
+            <p>• Enrichment uses Apify to fetch full LinkedIn profiles — experience, education, skills, certifications</p>
+            <p>• Score 80/100 = fully enriched with career timeline. Score 50/100 = partial data</p>
+            <p className="pt-1"><strong>Profile data includes:</strong></p>
+            <p>• Career timeline (each role with company, duration, title)</p>
+            <p>• Skills & qualifications (from LinkedIn profile)</p>
+            <p>• Education history</p>
+            <p>• Current function and seniority classification</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Enrichment requires a valid LinkedIn profile URL</p>
+            <p>• Apify enrichment processes 5 profiles per batch (rate-limited by LinkedIn)</p>
+            <p>• "Company" column shows the current employer. Some profiles may show the company ID if the company hasn't been matched yet</p>
+            <p>• Career journey may not appear for profiles with incomplete LinkedIn data</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex flex-wrap gap-3">
         <div className="relative flex-1 min-w-[200px]">

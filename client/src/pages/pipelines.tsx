@@ -13,7 +13,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Briefcase, Search, Building2, FileText, GraduationCap, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network, CircleCheck } from "lucide-react";
+import { Briefcase, Search, Building2, FileText, GraduationCap, UserCheck, Brain, Play, Loader2, Download, ShieldCheck, Network, CircleCheck, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import type { PipelineRun } from "@shared/schema";
 
@@ -278,6 +279,38 @@ export default function Pipelines() {
         <h1 className="text-2xl font-bold tracking-tight">Pipelines</h1>
         <p className="text-sm text-muted-foreground">Configure and run data enrichment pipelines</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>Pipelines are the data processing engine. Run them in this order for best results:</p>
+            <p className="pt-1"><strong>1. Job Collection</strong></p>
+            <p>• LinkedIn Jobs — scrapes job postings by keyword + location (uses Apify). Default: 100 jobs per run</p>
+            <p>• Google Jobs — collects from Google's job search. Supports employment type and date filters</p>
+            <p>• JD Fetch — retrieves full job descriptions from source URLs (batch of 10)</p>
+            <p>• JD Analysis — extracts skills, seniority, and structured data from JDs using AI (batch of 50)</p>
+            <p className="pt-1"><strong>2. Company & People</strong></p>
+            <p>• Company Enrichment — fills in company data (industry, size, website) via external APIs (batch of 50)</p>
+            <p>• Alumni Search — finds people from a specific university on LinkedIn</p>
+            <p>• Enrich Profiles — enriches people with full LinkedIn data via Apify (batch of 5)</p>
+            <p className="pt-1"><strong>3. Data Quality</strong></p>
+            <p>• Data Quality & Dedup — recomputes quality scores and detects duplicate companies</p>
+            <p>• Skill Co-occurrence — computes which skills appear together in JDs</p>
+            <p>• Job Status Checker — checks if jobs are still open or closed</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Each pipeline run is limited by Vercel's 300-second function timeout</p>
+            <p>• LinkedIn scraping is rate-limited — don't run more than 3 LinkedIn pipelines per hour</p>
+            <p>• JD Fetch may fail for expired job URLs (common for postings older than 30 days)</p>
+            <p>• AI analysis costs API credits — monitor usage in the sidebar</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Job Pipelines */}
       <div>

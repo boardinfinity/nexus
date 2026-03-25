@@ -17,7 +17,8 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
-import { UserPlus, Shield, Pencil, UserX, UserCheck, Loader2 } from "lucide-react";
+import { UserPlus, Shield, Pencil, UserX, UserCheck, Loader2, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 interface NexusUser {
   id: string;
@@ -222,6 +223,37 @@ export default function UsersPage() {
           Add User
         </Button>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Every Nexus user needs a @boardinfinity.com email registered here</p>
+            <p>• 5 roles: Super Admin (full access), Admin (manage users + all features), Editor (create/edit data), Viewer (read only), College Rep (PlaceIntel only)</p>
+            <p>• Permissions are per-section: Jobs, Companies, People, Reports, etc.</p>
+            <p className="pt-1"><strong>Role templates:</strong></p>
+            <p>• Super Admin — full access to everything including user management</p>
+            <p>• Admin — same as Super Admin but can't delete other admins</p>
+            <p>• Editor — can run pipelines, upload data, trigger enrichment</p>
+            <p>• Viewer — read-only access to all sections</p>
+            <p>• College Rep — only sees PlaceIntel and Colleges sections</p>
+            <p className="pt-1"><strong>Adding a user:</strong></p>
+            <p>1. Click "Add User" and enter their @boardinfinity.com email</p>
+            <p>2. Select a role (applies a permission template)</p>
+            <p>3. Optionally customize per-section permissions</p>
+            <p>4. User can login immediately via OTP</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Only @boardinfinity.com emails can be registered</p>
+            <p>• Only Super Admins can add/remove users</p>
+            <p>• Deactivated users can't login but their data isn't deleted</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <Card>
         <CardHeader>

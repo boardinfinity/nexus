@@ -21,7 +21,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2, History, Eye } from "lucide-react";
+import { Upload, Download, FileUp, CheckCircle2, XCircle, AlertTriangle, Loader2, History, Eye, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { apiRequest, authFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { CsvUpload } from "@shared/schema";
@@ -360,6 +361,36 @@ export default function UploadPage() {
           Import job listings from CSV files into the Nexus database
         </p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Upload CSV files with job data from Clay, LinkedIn exports, Google Jobs, or custom format</p>
+            <p>• Select the source type to auto-map columns (each source has different column names)</p>
+            <p>• Download the CSV template to see the expected format</p>
+            <p>• Jobs are deduplicated by URL — if a job URL already exists, it's skipped</p>
+            <p className="pt-1"><strong>Supported sources:</strong></p>
+            <p>• Clay LinkedIn — columns: title, company_name, location, url, description, etc.</p>
+            <p>• Google Jobs — columns: title, company, location, link, description, etc.</p>
+            <p>• Custom — map your own columns to the expected format</p>
+            <p className="pt-1"><strong>Processing:</strong></p>
+            <p>• Rows are processed in batches of 100</p>
+            <p>• New companies are auto-created if not already in the database</p>
+            <p>• Upload status shows: Imported (success), Failed (bad data), Total Rows</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Max file size: 50,000 rows per upload</p>
+            <p>• CSV must be UTF-8 encoded</p>
+            <p>• If upload gets stuck in "processing" — use the admin tool to mark it as failed</p>
+            <p>• Duplicate detection is by job URL only — same job with different URLs will create duplicates</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Source Type Selector */}
       <Card>

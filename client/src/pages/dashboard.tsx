@@ -15,8 +15,9 @@ import { Badge } from "@/components/ui/badge";
 import {
   Briefcase, Building2, Users, GitBranch, FileText, Brain, CheckCircle,
   Search, Download, ChevronLeft, ChevronRight, X, BarChart3, TrendingUp,
-  Globe, Layers, Activity, Database,
+  Globe, Layers, Activity, Database, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid,
   PieChart, Pie, Cell, AreaChart, Area, Legend,
@@ -336,6 +337,27 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold tracking-tight">Dashboard</h1>
         <p className="text-sm text-muted-foreground">Overview of your data intelligence platform</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• KPI cards show real-time counts from the database — jobs, companies, people, alumni, and skills</p>
+            <p>• Charts populate as data flows through pipelines: ingest jobs → enrich companies → fetch JDs → extract skills</p>
+            <p>• "JD Coverage" = % of jobs with fetched descriptions. "Skills Extracted" = jobs analyzed by AI. "Training Ready" = jobs with both JD + skills</p>
+            <p>• Filters (date, source, country) apply to charts only, not KPI cards</p>
+            <p>• Data refreshes on each page load. Charts show empty states until pipelines have run.</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Dashboard counts may briefly show 0 on first load (hydration delay)</p>
+            <p>• Charts require pipeline runs to populate — run LinkedIn Jobs → JD Fetch → JD Analysis for full data flow</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* ═══ SECTION: Overview KPIs ═══ */}
       <SectionHeader icon={BarChart3} title="Overview" subtitle="Key performance indicators at a glance" />

@@ -7,7 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText, ArrowUpDown, ArrowUp, ArrowDown } from "lucide-react";
+import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText, ArrowUpDown, ArrowUp, ArrowDown, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 
 interface TaxonomySkill {
@@ -154,6 +155,33 @@ export default function Taxonomy() {
         <h1 className="text-2xl font-bold tracking-tight">Skill Taxonomy</h1>
         <p className="text-sm text-muted-foreground">Browse and search the O*NET skill taxonomy</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• The taxonomy is your skill dictionary — 8,888 skills from O*NET, plus auto-created skills from JD analysis</p>
+            <p>• Categories: Technology (software/tools), Skill (transferable abilities), Knowledge (domain areas), Ability (cognitive/physical)</p>
+            <p>• "Hot Technology" flag marks in-demand tools and platforms</p>
+            <p>• "Jobs" count shows how many job descriptions mention each skill</p>
+            <p>• Click any skill to see linked jobs, courses, and reports</p>
+            <p className="pt-1"><strong>How skills grow:</strong></p>
+            <p>• O*NET provides the base taxonomy (8,888 skills)</p>
+            <p>• When JD Analysis extracts a new skill not in the taxonomy, it's auto-created</p>
+            <p>• Skills are auto-validated after appearing in 10+ JDs from 3+ different companies</p>
+            <p>• Unvalidated skills show as "unverified" and can be manually reviewed</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• "Jobs" count is 0 for all skills until the JD Analysis pipeline has been run</p>
+            <p>• Search matches skill name only (not category or subcategory)</p>
+            <p>• Loading may take 3-5 seconds due to the large dataset (8,888 rows)</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Stats Cards */}
       <div className="grid gap-4 md:grid-cols-4">

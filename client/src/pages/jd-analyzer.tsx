@@ -9,7 +9,8 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check } from "lucide-react";
+import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
 
@@ -106,6 +107,35 @@ export default function JDAnalyzer() {
         <h1 className="text-2xl font-bold tracking-tight">JD Analyzer</h1>
         <p className="text-sm text-muted-foreground">Extract and map skills from job descriptions using AI</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Paste a job description or select an existing job from the database</p>
+            <p>• AI extracts: technical skills, tools, certifications, methodologies, competencies</p>
+            <p>• Each extracted skill is matched against the taxonomy (8,888+ skills)</p>
+            <p>• New skills not in the taxonomy are auto-created</p>
+            <p className="pt-1"><strong>Two modes:</strong></p>
+            <p>1. "Paste JD Text" — paste any job description text and analyze it</p>
+            <p>2. "Select Existing Job" — search and pick from jobs in the database (type to search)</p>
+            <p className="pt-1"><strong>What you get:</strong></p>
+            <p>• Extracted skills with categories (technology, skill, knowledge, etc.)</p>
+            <p>• Taxonomy match status (matched to existing skill or newly created)</p>
+            <p>• Confidence scores for each extraction</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Analysis requires a non-empty job description (minimum ~50 words for good results)</p>
+            <p>• Accuracy is highest for technical skills (~85%) and lower for soft skills (~50%)</p>
+            <p>• Processing takes 5-15 seconds per JD depending on length</p>
+            <p>• Very short or vague JDs will produce few/no results</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Input */}

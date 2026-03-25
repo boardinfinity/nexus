@@ -6,7 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
-import { Eye, EyeOff, Save } from "lucide-react";
+import { Eye, EyeOff, Save, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { ProviderCredit } from "@shared/schema";
 
 function MaskedKeyField({ label, value, testId }: { label: string; value: string; testId: string }) {
@@ -72,6 +73,32 @@ export default function Settings() {
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">Manage provider keys, schedules, and budgets</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Settings shows the configuration status of external API keys</p>
+            <p>• All API keys are stored as Vercel environment variables (not in the database)</p>
+            <p>• Key previews show the last 6 characters for verification</p>
+            <p className="pt-1"><strong>Required keys:</strong></p>
+            <p>• OpenAI — powers JD Analysis, catalog processing, and skill extraction</p>
+            <p>• Anthropic — powers report processing (Claude model)</p>
+            <p>• Apify — powers LinkedIn job scraping and people enrichment</p>
+            <p>• RapidAPI — company enrichment data</p>
+            <p>• Resend — sends OTP emails for PlaceIntel and Surveys</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• API keys can only be changed in the Vercel dashboard (Settings → Environment Variables)</p>
+            <p>• After changing a key, trigger a redeployment for it to take effect</p>
+            <p>• Credit usage is tracked per month — visible in the sidebar</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <Card>
         <CardHeader>

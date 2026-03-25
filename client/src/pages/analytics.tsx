@@ -11,8 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   Briefcase, FileText, Brain, CheckCircle, Building2,
-  Search, Download, ChevronLeft, ChevronRight, BarChart3, Globe, Layers, Activity,
+  Search, Download, ChevronLeft, ChevronRight, BarChart3, Globe, Layers, Activity, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer,
   PieChart, Pie, Cell, AreaChart, Area, CartesianGrid, Legend,
@@ -226,6 +227,37 @@ export default function Analytics() {
         <h1 className="text-2xl font-bold tracking-tight">Analytics</h1>
         <p className="text-sm text-muted-foreground">Comprehensive insights into your job data pipeline</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Analytics aggregates data across all jobs, companies, and skills</p>
+            <p>• Charts populate as data flows through pipelines</p>
+            <p className="pt-1"><strong>Available charts:</strong></p>
+            <p>• Jobs Over Time — ingestion volume by day/week</p>
+            <p>• Jobs by Source — distribution across LinkedIn, Google Jobs, etc.</p>
+            <p>• Jobs by Region — geographic distribution (top 10 locations)</p>
+            <p>• Enrichment Funnel — how many jobs have JDs, skills, and full enrichment</p>
+            <p>• Top Skills — most frequently extracted skills from JDs</p>
+            <p>• Pipeline Health — success/failure rates of pipeline runs</p>
+            <p className="pt-1"><strong>Filters:</strong></p>
+            <p>• Date range, source, country, enrichment status</p>
+            <p>• Filters apply to all charts simultaneously</p>
+            <p>• Export filtered job data as CSV</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Charts show "No data available" until pipelines have been run</p>
+            <p>• Top Skills requires JD Analysis pipeline to have extracted skills</p>
+            <p>• Geographic data depends on location field quality (some jobs have vague locations)</p>
+            <p>• Date range filters on ingestion date, not job posting date</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Row 1: Filters */}
       <div className="flex flex-wrap gap-3 items-end">

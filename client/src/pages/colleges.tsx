@@ -15,8 +15,9 @@ import {
 import {
   GraduationCap, Upload, Search, BookOpen, Code2, Sparkles,
   Loader2, CheckCircle2, XCircle, Building2, MapPin, Calendar,
-  RotateCcw,
+  RotateCcw, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Link } from "wouter";
 
 interface College {
@@ -234,6 +235,36 @@ export default function Colleges() {
           Upload Catalog
         </Button>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Upload a college's academic catalog (PDF) to extract programs, courses, and skills</p>
+            <p>• AI processes the catalog in phases: Extract Text → Identify Programs → Extract Courses → Map Skills</p>
+            <p>• Each course is mapped to skills from the taxonomy, creating a skill coverage map</p>
+            <p className="pt-1"><strong>Processing phases:</strong></p>
+            <p>1. Text Extraction — converts PDF pages to text</p>
+            <p>2. Program Discovery — identifies degree programs (MBA, B.Tech, etc.)</p>
+            <p>3. Course Extraction — extracts individual courses with descriptions</p>
+            <p>4. Skill Mapping — maps each course to relevant skills from the taxonomy</p>
+            <p className="pt-1"><strong>What you get:</strong></p>
+            <p>• Complete program list with degree types</p>
+            <p>• Course catalog with codes and descriptions</p>
+            <p>• Skill coverage analysis — which skills each program teaches</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• PDF must be text-based (not scanned images). Max size: 20MB</p>
+            <p>• Processing takes 2-10 minutes depending on catalog size</p>
+            <p>• AI accuracy depends on catalog formatting — well-structured catalogs work best</p>
+            <p>• Catalogs in non-English languages may have reduced accuracy</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex items-center gap-3">
         <div className="relative flex-1 max-w-sm">

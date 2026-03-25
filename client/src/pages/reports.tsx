@@ -20,8 +20,9 @@ import { Label } from "@/components/ui/label";
 import {
   FileText, Upload, Search, ChevronLeft, ChevronRight, ArrowLeft,
   Loader2, Trash2, Play, CheckCircle2, XCircle, Clock, AlertTriangle,
-  TrendingUp, TrendingDown, Minus, ArrowUpRight, Sparkles, Pencil, Check, X,
+  TrendingUp, TrendingDown, Minus, ArrowUpRight, Sparkles, Pencil, Check, X, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 const REPORT_TYPES = [
   { value: "skills_report", label: "Skills Report" },
@@ -170,6 +171,7 @@ export default function Reports() {
           <p className="text-sm text-muted-foreground">Upload and analyze industry reports for skill insights</p>
         </div>
         <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+
           <DialogTrigger asChild>
             <Button data-testid="btn-upload-report">
               <Upload className="h-4 w-4 mr-2" />
@@ -186,6 +188,37 @@ export default function Reports() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Upload industry reports (WEF Future of Jobs, Coursera Skills Report, etc.) as PDFs</p>
+            <p>• AI extracts key findings, skill trends, and growth/decline signals</p>
+            <p>• Findings are categorized (technology, skills, labor_market, salary) with confidence scores</p>
+            <p>• Skills mentioned in reports are matched to the taxonomy, creating "report signals"</p>
+            <p className="pt-1"><strong>Processing:</strong></p>
+            <p>• Large reports are processed in chunks (to handle 100+ page PDFs)</p>
+            <p>• AI generates an executive summary and structured key findings</p>
+            <p>• Each finding gets a relevance score (0-100%)</p>
+            <p className="pt-1"><strong>What you get:</strong></p>
+            <p>• Executive summary</p>
+            <p>• Key findings with categories and confidence scores</p>
+            <p>• Skill signals — which skills are rising/declining according to the report</p>
+            <p>• Edit type/region metadata using the pencil icon on reports with missing info</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• PDF must be text-based. Max size: 20MB</p>
+            <p>• Very large reports (200+ pages) may take 5-10 minutes to process</p>
+            <p>• Reports in non-English languages have reduced extraction accuracy</p>
+            <p>• Skill matching depends on the taxonomy — niche skills may not match</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex flex-wrap gap-3">
         <Input

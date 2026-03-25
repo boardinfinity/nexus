@@ -10,7 +10,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
-import { Search, Sparkles, Loader2, Save, Merge, Briefcase } from "lucide-react";
+import { Search, Sparkles, Loader2, Save, Merge, Briefcase, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import type { Company } from "@shared/schema";
 
@@ -170,6 +171,7 @@ export default function Companies() {
           <p className="text-sm text-muted-foreground">Browse and manage company profiles</p>
         </div>
         <div className="flex gap-2">
+
           <Button
             variant="outline"
             size="sm"
@@ -200,6 +202,32 @@ export default function Companies() {
           </Button>
         </div>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Companies are auto-created when jobs are ingested (extracted from job postings)</p>
+            <p>• "Auto Enrich" uses external APIs to fill in industry, size, location, website, LinkedIn, and description</p>
+            <p>• Enrichment score shows data completeness: 0% = name only, 13% = LinkedIn found, 25%+ = HQ/industry found, 100% = fully enriched</p>
+            <p>• Click a company to see all available data and trigger enrichment for that specific company</p>
+            <p className="pt-1"><strong>Enrichment sources:</strong></p>
+            <p>• Company name → normalized and deduplicated</p>
+            <p>• LinkedIn lookup → website, employee count, industry</p>
+            <p>• HQ location → city, country</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Auto Enrich processes up to 50 unenriched companies per run (to avoid timeouts)</p>
+            <p>• Industry filter only works for companies that have been enriched</p>
+            <p>• Some small/new companies may not be found by the enrichment provider</p>
+            <p>• Deduplication uses normalized names — "TCS" and "Tata Consultancy Services" may not auto-merge</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       <div className="flex flex-wrap gap-3">
         <div className="relative flex-1 min-w-[200px]">

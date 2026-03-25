@@ -16,8 +16,9 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  Clock, Plus, Pause, Play, Pencil, Trash2, Loader2, CheckCircle2, XCircle, CalendarClock,
+  Clock, Plus, Pause, Play, Pencil, Trash2, Loader2, CheckCircle2, XCircle, CalendarClock, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import cronstrue from "cronstrue";
 
@@ -360,6 +361,31 @@ export default function Schedules() {
           <Plus className="h-4 w-4 mr-1" /> New Schedule
         </Button>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Schedules automate pipeline runs on a recurring basis</p>
+            <p>• The daily cron runs at midnight UTC and triggers any configured schedules</p>
+            <p>• Each schedule runs the specified pipeline with its saved configuration</p>
+            <p className="pt-1"><strong>How to set up:</strong></p>
+            <p>1. Create a schedule with pipeline type and configuration</p>
+            <p>2. Set frequency (daily is recommended for job collection)</p>
+            <p>3. The scheduler checks at midnight UTC and runs all active schedules</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Minimum frequency is daily (the cron runs once per day at midnight UTC)</p>
+            <p>• If a pipeline fails during a scheduled run, check Pipeline Run History for errors</p>
+            <p>• Scheduled runs count toward your API credit usage</p>
+            <p>• If a schedule shows 0/0 results, the pipeline may have encountered an error — check the Pipelines page for details</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {isLoading ? (
         <div className="flex justify-center py-12">

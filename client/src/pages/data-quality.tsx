@@ -11,8 +11,9 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
   ShieldCheck, Copy, Download, Play, Loader2, Search,
-  BarChart3, Layers, FileDown, Network,
+  BarChart3, Layers, FileDown, Network, Info, ChevronDown,
 } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
 } from "recharts";
@@ -185,6 +186,36 @@ export default function DataQuality() {
         <h1 className="text-2xl font-bold tracking-tight">Data Quality</h1>
         <p className="text-sm text-muted-foreground">Quality scoring, deduplication, exports & skill co-occurrence</p>
       </div>
+
+      <Collapsible>
+        <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
+          <Info className="h-3.5 w-3.5" />
+          <span>How this works</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="mt-3">
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
+            <p><strong>How this works:</strong></p>
+            <p>• Quality scores (0-100) measure how complete each job record is</p>
+            <p>• Score factors: has description, has skills, has location, has company, has salary, has employment type</p>
+            <p>• Duplicate detection finds companies with similar normalized names</p>
+            <p className="pt-1"><strong>Quality score breakdown:</strong></p>
+            <p>• 0-20: Only basic info (title + source)</p>
+            <p>• 21-40: Has company and location</p>
+            <p>• 41-60: Has job description</p>
+            <p>• 61-80: Has extracted skills</p>
+            <p>• 81-100: Fully enriched with all fields</p>
+            <p className="pt-1"><strong>Duplicate companies:</strong></p>
+            <p>• Normalized names are compared (removes "Inc", "Ltd", spaces, etc.)</p>
+            <p>• Groups of potential duplicates are shown for manual review</p>
+            <p>• Merging keeps the record with more data and reassigns all jobs</p>
+            <p className="pt-1"><strong>Limitations:</strong></p>
+            <p>• Quality scores need to be recomputed after enrichment — run the "Data Quality & Dedup" pipeline</p>
+            <p>• Duplicate detection is name-based only — "TCS" vs "Tata Consultancy Services" may not match</p>
+            <p>• Merging is irreversible — review carefully before confirming</p>
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* KPI Cards */}
       {statsLoading ? (
