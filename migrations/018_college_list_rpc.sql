@@ -9,7 +9,7 @@ CREATE OR REPLACE FUNCTION get_colleges_with_stats(
 )
 RETURNS TABLE(
   id uuid, name text, short_name text, country text, city text,
-  website text, catalog_year text, board_hub_account_id text,
+  website text, catalog_year text, board_hub_account_id uuid,
   created_at timestamptz,
   program_count bigint, course_count bigint, skill_count bigint
 ) AS $$

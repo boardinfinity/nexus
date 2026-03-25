@@ -5,6 +5,8 @@ import { supabase } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { chunkTextForCatalog } from "../lib/helpers";
 
+// Schema cache refresh: RPCs updated 2026-03-25
+
 // ==================== INTERNAL HELPERS ====================
 
 async function downloadAndParsePDF(sb: any, filePath: string): Promise<{ text: string; pages: number }> {
