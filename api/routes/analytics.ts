@@ -104,7 +104,9 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
           p_date_to: date_to || null,
         });
         if (error) return res.status(500).json({ error: error.message });
-        return res.json(data || []);
+        // Rename region→country to match frontend dataKey="country"
+        const result = (data || []).map((row: any) => ({ country: row.region, count: row.count }));
+        return res.json(result);
       } catch {
         return res.json([]);
       }
@@ -188,7 +190,9 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
           p_date_to: date_to || null,
         });
         if (error) return res.json([]);
-        return res.json(data || []);
+        // Rename stage→status to match frontend nameKey="status"
+        const result = (data || []).map((row: any) => ({ status: row.stage, count: row.count }));
+        return res.json(result);
       } catch {
         return res.json([]);
       }
@@ -207,7 +211,15 @@ export async function handleAnalyticsRoutes(path: string, req: VercelRequest, re
           p_date_to: date_to || null,
         });
         if (error) return res.json([]);
-        return res.json(data || []);
+        // Aggregate per-source rows into per-date totals and rename period→date
+        const aggregated: Record<string, number> = {};
+        for (const row of data || []) {
+          aggregated[row.period] = (aggregated[row.period] || 0) + Number(row.count);
+        }
+        const result = Object.entries(aggregated)
+          .map(([date, count]) => ({ date, count }))
+          .sort((a, b) => a.date.localeCompare(b.date));
+        return res.json(result);
       } catch {
         return res.json([]);
       }
