@@ -6,7 +6,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
   if (!requireReader(auth, "jobs", res)) return;
 
   if (path.match(/^\/jobs\/?$/) && req.method === "GET") {
-    const { search, source, enrichment_status, seniority_level, employment_type, location_country, page = "1", limit = "50" } = req.query as Record<string, string>;
+    const { search, source, enrichment_status, seniority_level, employment_type, location_country, has_description, page = "1", limit = "50" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
     let query = supabase
@@ -14,6 +14,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
       .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, posted_at, enrichment_status, job_status, status_checked_at, source_url, created_at", { count: "exact" });
 
     if (search) query = query.ilike("title", `%${search}%`);
+    if (has_description === "true") query = query.not("description", "is", null);
     if (source) query = query.ilike("source", source);
     if (enrichment_status) query = query.ilike("enrichment_status", enrichment_status);
     if (seniority_level) query = query.eq("seniority_level", seniority_level);

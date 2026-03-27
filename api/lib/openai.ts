@@ -105,13 +105,13 @@ export async function extractSkillsWithAI(text: string): Promise<Array<{ name: s
       "Authorization": `Bearer ${OPENAI_API_KEY}`,
     },
     body: JSON.stringify({
-      model: "gpt-5.4-nano",
+      model: "gpt-4o-mini",
       messages: [
         {
           role: "system",
           content: `You are a skill extraction expert. Extract skills from job descriptions and return structured JSON.
 Categories: "skill" (soft skills like communication), "technology" (tools/languages/frameworks), "knowledge" (domain knowledge), "ability" (cognitive/physical abilities).
-Return ONLY a JSON array of objects with: name (string), category (string), confidence (number 0-1).
+Return a JSON object with a "skills" key containing an array of objects with: name (string), category (string), confidence (number 0-1).
 Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over "frontend".`,
         },
         {
@@ -127,17 +127,20 @@ Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over
 
   if (!response.ok) {
     const errBody = await response.text();
+    console.error(`extractSkillsWithAI API error: ${response.status}`, errBody);
     throw new Error(`OpenAI API error: ${response.status} ${errBody}`);
   }
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
+  console.log("extractSkillsWithAI raw response:", content);
 
   try {
     const parsed = JSON.parse(content);
     const skills = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.skills) ? parsed.skills : []);
     return skills;
-  } catch {
+  } catch (err) {
+    console.error("extractSkillsWithAI JSON parse error:", err, "raw content:", content);
     return [];
   }
 }

@@ -68,7 +68,7 @@ export default function JDAnalyzer() {
   const { data: jobs, isLoading: jobsLoading } = useQuery<{ data: Job[] }>({
     queryKey: ["/api/jobs-search", debouncedSearch],
     queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50", page: "1" });
+      const params = new URLSearchParams({ limit: "50", page: "1", has_description: "true" });
       if (debouncedSearch) params.set("search", debouncedSearch);
       const res = await authFetch(`/api/jobs?${params}`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
@@ -91,7 +91,15 @@ export default function JDAnalyzer() {
     },
     onSuccess: (data) => {
       setResult(data);
-      toast({ title: "Analysis complete", description: `Extracted ${data.total} skills` });
+      if (data.total === 0) {
+        toast({
+          title: "No skills extracted",
+          description: "No skills could be extracted. The JD may be too short or not contain enough technical content.",
+          variant: "destructive",
+        });
+      } else {
+        toast({ title: "Analysis complete", description: `Extracted ${data.total} skills` });
+      }
     },
     onError: (err: Error) => {
       toast({ title: "Analysis failed", description: err.message, variant: "destructive" });
@@ -236,7 +244,7 @@ export default function JDAnalyzer() {
                   </PopoverContent>
                 </Popover>
                 <p className="text-[11px] text-muted-foreground">
-                  Note: Scraped jobs may not have full descriptions. If analysis fails, switch to "Paste JD Text" and paste the description manually.
+                  Only showing jobs with descriptions. If your job isn't listed, switch to "Paste JD Text" and paste the description manually.
                 </p>
               </div>
             )}
