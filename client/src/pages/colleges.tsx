@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { supabase } from "@/lib/supabase";
@@ -15,7 +15,7 @@ import {
 import {
   GraduationCap, Upload, Search, BookOpen, Code2, Sparkles,
   Loader2, CheckCircle2, XCircle, Building2, MapPin, Calendar,
-  RotateCcw, Info, ChevronDown,
+  RotateCcw, Info, ChevronDown, ChevronLeft, ChevronRight,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Link } from "wouter";
@@ -65,6 +65,8 @@ function computeProgress(phase: string, batch?: number, totalBatches?: number): 
 
 export default function Colleges() {
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [page, setPage] = useState(1);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadStep, setUploadStep] = useState(1);
   const [uploadId, setUploadId] = useState<string | null>(null);
@@ -85,10 +87,21 @@ export default function Colleges() {
   const [finalResults, setFinalResults] = useState<Record<string, any> | null>(null);
   const [collegeId, setCollegeId] = useState<string | null>(null);
 
+  // Debounce search input and reset page
+  useEffect(() => {
+    setPage(1);
+    const timer = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(timer);
+  }, [search]);
+
   const { data: colleges, isLoading, isError, refetch } = useQuery<College[]>({
-    queryKey: ["/api/colleges"],
+    queryKey: ["/api/colleges", debouncedSearch, page],
     queryFn: async () => {
-      const res = await authFetch("/api/colleges");
+      const params = new URLSearchParams();
+      if (debouncedSearch) params.set("search", debouncedSearch);
+      params.set("page", String(page));
+      params.set("limit", "50");
+      const res = await authFetch(`/api/colleges?${params.toString()}`);
       if (!res.ok) throw new Error("Failed to fetch colleges");
       return res.json();
     },
@@ -216,10 +229,7 @@ export default function Colleges() {
     setPhaseTotalBatches(undefined);
   };
 
-  const filtered = (colleges || []).filter((c) =>
-    !search || c.name.toLowerCase().includes(search.toLowerCase()) ||
-    c.short_name?.toLowerCase().includes(search.toLowerCase())
-  );
+  const collegeList = colleges || [];
 
   const progressPct = computeProgress(currentPhase, phaseBatch, phaseTotalBatches);
 
@@ -287,7 +297,7 @@ export default function Colleges() {
         <div className="flex items-center justify-center py-20">
           <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
         </div>
-      ) : filtered.length === 0 ? (
+      ) : collegeList.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center justify-center py-20 text-center">
             <GraduationCap className="h-12 w-12 text-muted-foreground mb-4" />
@@ -300,58 +310,81 @@ export default function Colleges() {
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {filtered.map((college) => (
-            <Link key={college.id} href={`/colleges/${college.id}`}>
-              <Card className="cursor-pointer hover:border-primary/50 transition-colors">
-                <CardHeader className="pb-3">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <CardTitle className="text-base">{college.name}</CardTitle>
-                      {college.short_name && (
-                        <Badge variant="secondary" className="mt-1">{college.short_name}</Badge>
+        <>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            {collegeList.map((college) => (
+              <Link key={college.id} href={`/colleges/${college.id}`}>
+                <Card className="cursor-pointer hover:border-primary/50 transition-colors">
+                  <CardHeader className="pb-3">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle className="text-base">{college.name}</CardTitle>
+                        {college.short_name && (
+                          <Badge variant="secondary" className="mt-1">{college.short_name}</Badge>
+                        )}
+                      </div>
+                      <GraduationCap className="h-5 w-5 text-muted-foreground shrink-0" />
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="space-y-2 text-sm text-muted-foreground">
+                      {(college.city || college.country) && (
+                        <div className="flex items-center gap-1.5">
+                          <MapPin className="h-3.5 w-3.5" />
+                          <span>{[college.city, college.country].filter(Boolean).join(", ")}</span>
+                        </div>
+                      )}
+                      {college.catalog_year && (
+                        <div className="flex items-center gap-1.5">
+                          <Calendar className="h-3.5 w-3.5" />
+                          <span>Catalog {college.catalog_year}</span>
+                        </div>
                       )}
                     </div>
-                    <GraduationCap className="h-5 w-5 text-muted-foreground shrink-0" />
-                  </div>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2 text-sm text-muted-foreground">
-                    {(college.city || college.country) && (
+                    <div className="flex items-center gap-4 mt-4 pt-3 border-t text-sm">
                       <div className="flex items-center gap-1.5">
-                        <MapPin className="h-3.5 w-3.5" />
-                        <span>{[college.city, college.country].filter(Boolean).join(", ")}</span>
+                        <BookOpen className="h-3.5 w-3.5 text-blue-500" />
+                        <span className="font-medium">{college.program_count}</span>
+                        <span className="text-muted-foreground">programs</span>
                       </div>
-                    )}
-                    {college.catalog_year && (
                       <div className="flex items-center gap-1.5">
-                        <Calendar className="h-3.5 w-3.5" />
-                        <span>Catalog {college.catalog_year}</span>
+                        <Code2 className="h-3.5 w-3.5 text-green-500" />
+                        <span className="font-medium">{college.course_count}</span>
+                        <span className="text-muted-foreground">courses</span>
                       </div>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-4 mt-4 pt-3 border-t text-sm">
-                    <div className="flex items-center gap-1.5">
-                      <BookOpen className="h-3.5 w-3.5 text-blue-500" />
-                      <span className="font-medium">{college.program_count}</span>
-                      <span className="text-muted-foreground">programs</span>
+                      <div className="flex items-center gap-1.5">
+                        <Sparkles className="h-3.5 w-3.5 text-purple-500" />
+                        <span className="font-medium">{college.skill_count}</span>
+                        <span className="text-muted-foreground">skills</span>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1.5">
-                      <Code2 className="h-3.5 w-3.5 text-green-500" />
-                      <span className="font-medium">{college.course_count}</span>
-                      <span className="text-muted-foreground">courses</span>
-                    </div>
-                    <div className="flex items-center gap-1.5">
-                      <Sparkles className="h-3.5 w-3.5 text-purple-500" />
-                      <span className="font-medium">{college.skill_count}</span>
-                      <span className="text-muted-foreground">skills</span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            </Link>
-          ))}
-        </div>
+                  </CardContent>
+                </Card>
+              </Link>
+            ))}
+          </div>
+          <div className="flex items-center justify-center gap-2 pt-4">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              <ChevronLeft className="h-4 w-4 mr-1" />
+              Previous
+            </Button>
+            <span className="text-sm text-muted-foreground px-2">Page {page}</span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={collegeList.length < 50}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+              <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
+          </div>
+        </>
       )}
 
       {/* Upload Modal */}
