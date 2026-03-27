@@ -14,7 +14,7 @@ import { Progress } from "@/components/ui/progress";
 import { useToast } from "@/hooks/use-toast";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import {
-  GraduationCap, Mail, Download, RefreshCw, Search, CheckCircle2, Clock,
+  GraduationCap, Mail, Download, Search, CheckCircle2, Clock,
   Send, Eye, ExternalLink, ShieldCheck, XCircle, Loader2, Building2, Users, BarChart3, Info, ChevronDown,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -111,21 +111,6 @@ export default function PlaceIntelAdmin() {
     },
   });
 
-  // Sync mutation
-  const syncMutation = useMutation({
-    mutationFn: async () => {
-      const res = await apiRequest("POST", "/api/placeintel/sync-board-hub", {});
-      return res.json();
-    },
-    onSuccess: (data) => {
-      toast({ title: "Sync complete", description: `New: ${data.new_count}, Updated: ${data.updated_count}, Skipped: ${data.skipped_count}` });
-      queryClient.invalidateQueries({ queryKey: ["/api/placeintel/admin/colleges"] });
-    },
-    onError: (err: any) => {
-      toast({ title: "Sync failed", description: err.message, variant: "destructive" });
-    },
-  });
-
   // Export
   const handleExport = async () => {
     try {
@@ -166,10 +151,6 @@ export default function PlaceIntelAdmin() {
           <p className="text-sm text-muted-foreground mt-1">Campus Placement Intelligence — manage submissions and invites</p>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => syncMutation.mutate()} disabled={syncMutation.isPending}>
-            {syncMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
-            Sync Board Hub
-          </Button>
           <Button variant="outline" size="sm" onClick={handleExport}>
             <Download className="h-4 w-4 mr-1" /> Export CSV
           </Button>
@@ -189,11 +170,10 @@ export default function PlaceIntelAdmin() {
             <p>• College reps receive an invite link, verify via OTP, and fill out a multi-section form</p>
             <p>• Data collected: placement stats, program details, top recruiters, CTC ranges, dream offer policies</p>
             <p className="pt-1"><strong>Admin workflow:</strong></p>
-            <p>1. "Sync Board Hub" — imports colleges from Board Hub CRM</p>
-            <p>2. Send invites — generates OTP-authenticated links for placement officers</p>
-            <p>3. Monitor submissions — track completion status and review data</p>
-            <p>4. Verify/reject — quality check submitted data</p>
-            <p>5. Export CSV — download all placement data</p>
+            <p>1. Send invites — generates OTP-authenticated links for placement officers</p>
+            <p>2. Monitor submissions — track completion status and review data</p>
+            <p>3. Verify/reject — quality check submitted data</p>
+            <p>4. Export CSV — download all placement data</p>
             <p className="pt-1"><strong>Form sections (filled by college reps):</strong></p>
             <p>• College Profile — basic info, accreditation</p>
             <p>• Programs — degree programs with placement policies</p>
@@ -203,7 +183,7 @@ export default function PlaceIntelAdmin() {
             <p>• Each college gets one submission per cycle</p>
             <p>• OTP links expire after 7 days</p>
             <p>• Form auto-saves every 30 seconds — partial submissions are preserved</p>
-            <p>• Board Hub sync may timeout for very large datasets</p>
+            <p>• College data is pre-imported (939 colleges with Board Hub IDs preserved)</p>
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -304,7 +284,7 @@ export default function PlaceIntelAdmin() {
                 {colleges.length === 0 && (
                   <TableRow>
                     <TableCell colSpan={6} className="text-center py-8 text-muted-foreground">
-                      No colleges found. Try syncing from Board Hub.
+                      No colleges found.
                     </TableCell>
                   </TableRow>
                 )}
