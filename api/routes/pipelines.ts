@@ -838,7 +838,7 @@ async function executeJDFetch(runId: string, config: any) {
               "Authorization": `Bearer ${OPENAI_API_KEY}`,
             },
             body: JSON.stringify({
-              model: "gpt-5.4-nano",
+              model: "gpt-4o-mini",
               messages: [{
                 role: "user",
                 content: `Find or reconstruct the full job description for the role "${job.title}" at ${job.company_name || "unknown company"}. ${job.source_url ? `Original posting: ${job.source_url}` : ""}\n\nReturn ONLY the full job description text. If you cannot find it, construct a realistic job description based on the role title and company. Start directly with the job description content.`,
@@ -950,7 +950,7 @@ async function extractImplicitData(description: string, title: string, companyNa
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-5.4-nano",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -1056,7 +1056,7 @@ async function executeJDEnrichment(runId: string, config: any) {
         "Authorization": `Bearer ${OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model: "gpt-5.4-nano",
+        model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
@@ -1192,7 +1192,7 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
         operation: "jd_analysis",
         status: "success",
         credits_used: Math.round((tokenUsage.total_tokens || 0) / batch.length),
-        details: { skills_extracted: skills.length, model: "gpt-5.4-nano", tokens: tokenUsage, batch_size: batch.length },
+        details: { skills_extracted: skills.length, model: "gpt-4o-mini", tokens: tokenUsage, batch_size: batch.length },
       });
 
       processed++;
