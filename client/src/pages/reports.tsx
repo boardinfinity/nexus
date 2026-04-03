@@ -620,65 +620,26 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
     enabled: report?.processing_status === "completed",
   });
 
-  const callPhase = async (phase: string): Promise<any> => {
-    const res = await apiRequest("POST", `/api/reports/${reportId}/process-phase`, { phase });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({ error: "Request failed" }));
-      throw new Error(err.error || "Phase failed");
-    }
-    return res.json();
-  };
-
-  const runProcessing = async (startPhase?: string) => {
+  const runProcessing = async () => {
     setIsProcessing(true);
     setFailedPhase(null);
+    setPhaseLabel("Processing report (all phases)...");
+    setProcessedChunks(0);
+    setTotalChunks(0);
 
     try {
-      let currentPhase = startPhase || "extract_text";
-
-      let chunks = report?.processed_chunks || 0;
-      let total = report?.total_chunks || 0;
-      setProcessedChunks(chunks);
-      setTotalChunks(total);
-
-      // Phase 1: extract_text
-      if (currentPhase === "extract_text") {
-        setPhaseLabel("Extracting text from document...");
-        const result = await callPhase("extract_text");
-        total = result.total_chunks;
-        setTotalChunks(total);
-        setProcessedChunks(0);
-        currentPhase = result.next_phase;
+      const res = await apiRequest("POST", `/api/reports/${reportId}/process`, {});
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error || "Processing failed");
       }
+      const result = await res.json();
 
-      // Phase 2: process_chunk (loop)
-      while (currentPhase === "process_chunk") {
-        setPhaseLabel(`Processing chunk ${chunks + 1} of ${total || "?"}...`);
-        const result = await callPhase("process_chunk");
-        if (result.total_chunks) { total = result.total_chunks; setTotalChunks(total); }
-        chunks = result.chunk || 0;
-        setProcessedChunks(chunks);
-        currentPhase = result.next_phase;
-      }
-
-      // Phase 3: merge_results
-      if (currentPhase === "merge_results") {
-        setPhaseLabel("Merging results and generating summary...");
-        const result = await callPhase("merge_results");
-        currentPhase = result.next_phase;
-      }
-
-      // Phase 4: match_taxonomy
-      if (currentPhase === "match_taxonomy") {
-        setPhaseLabel("Matching skills to taxonomy...");
-        await callPhase("match_taxonomy");
-      }
-
-      toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
+      toast({ title: "Processing complete", description: `Report analyzed — ${result.skills_matched || 0} skills matched.` });
       queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
     } catch (err: any) {
       toast({ title: "Processing failed", description: err.message, variant: "destructive" });
-      setFailedPhase(phaseLabel);
+      setFailedPhase(err.message);
       queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
     } finally {
       setIsProcessing(false);
@@ -714,14 +675,6 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
   const tables = report.extracted_data?.tables || [];
   const stats = report.extracted_data?.stats || [];
 
-  // Determine which phase to resume from on retry
-  const getResumePhase = (): string => {
-    if (!report.total_chunks || report.total_chunks === 0) return "extract_text";
-    if ((report.processed_chunks || 0) < report.total_chunks) return "process_chunk";
-    if (!report.summary) return "merge_results";
-    return "match_taxonomy";
-  };
-
   return (
     <div className="space-y-4" data-testid="report-detail">
       <div className="flex items-center justify-between">
@@ -748,13 +701,13 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!isProcessing && (report.processing_status === "pending" || report.processing_status === "error") && (
+          {!isProcessing && (report.processing_status === "pending" || report.processing_status === "error" || report.processing_status === "processing") && (
             <Button
-              onClick={() => runProcessing(report.processing_status === "error" ? getResumePhase() : undefined)}
+              onClick={() => runProcessing()}
               data-testid="btn-process"
             >
               <Play className="h-4 w-4 mr-2" />
-              {report.processing_status === "error" ? "Retry Processing" : "Process Report"}
+              {report.processing_status === "pending" ? "Process Report" : "Re-process"}
             </Button>
           )}
           <Button

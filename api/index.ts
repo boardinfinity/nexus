@@ -66,7 +66,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   // ==================== SCHEDULER TICK (cron-secret auth, before main auth) ====================
-  if (path === "/scheduler/tick" && req.method === "POST") {
+  if (path === "/scheduler/tick" && (req.method === "POST" || req.method === "GET")) {
     try {
       // Verify CRON_SECRET via Authorization header or Vercel cron header
       const authHeader = req.headers.authorization;
@@ -76,7 +76,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!CRON_SECRET) {
         return res.status(500).json({ error: "CRON_SECRET not configured" });
       }
-      if (bearerToken !== CRON_SECRET && vercelCronHeader !== CRON_SECRET) {
+      if (bearerToken !== CRON_SECRET && vercelCronHeader !== "1") {
         return res.status(401).json({ error: "Invalid cron secret" });
       }
 

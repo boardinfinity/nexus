@@ -24,6 +24,13 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
   if (path.match(/^\/pipelines\/run$/) && req.method === "POST") {
     if (!requirePermission("pipelines", "full")(auth, res)) return;
+
+    // Auto-kill zombie runs (running > 30 min)
+    await supabase.from("pipeline_runs")
+      .update({ status: "failed", error: "Auto-killed: exceeded 30 min timeout", completed_at: new Date().toISOString() })
+      .eq("status", "running")
+      .lt("started_at", new Date(Date.now() - 30 * 60 * 1000).toISOString());
+
     const { pipeline_type, config } = req.body || {};
     if (!pipeline_type) return res.status(400).json({ error: "pipeline_type is required" });
 
