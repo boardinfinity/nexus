@@ -116,6 +116,25 @@ export default function Reports() {
     },
   });
 
+  const reprocessMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const res = await apiRequest("POST", `/api/reports/${id}/process`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: "Request failed" }));
+        throw new Error(err.error || "Processing failed");
+      }
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Processing failed", description: err.message, variant: "destructive" });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
+    },
+  });
+
   function startEditReport(report: Report, e: React.MouseEvent) {
     e.stopPropagation();
     setEditingId(report.id);
@@ -355,13 +374,25 @@ export default function Reports() {
                         </div>
                       )}
                     </div>
-                    {report.processing_status === "processing" && report.total_chunks && (
-                      <div className="w-24 ml-4">
-                        <Progress value={(report.processed_chunks / report.total_chunks) * 100} className="h-1.5" />
-                        <p className="text-[10px] text-muted-foreground text-center mt-1">
-                          {report.processed_chunks}/{report.total_chunks}
-                        </p>
-                      </div>
+                    {(report.processing_status === "processing" || report.processing_status === "error") && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="ml-4 shrink-0"
+                        disabled={reprocessMutation.isPending}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reprocessMutation.mutate(report.id);
+                        }}
+                        data-testid={`btn-reprocess-${report.id}`}
+                      >
+                        {reprocessMutation.isPending ? (
+                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+                        ) : (
+                          <Play className="h-3 w-3 mr-1" />
+                        )}
+                        Re-process
+                      </Button>
                     )}
                   </CardContent>
                 </Card>
@@ -623,19 +654,18 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
   const runProcessing = async () => {
     setIsProcessing(true);
     setFailedPhase(null);
-    setPhaseLabel("Processing report (all phases)...");
+    setPhaseLabel("Processing report...");
     setProcessedChunks(0);
     setTotalChunks(0);
 
     try {
-      const res = await apiRequest("POST", `/api/reports/${reportId}/process`, {});
+      const res = await apiRequest("POST", `/api/reports/${reportId}/process`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: "Request failed" }));
         throw new Error(err.error || "Processing failed");
       }
-      const result = await res.json();
 
-      toast({ title: "Processing complete", description: `Report analyzed — ${result.skills_matched || 0} skills matched.` });
+      toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
       queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
     } catch (err: any) {
       toast({ title: "Processing failed", description: err.message, variant: "destructive" });
@@ -707,7 +737,7 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
               data-testid="btn-process"
             >
               <Play className="h-4 w-4 mr-2" />
-              {report.processing_status === "pending" ? "Process Report" : "Re-process"}
+              {report.processing_status === "error" || report.processing_status === "processing" ? "Re-process" : "Process Report"}
             </Button>
           )}
           <Button

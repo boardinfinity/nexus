@@ -234,7 +234,7 @@ export async function handleReportRoutes(
     return res.json({ success: true });
   }
 
-  // POST /api/reports/:id/process — single-call auto-processing (all phases)
+  // POST /api/reports/:id/process — single-call AI processing (all phases server-side)
   if (path.match(/^\/reports\/[^/]+\/process$/) && req.method === "POST") {
     const id = path.split("/")[2];
 
@@ -245,19 +245,18 @@ export async function handleReportRoutes(
       .single();
     if (fetchErr || !report) return res.status(404).json({ error: "Report not found" });
 
-    if (!isAllowedFileUrl(report.file_url)) {
-      return res.status(400).json({ error: "Invalid file URL: must be a Supabase storage URL" });
-    }
-
     try {
-      // Mark as processing
+      if (!isAllowedFileUrl(report.file_url)) {
+        return res.status(400).json({ error: "Invalid file URL: must be a Supabase storage URL" });
+      }
+
+      // Phase 1: Extract text and chunk
       await supabase.from("secondary_reports").update({
         processing_status: "processing",
         error_message: null,
         extracted_data: { _chunk_results: [] },
       }).eq("id", id);
 
-      // Phase 1: Extract text
       const fileResponse = await fetch(report.file_url);
       if (!fileResponse.ok) throw new Error("Failed to download file from storage");
       const fileBuffer = Buffer.from(await fileResponse.arrayBuffer());
@@ -340,10 +339,10 @@ export async function handleReportRoutes(
       await supabase.from("secondary_reports").update({
         summary,
         key_findings: mergedFindings,
-        extracted_data: { tables: mergedTables, stats: mergedStats, _deduped_skills: dedupedSkills },
+        extracted_data: { tables: mergedTables, stats: mergedStats },
       }).eq("id", id);
 
-      // Phase 4: Match taxonomy
+      // Phase 4: Match skills to taxonomy
       const skillMentionsToInsert: any[] = [];
       for (const skill of dedupedSkills) {
         let taxonomySkillId: string | null = null;
@@ -389,16 +388,14 @@ export async function handleReportRoutes(
         }
       }
 
-      const { _deduped_skills, ...cleanData } = (await supabase.from("secondary_reports").select("extracted_data").eq("id", id).single()).data?.extracted_data || {};
       await supabase.from("secondary_reports").update({
-        extracted_data: cleanData,
         processing_status: "completed",
         processed_at: new Date().toISOString(),
       }).eq("id", id);
 
-      return res.json({ done: true, skills_matched: skillMentionsToInsert.length, chunks_processed: chunks.length });
+      return res.json({ done: true, skills_matched: skillMentionsToInsert.length, chunks: chunks.length });
     } catch (err: any) {
-      console.error("Report auto-processing error:", err);
+      console.error("Report processing error:", err);
       await supabase.from("secondary_reports").update({
         processing_status: "error",
         error_message: err.message || "Processing failed",
