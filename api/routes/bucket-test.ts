@@ -58,9 +58,30 @@ For each job, return a JSON object with:
   // STANDARDIZED TITLE — normalize the title (e.g., "Sr. SDE-II" → "Senior Software Engineer")
   "standardized_title": "Normalized Title",
 
-  // BUCKET LABEL — human-readable bucket combining the above
-  // Format: "{Seniority} {Standardized Title} in {Industry} {Company Type}, {Geography}"
-  // Example: "Mid-Level Data Analyst in IT Services MNC, Bangalore"
+  // SUB-ROLE — more specific role category within the function
+  // Examples: "Full Stack Development", "FP&A", "Talent Acquisition", "Performance Marketing", "Supply Chain Planning"
+  "sub_role": "specific area within the function",
+
+  // CTC RANGE (ONLY if explicitly stated in the JD — numbers/ranges mentioned)
+  // If JD says "10-15 LPA" or "CTC: 8,00,000 - 12,00,000" extract it. If not stated, return null.
+  "ctc_min": null,
+  "ctc_max": null,
+  "ctc_currency": "INR",
+
+  // EXPERIENCE RANGE (from JD)
+  "experience_min_years": 3,
+  "experience_max_years": 7,
+
+  // EDUCATION REQUIREMENT
+  "min_education": "bachelor" | "master" | "phd" | "any",
+  "preferred_fields": ["Computer Science", "Statistics"],
+
+  // BUCKET LABEL — clean human-readable label
+  // Format: "{Seniority-Level} {Standardized Title} | {Industry Name} | {Company Type} | {Geography}"
+  // Seniority-Level mapping: L0→"Intern" L1→"Entry-Level" L2→"Mid-Level" L3→"Senior" L4→"Director" L5→"Executive"
+  // Example: "Senior Data Engineer | IT & Software | Startup | Bangalore"
+  // Example: "Entry-Level HR Executive | FMCG & Consumer Goods | MNC | Mumbai"
+  // DO NOT repeat the seniority word (no "Senior Senior...")
   "bucket_label": "The bucket",
 
   // SKILLS (top 15, with categories)
@@ -75,6 +96,31 @@ For each job, return a JSON object with:
   // CONFIDENCE — how confident are you in the classification?
   "classification_confidence": "high" | "medium" | "low"
 }
+
+INDUSTRY DETECTION (use these signals from the JD text):
+- Look for explicit industry keywords: "bank", "fintech", "NBFC", "insurance", "mutual fund" → IND-02: BFSI
+- "SaaS", "cloud", "software product", "tech company", "IT services" → IND-01: IT & Software
+- "e-commerce", "marketplace", "D2C", "online retail" → IND-03: E-Commerce & Internet
+- "FMCG", "consumer goods", "retail chain", "CPG", "food & beverage" → IND-04: FMCG & Consumer Goods
+- "consulting", "advisory", "Big 4", "Deloitte", "McKinsey", "BCG", "Bain", "EY", "PwC", "KPMG" → IND-05: Consulting
+- "manufacturing", "plant", "factory", "production", "industrial" → IND-06: Manufacturing
+- "pharma", "healthcare", "hospital", "clinical", "medical devices", "biotech" → IND-07: Healthcare & Pharma
+- "energy", "oil & gas", "renewable", "solar", "power", "utilities" → IND-08: Energy
+- "real estate", "construction", "infrastructure", "property" → IND-09: Real Estate
+- "media", "entertainment", "OTT", "advertising agency", "gaming", "film" → IND-10: Media
+- "ed-tech", "education", "university", "school", "LMS", "e-learning" → IND-11: Education
+- "automobile", "automotive", "EV", "electric vehicle", "auto parts" → IND-12: Automotive
+- "telecom", "5G", "network", "ISP" → IND-13: Telecom
+- "government", "PSU", "public sector", "defense", "ministry" → IND-14: Government
+- If well-known company: TCS/Infosys/Wipro/HCL/Tech Mahindra → IND-01, HDFC/ICICI/SBI/Axis → IND-02, Flipkart/Amazon India/Swiggy/Zomato → IND-03, HUL/ITC/P&G/Nestle → IND-04
+- ONLY use IND-15: Others if there are absolutely NO industry signals in the JD or company name
+
+COMPANY TYPE DETECTION (use these signals):
+- "Series A/B/C", "funded by", "VC-backed", "early stage", "pre-revenue", employee count < 500 mentioned → Startup
+- "Fortune 500", "global operations", "offices in 20+ countries", well-known MNC names (Google, Microsoft, Accenture, Deloitte, Unilever, P&G, Amazon, etc.) → MNC
+- "PSU", "government", "public sector undertaking", "Bharat", NTPC/BHEL/ONGC/SAIL → Government-PSU
+- "consulting", "advisory", Big 4 names, MBB names → Consulting Firm
+- Default for Indian companies without other signals → Indian Enterprise
 
 CRITICAL RULES:
 - Use ONLY the codes provided. Do not invent new codes.
@@ -218,6 +264,15 @@ ${j.description}
               skills: result.skills || null,
               jd_quality: result.jd_quality || null,
               classification_confidence: result.classification_confidence || null,
+              sub_role: result.sub_role || null,
+              ctc_min: result.ctc_min ?? null,
+              ctc_max: result.ctc_max ?? null,
+              ctc_currency: result.ctc_currency || null,
+              experience_min_years: result.experience_min_years ?? null,
+              experience_max_years: result.experience_max_years ?? null,
+              min_education: result.min_education || null,
+              preferred_fields: result.preferred_fields || null,
+              prompt_version: "v2",
               raw_response: result,
             });
 
