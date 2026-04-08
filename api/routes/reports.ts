@@ -205,6 +205,44 @@ export async function handleReportRoutes(
     }
   }
 
+  // GET /api/reports/analytics
+  if (path === "/reports/analytics" && req.method === "GET") {
+    const { section, filter, category, source, min_confidence } = req.query as Record<string, string>;
+    try {
+      if (section === "overview") {
+        const { data, error } = await supabase.rpc("get_reports_analytics_overview");
+        if (error) throw error;
+        return res.json(data || {});
+      }
+      if (section === "skills") {
+        const { data, error } = await supabase.rpc("get_report_skill_consensus", { p_filter: filter || null, p_limit: 50 });
+        if (error) throw error;
+        return res.json(data || []);
+      }
+      if (section === "timeline") {
+        const { data, error } = await supabase.rpc("get_report_skills_timeline");
+        if (error) throw error;
+        return res.json(data || []);
+      }
+      if (section === "findings") {
+        const { data, error } = await supabase.rpc("get_report_key_findings", {
+          p_category: category || null, p_source: source || null,
+          p_min_confidence: parseFloat(min_confidence || "0"), p_limit: 100
+        });
+        if (error) throw error;
+        return res.json(data || []);
+      }
+      if (section === "sources") {
+        const { data, error } = await supabase.rpc("get_report_sources_summary");
+        if (error) throw error;
+        return res.json(data || []);
+      }
+      return res.status(400).json({ error: "Invalid section. Use: overview|skills|timeline|findings|sources" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
   // GET /api/reports/:id — single report detail
   if (path.match(/^\/reports\/[^/]+$/) && !path.includes("/skills") && req.method === "GET") {
     const id = path.split("/")[2];

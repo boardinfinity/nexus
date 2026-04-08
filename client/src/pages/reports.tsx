@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { ReportsAnalytics } from "./reports-analytics";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { supabase } from "@/lib/supabase";
@@ -101,6 +102,7 @@ export default function Reports() {
   const [processingQueue, setProcessingQueue] = useState<string[]>([]);
   const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [processProgress, setProcessProgress] = useState<{ chunk: number; total: number } | null>(null);
+  const [activeView, setActiveView] = useState<"list" | "analytics">("list");
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -272,6 +274,16 @@ export default function Reports() {
         </div>
       </div>
 
+      <div className="flex gap-2 mb-4">
+        <Button size="sm" variant={activeView === "list" ? "default" : "outline"} onClick={() => setActiveView("list")}>
+          Reports
+        </Button>
+        <Button size="sm" variant={activeView === "analytics" ? "default" : "outline"} onClick={() => setActiveView("analytics")}>
+          Analytics
+        </Button>
+      </div>
+
+      {activeView === "analytics" ? <ReportsAnalytics /> : <>
       <Collapsible>
         <CollapsibleTrigger className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors">
           <Info className="h-3.5 w-3.5" />
@@ -487,6 +499,7 @@ export default function Reports() {
           )}
         </>
       )}
+      </>}
     </div>
   );
 }
