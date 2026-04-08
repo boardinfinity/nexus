@@ -141,6 +141,12 @@ export async function handleAdminMigrationRoute(
     return res.status(401).json({ error: "Unauthorized" });
   }
 
+  // Debug: list all env var keys
+  if (req.query?.debug === "env") {
+    const allKeys = Object.keys(process.env).sort();
+    return res.json({ envKeys: allKeys });
+  }
+
   let client: Client | null = null;
   const results: Array<{ statement: number; ok: boolean; error?: string }> = [];
 
