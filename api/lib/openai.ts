@@ -133,8 +133,6 @@ Extract 5-30 skills depending on JD length. Be specific - prefer "React.js" over
 
   const data = await response.json();
   const content = data.choices?.[0]?.message?.content || "{}";
-  console.log("extractSkillsWithAI raw response:", content);
-
   try {
     const parsed = JSON.parse(content);
     const skills = Array.isArray(parsed) ? parsed : (Array.isArray(parsed.skills) ? parsed.skills : []);

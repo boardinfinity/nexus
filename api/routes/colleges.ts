@@ -66,8 +66,6 @@ async function runCatalogPhase(
         }
         return acc;
       }, []);
-      console.log("Found schools via regex:", uniqueSchools);
-
       // Use GPT just for college name/location (first 5K chars is enough for that)
       const firstSection = fullText.slice(0, 5000);
       const gptResult = await callGPT(`You are analyzing a university academic catalog. Extract basic info from this text.

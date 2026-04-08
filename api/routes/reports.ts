@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission, requireReader, requireSuperAdmin } from "../lib/auth";
+import { AuthResult, requirePermission, requireSuperAdmin } from "../lib/auth";
 import { supabase, ANTHROPIC_API_KEY } from "../lib/supabase";
 import { callClaude } from "../lib/openai";
 import { chunkText } from "../lib/helpers";
@@ -717,6 +717,7 @@ export async function handleReportRoutes(
 
   // POST /api/reports/:id/extract — download file once, extract text, store in DB
   if (path.match(/^\/reports\/[^/]+\/extract$/) && req.method === "POST") {
+    if (!auth || !auth.email) return res.status(401).json({ error: "Authentication required" });
     const id = path.split("/")[2];
 
     const { data: report, error: fetchErr } = await supabase
@@ -790,6 +791,7 @@ export async function handleReportRoutes(
 
   // POST /api/reports/:id/process-chunk — process one chunk with Claude
   if (path.match(/^\/reports\/[^/]+\/process-chunk$/) && req.method === "POST") {
+    if (!auth || !auth.email) return res.status(401).json({ error: "Authentication required" });
     const id = path.split("/")[2];
     const { chunk_index } = req.body || {};
 
@@ -915,6 +917,7 @@ ${chunkText}
 
   // POST /api/reports/:id/finalize — merge chunk results, generate summary, match taxonomy
   if (path.match(/^\/reports\/[^/]+\/finalize$/) && req.method === "POST") {
+    if (!auth || !auth.email) return res.status(401).json({ error: "Authentication required" });
     const id = path.split("/")[2];
 
     const { data: report, error: fetchErr } = await supabase

@@ -81,14 +81,14 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
         });
         if (!emailRes.ok) {
           console.error(`[PLACEINTEL OTP] Resend error:`, await emailRes.text());
-          console.log(`[PLACEINTEL OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+          console.log(`[PLACEINTEL OTP FALLBACK] Sent to ${normalizedEmail}`);
         }
       } catch (emailErr: any) {
         console.error("[PLACEINTEL OTP] Email send failed:", emailErr.message);
-        console.log(`[PLACEINTEL OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+        console.log(`[PLACEINTEL OTP FALLBACK] Sent to ${normalizedEmail}`);
       }
     } else {
-      console.log(`[PLACEINTEL OTP] No RESEND_API_KEY. Email: ${normalizedEmail}, OTP: ${otp}`);
+      console.log(`[PLACEINTEL OTP] No RESEND_API_KEY. Sent to ${normalizedEmail}`);
     }
 
     return res.json({ success: true, domain_verified: domainVerified });

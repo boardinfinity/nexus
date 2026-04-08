@@ -61,16 +61,16 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
         const emailBody = await emailRes.json();
         if (!emailRes.ok) {
           console.error(`[SURVEY OTP] Resend API error (${emailRes.status}):`, JSON.stringify(emailBody));
-          console.log(`[SURVEY OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+          console.log(`[SURVEY OTP FALLBACK] Sent to ${normalizedEmail}`);
         } else {
           console.log(`[SURVEY OTP] Sent via Resend to ${normalizedEmail}, id: ${emailBody.id}`);
         }
       } catch (emailErr: any) {
         console.error("[SURVEY OTP] Failed to send email:", emailErr.message);
-        console.log(`[SURVEY OTP FALLBACK] Email: ${normalizedEmail}, OTP: ${otp}`);
+        console.log(`[SURVEY OTP FALLBACK] Sent to ${normalizedEmail}`);
       }
     } else {
-      console.log(`[SURVEY OTP] No RESEND_API_KEY configured. Email: ${normalizedEmail}, OTP: ${otp}`);
+      console.log(`[SURVEY OTP] No RESEND_API_KEY configured. Sent to ${normalizedEmail}`);
     }
 
     return res.json({ message: "OTP sent to your email" });
