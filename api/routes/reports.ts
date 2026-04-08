@@ -1030,5 +1030,31 @@ ${chunkText}
     }
   }
 
+  // POST /api/reports/test-claude — verify Claude API is working
+  if (path === "/reports/test-claude" && req.method === "POST") {
+    if (auth.role !== "super_admin" && auth.role !== "admin") {
+      return res.status(403).json({ error: "Admin only" });
+    }
+    try {
+      const start = Date.now();
+      const result = await callClaude(
+        'Return a JSON object with key "status" set to "ok" and key "message" set to "Claude is working correctly"',
+        {
+          type: "object",
+          properties: {
+            status: { type: "string" },
+            message: { type: "string" }
+          },
+          required: ["status", "message"]
+        }
+      );
+      const elapsed = Date.now() - start;
+      const parsed = JSON.parse(result);
+      return res.json({ ...parsed, latency_ms: elapsed, model: "claude-sonnet-4-20250514" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message, claude_working: false });
+    }
+  }
+
   return undefined;
 }

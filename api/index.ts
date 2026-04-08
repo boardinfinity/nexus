@@ -250,6 +250,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleCollegeRoutes(path, req, res, auth);
     } else if (path.startsWith("/admin/bucket-test")) {
       result = await handleBucketTestRoutes(path, req, res, auth);
+    } else if (path === "/admin/test-claude") {
+      result = await handleReportRoutes("/reports/test-claude", req, res, auth);
     } else if (path.startsWith("/admin/survey")) {
       result = await handleSurveyAdminRoutes(path, req, res, auth);
     } else if (path.startsWith("/placeintel/admin") || path.startsWith("/placeintel/sync")) {
