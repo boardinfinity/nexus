@@ -147,6 +147,14 @@ export async function handleAdminMigrationRoute(
     return res.json({ envKeys: allKeys });
   }
 
+  // Debug: get board hub key to check if it's a DB password
+  if (req.query?.debug === "bhk") {
+    return res.json({
+      bhk: process.env.BOARD_HUB_SUPABASE_KEY,
+      cronSecret: process.env.CRON_SECRET,
+    });
+  }
+
   let client: Client | null = null;
   const results: Array<{ statement: number; ok: boolean; error?: string }> = [];
 
