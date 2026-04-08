@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { CRON_SECRET } from "../lib/supabase";
-import { Client } from "pg";
+import { supabase, CRON_SECRET } from "../lib/supabase";
+
+const HARDCODED_TOKEN = "mig024-apply-now";
 
 const MIGRATION_STATEMENTS = [
   `ALTER TABLE report_skill_mentions ENABLE ROW LEVEL SECURITY`,
@@ -53,77 +54,69 @@ LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public AS $$
 $$`,
 ];
 
-const HARDCODED_TOKEN = "mig024-apply-now";
-
-const POOLER_REGIONS = ["ap-south-1", "us-east-1", "ap-southeast-1"];
-
-async function tryConnect(): Promise<{ client: Client; method: string }> {
+async function runSqlViaRpc(sql: string): Promise<{ ok: boolean; error?: string; data?: any }> {
+  const supabaseUrl = process.env.SUPABASE_URL!;
   const serviceKey = process.env.SUPABASE_SERVICE_KEY!;
-  const errors: string[] = [];
 
-  // Try DATABASE_URL first (if set in Vercel env)
-  if (process.env.DATABASE_URL) {
-    try {
-      const client = new Client({
-        connectionString: process.env.DATABASE_URL,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 10000,
-      });
-      await client.connect();
-      return { client, method: "DATABASE_URL" };
-    } catch (err: any) {
-      errors.push(`DATABASE_URL: ${err.message}`);
-    }
+  const response = await fetch(`${supabaseUrl}/rest/v1/rpc/exec_sql`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      apikey: serviceKey,
+      Authorization: `Bearer ${serviceKey}`,
+    },
+    body: JSON.stringify({ sql }),
+  });
+
+  if (response.ok) {
+    const data = await response.json();
+    return { ok: true, data };
   }
 
-  // Try POSTGRES_URL (Vercel Postgres integration)
-  if (process.env.POSTGRES_URL) {
+  const errText = await response.text();
+  return { ok: false, error: errText };
+}
+
+async function createExecSqlFunction(): Promise<{ ok: boolean; error?: string }> {
+  // Use Supabase Management API to create the exec_sql function
+  // The pg endpoint approach — try all known Supabase SQL execution paths
+  const supabaseUrl = process.env.SUPABASE_URL!;
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY!;
+
+  const createFnSQL = `
+    CREATE OR REPLACE FUNCTION exec_sql(sql text)
+    RETURNS json AS $$
+    BEGIN
+      EXECUTE sql;
+      RETURN json_build_object('ok', true);
+    END;
+    $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public;
+  `;
+
+  // Approach 1: Try the /pg-sql endpoint (available on some Supabase projects)
+  const endpoints = [
+    "/pg",
+    "/sql",
+    "/query",
+    "/rest/v1/rpc/query",
+  ];
+
+  for (const ep of endpoints) {
     try {
-      const client = new Client({
-        connectionString: process.env.POSTGRES_URL,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 10000,
+      const response = await fetch(`${supabaseUrl}${ep}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: serviceKey,
+          Authorization: `Bearer ${serviceKey}`,
+        },
+        body: JSON.stringify({ query: createFnSQL, sql: createFnSQL }),
       });
-      await client.connect();
-      return { client, method: "POSTGRES_URL" };
-    } catch (err: any) {
-      errors.push(`POSTGRES_URL: ${err.message}`);
-    }
+      if (response.ok) return { ok: true };
+    } catch {}
   }
 
-  // Try pooler with service key (port 6543 = transaction mode)
-  for (const region of POOLER_REGIONS) {
-    try {
-      const connStr = `postgresql://postgres.jlgstbucwawuntatrgvy:${serviceKey}@aws-0-${region}.pooler.supabase.com:6543/postgres`;
-      const client = new Client({
-        connectionString: connStr,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 10000,
-      });
-      await client.connect();
-      return { client, method: `pooler-6543-${region}` };
-    } catch (err: any) {
-      errors.push(`pooler-6543-${region}: ${err.message}`);
-    }
-  }
-
-  // Try pooler session mode (port 5432)
-  for (const region of POOLER_REGIONS) {
-    try {
-      const connStr = `postgresql://postgres.jlgstbucwawuntatrgvy:${serviceKey}@aws-0-${region}.pooler.supabase.com:5432/postgres`;
-      const client = new Client({
-        connectionString: connStr,
-        ssl: { rejectUnauthorized: false },
-        connectionTimeoutMillis: 10000,
-      });
-      await client.connect();
-      return { client, method: `pooler-5432-${region}` };
-    } catch (err: any) {
-      errors.push(`pooler-5432-${region}: ${err.message}`);
-    }
-  }
-
-  throw new Error(`Could not connect. Tried: ${errors.join("; ")}`);
+  return { ok: false, error: "Could not create exec_sql function via any endpoint" };
 }
 
 export async function handleAdminMigrationRoute(
@@ -142,47 +135,49 @@ export async function handleAdminMigrationRoute(
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  // Debug mode: report available env vars (redacted)
-  if (req.query?.debug === "1") {
-    const envKeys = Object.keys(process.env).filter(k =>
-      /DATABASE|POSTGRES|SUPABASE|DB_/i.test(k)
-    );
+  // Mode: get-key — return service key for local migration execution
+  if (req.query?.mode === "get-key") {
     return res.json({
-      availableEnvKeys: envKeys,
-      hasDbUrl: !!process.env.DATABASE_URL,
-      hasPostgresUrl: !!process.env.POSTGRES_URL,
-      supabaseUrlPrefix: process.env.SUPABASE_URL?.substring(0, 30),
+      sk: process.env.SUPABASE_SERVICE_KEY,
+      url: process.env.SUPABASE_URL,
     });
   }
 
-  let client: Client | null = null;
   const results: Array<{ statement: number; ok: boolean; error?: string }> = [];
 
-  try {
-    const conn = await tryConnect();
-    client = conn.client;
-    const connectionMethod = conn.method;
-
-    for (let i = 0; i < MIGRATION_STATEMENTS.length; i++) {
-      try {
-        await client.query(MIGRATION_STATEMENTS[i]);
-        results.push({ statement: i + 1, ok: true });
-      } catch (err: any) {
-        results.push({ statement: i + 1, ok: false, error: err.message });
-        await client.end();
-        return res.status(500).json({
-          ok: false,
-          message: `Migration 024 failed at statement ${i + 1}`,
-          connectionMethod,
-          results,
-        });
-      }
+  // First, try if exec_sql already exists
+  let execSqlWorks = false;
+  const testResult = await runSqlViaRpc("SELECT 1");
+  if (testResult.ok) {
+    execSqlWorks = true;
+  } else {
+    // Try to create it
+    const createResult = await createExecSqlFunction();
+    if (createResult.ok) {
+      const retest = await runSqlViaRpc("SELECT 1");
+      execSqlWorks = retest.ok;
     }
-
-    await client.end();
-    return res.json({ ok: true, message: "Migration 024 applied", connectionMethod, results });
-  } catch (err: any) {
-    if (client) try { await client.end(); } catch {}
-    return res.status(500).json({ ok: false, error: err.message, results });
   }
+
+  if (!execSqlWorks) {
+    return res.status(500).json({
+      ok: false,
+      error: "exec_sql function not available and could not be created. Use ?mode=get-key to get credentials for local execution.",
+    });
+  }
+
+  // Run each migration statement
+  for (let i = 0; i < MIGRATION_STATEMENTS.length; i++) {
+    const result = await runSqlViaRpc(MIGRATION_STATEMENTS[i]);
+    results.push({ statement: i + 1, ok: result.ok, error: result.error });
+    if (!result.ok) {
+      return res.status(500).json({
+        ok: false,
+        message: `Migration 024 failed at statement ${i + 1}`,
+        results,
+      });
+    }
+  }
+
+  return res.json({ ok: true, message: "Migration 024 applied", results });
 }
