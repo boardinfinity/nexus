@@ -39,6 +39,7 @@ const SOURCE_SUGGESTIONS = [
 
 const STATUS_CONFIG: Record<string, { label: string; color: string; icon: any }> = {
   pending: { label: "Pending", color: "bg-gray-100 text-gray-700", icon: Clock },
+  extracting: { label: "Extracting", color: "bg-blue-100 text-blue-700", icon: Loader2 },
   processing: { label: "Processing", color: "bg-blue-100 text-blue-700", icon: Loader2 },
   completed: { label: "Completed", color: "bg-green-100 text-green-700", icon: CheckCircle2 },
   error: { label: "Error", color: "bg-red-100 text-red-700", icon: XCircle },
@@ -97,6 +98,8 @@ export default function Reports() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editType, setEditType] = useState("");
   const [editRegion, setEditRegion] = useState("");
+  const [processingReportId, setProcessingReportId] = useState<string | null>(null);
+  const [processProgress, setProcessProgress] = useState<{ chunk: number; total: number } | null>(null);
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -116,24 +119,49 @@ export default function Reports() {
     },
   });
 
-  const reprocessMutation = useMutation({
-    mutationFn: async (id: string) => {
-      const res = await apiRequest("POST", `/api/reports/${id}/process`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Request failed" }));
-        throw new Error(err.error || "Processing failed");
+  async function processReport(reportId: string) {
+    setProcessingReportId(reportId);
+    try {
+      // Step 1: Extract (fast, cached if already done)
+      const extractRes = await authFetch(`/api/reports/${reportId}/extract`, { method: "POST" });
+      if (!extractRes.ok) {
+        const err = await extractRes.json().catch(() => ({ error: "Extract failed" }));
+        throw new Error(err.error || "Extract failed");
       }
-      return res.json();
-    },
-    onSuccess: () => {
-      toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
+      const { chunks } = await extractRes.json();
+
+      // Step 2: Process each chunk
+      for (let i = 0; i < chunks; i++) {
+        setProcessProgress({ chunk: i + 1, total: chunks });
+        const chunkRes = await authFetch(`/api/reports/${reportId}/process-chunk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chunk_index: i }),
+        });
+        if (!chunkRes.ok) {
+          const err = await chunkRes.json().catch(() => ({ error: "Chunk failed" }));
+          throw new Error(err.error || `Chunk ${i} failed`);
+        }
+      }
+
+      // Step 3: Finalize
+      setProcessProgress({ chunk: chunks, total: chunks });
+      const finalRes = await authFetch(`/api/reports/${reportId}/finalize`, { method: "POST" });
+      if (!finalRes.ok) {
+        const err = await finalRes.json().catch(() => ({ error: "Finalize failed" }));
+        throw new Error(err.error || "Finalize failed");
+      }
+
       queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Processing failed", description: err.message, variant: "destructive" });
+      toast({ title: "Processing complete!" });
+    } catch (e: any) {
+      toast({ title: "Processing failed", description: e.message, variant: "destructive" });
       queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
-    },
-  });
+    } finally {
+      setProcessingReportId(null);
+      setProcessProgress(null);
+    }
+  }
 
   function startEditReport(report: Report, e: React.MouseEvent) {
     e.stopPropagation();
@@ -374,26 +402,29 @@ export default function Reports() {
                         </div>
                       )}
                     </div>
-                    {(report.processing_status === "processing" || report.processing_status === "error") && (
+                    {processingReportId === report.id && processProgress ? (
+                      <div className="ml-4 shrink-0 w-40">
+                        <div className="text-xs text-muted-foreground mb-1">
+                          Processing chunk {processProgress.chunk} of {processProgress.total}...
+                        </div>
+                        <Progress value={(processProgress.chunk / processProgress.total) * 100} className="h-1.5" />
+                      </div>
+                    ) : (report.processing_status === "processing" || report.processing_status === "error" || report.processing_status === "extracting") && processingReportId !== report.id ? (
                       <Button
                         variant="outline"
                         size="sm"
                         className="ml-4 shrink-0"
-                        disabled={reprocessMutation.isPending}
+                        disabled={processingReportId !== null}
                         onClick={(e) => {
                           e.stopPropagation();
-                          reprocessMutation.mutate(report.id);
+                          processReport(report.id);
                         }}
                         data-testid={`btn-reprocess-${report.id}`}
                       >
-                        {reprocessMutation.isPending ? (
-                          <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-                        ) : (
-                          <Play className="h-3 w-3 mr-1" />
-                        )}
+                        <Play className="h-3 w-3 mr-1" />
                         Re-process
                       </Button>
-                    )}
+                    ) : null}
                   </CardContent>
                 </Card>
               );
@@ -654,19 +685,47 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
   const runProcessing = async () => {
     setIsProcessing(true);
     setFailedPhase(null);
-    setPhaseLabel("Processing report...");
+    setPhaseLabel("Extracting text...");
     setProcessedChunks(0);
     setTotalChunks(0);
 
     try {
-      const res = await apiRequest("POST", `/api/reports/${reportId}/process`);
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: "Request failed" }));
-        throw new Error(err.error || "Processing failed");
+      // Step 1: Extract text
+      const extractRes = await authFetch(`/api/reports/${reportId}/extract`, { method: "POST" });
+      if (!extractRes.ok) {
+        const err = await extractRes.json().catch(() => ({ error: "Extract failed" }));
+        throw new Error(err.error || "Extract failed");
+      }
+      const { chunks } = await extractRes.json();
+      setTotalChunks(chunks);
+
+      // Step 2: Process each chunk
+      for (let i = 0; i < chunks; i++) {
+        setPhaseLabel(`Processing chunk ${i + 1} of ${chunks}...`);
+        setProcessedChunks(i);
+        const chunkRes = await authFetch(`/api/reports/${reportId}/process-chunk`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ chunk_index: i }),
+        });
+        if (!chunkRes.ok) {
+          const err = await chunkRes.json().catch(() => ({ error: "Chunk failed" }));
+          throw new Error(err.error || `Chunk ${i} failed`);
+        }
+        setProcessedChunks(i + 1);
+      }
+
+      // Step 3: Finalize
+      setPhaseLabel("Finalizing — generating summary and matching skills...");
+      const finalRes = await authFetch(`/api/reports/${reportId}/finalize`, { method: "POST" });
+      if (!finalRes.ok) {
+        const err = await finalRes.json().catch(() => ({ error: "Finalize failed" }));
+        throw new Error(err.error || "Finalize failed");
       }
 
       toast({ title: "Processing complete", description: "Report has been analyzed successfully." });
       queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId] });
+      queryClient.invalidateQueries({ queryKey: ["/api/reports", reportId, "skills"] });
     } catch (err: any) {
       toast({ title: "Processing failed", description: err.message, variant: "destructive" });
       setFailedPhase(err.message);
@@ -731,13 +790,13 @@ function ReportDetail({ reportId, onBack }: { reportId: string; onBack: () => vo
           </div>
         </div>
         <div className="flex items-center gap-2">
-          {!isProcessing && (report.processing_status === "pending" || report.processing_status === "error" || report.processing_status === "processing") && (
+          {!isProcessing && (report.processing_status === "pending" || report.processing_status === "error" || report.processing_status === "processing" || report.processing_status === "extracting") && (
             <Button
               onClick={() => runProcessing()}
               data-testid="btn-process"
             >
               <Play className="h-4 w-4 mr-2" />
-              {report.processing_status === "error" || report.processing_status === "processing" ? "Re-process" : "Process Report"}
+              {report.processing_status === "error" || report.processing_status === "processing" || report.processing_status === "extracting" ? "Re-process" : "Process Report"}
             </Button>
           )}
           <Button
