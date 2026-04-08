@@ -3,10 +3,8 @@ import { CRON_SECRET } from "../lib/supabase";
 import { Client } from "pg";
 
 const MIGRATION_STATEMENTS = [
-  // 1. Enable RLS on report_skill_mentions
   `ALTER TABLE report_skill_mentions ENABLE ROW LEVEL SECURITY`,
 
-  // 2. Rewrite get_dashboard_stats as STABLE SECURITY DEFINER
   `CREATE OR REPLACE FUNCTION get_dashboard_stats()
 RETURNS json AS $$
 DECLARE result json;
@@ -29,7 +27,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = public`,
 
-  // 3. Rewrite get_enrichment_funnel to do a single scan
   `CREATE OR REPLACE FUNCTION get_enrichment_funnel(
   p_source text DEFAULT NULL, p_country text DEFAULT NULL,
   p_status text DEFAULT NULL, p_date_from text DEFAULT NULL, p_date_to text DEFAULT NULL
@@ -58,11 +55,58 @@ $$`,
 
 const HARDCODED_TOKEN = "mig024-apply-now";
 
-function getDatabaseUrl(): string {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  // Build from Supabase service key + known project ref
-  const serviceKey = process.env.SUPABASE_SERVICE_KEY!;
-  return `postgresql://postgres.jlgstbucwawuntatrgvy:${serviceKey}@aws-0-ap-south-1.pooler.supabase.com:6543/postgres`;
+const POOLER_REGIONS = [
+  "ap-south-1",
+  "us-east-1",
+  "ap-southeast-1",
+];
+
+async function tryConnect(serviceKey: string): Promise<Client> {
+  // Try DATABASE_URL first
+  if (process.env.DATABASE_URL) {
+    const client = new Client({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false },
+    });
+    await client.connect();
+    return client;
+  }
+
+  // Try each pooler region
+  const errors: string[] = [];
+  for (const region of POOLER_REGIONS) {
+    try {
+      const connStr = `postgresql://postgres.jlgstbucwawuntatrgvy:${serviceKey}@aws-0-${region}.pooler.supabase.com:6543/postgres`;
+      const client = new Client({
+        connectionString: connStr,
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 8000,
+      });
+      await client.connect();
+      return client;
+    } catch (err: any) {
+      errors.push(`${region}: ${err.message}`);
+    }
+  }
+
+  // Try direct connection (port 5432) as last resort
+  for (const region of POOLER_REGIONS) {
+    try {
+      const connStr = `postgresql://postgres:${serviceKey}@db.jlgstbucwawuntatrgvy.supabase.co:5432/postgres`;
+      const client = new Client({
+        connectionString: connStr,
+        ssl: { rejectUnauthorized: false },
+        connectionTimeoutMillis: 8000,
+      });
+      await client.connect();
+      return client;
+    } catch (err: any) {
+      errors.push(`direct: ${err.message}`);
+      break; // Only try direct once
+    }
+  }
+
+  throw new Error(`Could not connect to database. Tried: ${errors.join("; ")}`);
 }
 
 export async function handleAdminMigrationRoute(
@@ -81,15 +125,12 @@ export async function handleAdminMigrationRoute(
     return res.status(401).json({ error: "Unauthorized" });
   }
 
-  const client = new Client({
-    connectionString: getDatabaseUrl(),
-    ssl: { rejectUnauthorized: false },
-  });
-
+  const serviceKey = process.env.SUPABASE_SERVICE_KEY!;
+  let client: Client | null = null;
   const results: Array<{ statement: number; ok: boolean; error?: string }> = [];
 
   try {
-    await client.connect();
+    client = await tryConnect(serviceKey);
 
     for (let i = 0; i < MIGRATION_STATEMENTS.length; i++) {
       try {
@@ -109,7 +150,7 @@ export async function handleAdminMigrationRoute(
     await client.end();
     return res.json({ ok: true, message: "Migration 024 applied", results });
   } catch (err: any) {
-    try { await client.end(); } catch {}
+    if (client) try { await client.end(); } catch {}
     return res.status(500).json({ ok: false, error: err.message, results });
   }
 }
