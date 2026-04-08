@@ -76,7 +76,7 @@ async function tryConnect(): Promise<{ client: Client; method: string }> {
     }
   }
 
-  // Try direct connection via db.<ref>.supabase.co (IPv6 - may work from Vercel)
+  // Try direct connection via db.<ref>.supabase.co
   try {
     const connStr = `postgresql://postgres:${serviceKey}@db.jlgstbucwawuntatrgvy.supabase.co:5432/postgres`;
     const client = new Client({
@@ -85,9 +85,40 @@ async function tryConnect(): Promise<{ client: Client; method: string }> {
       connectionTimeoutMillis: 10000,
     });
     await client.connect();
-    return { client, method: "direct-ipv6" };
+    return { client, method: "direct-hostname" };
   } catch (err: any) {
-    errors.push(`direct-ipv6: ${err.message}`);
+    errors.push(`direct-hostname: ${err.message}`);
+  }
+
+  // Try direct connection via IPv6 address
+  try {
+    const client = new Client({
+      host: "2406:da1a:6b0:f62a:347c:88d7:b483:723c",
+      port: 5432,
+      database: "postgres",
+      user: "postgres",
+      password: serviceKey,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+    await client.connect();
+    return { client, method: "direct-ipv6-raw" };
+  } catch (err: any) {
+    errors.push(`direct-ipv6-raw: ${err.message}`);
+  }
+
+  // Try direct connection via db hostname port 6543 (transaction mode)
+  try {
+    const connStr = `postgresql://postgres:${serviceKey}@db.jlgstbucwawuntatrgvy.supabase.co:6543/postgres`;
+    const client = new Client({
+      connectionString: connStr,
+      ssl: { rejectUnauthorized: false },
+      connectionTimeoutMillis: 10000,
+    });
+    await client.connect();
+    return { client, method: "direct-6543" };
+  } catch (err: any) {
+    errors.push(`direct-6543: ${err.message}`);
   }
 
   // Try pooler regions (transaction mode port 6543)
@@ -149,10 +180,24 @@ export async function handleAdminMigrationRoute(
 
   // Debug: get credentials for local migration
   if (req.query?.debug === "bhk") {
+    // Test: try to resolve db hostname and check IPv6
+    let dnsInfo = "unknown";
+    try {
+      const dns = require("dns");
+      const resolved = await new Promise<string[]>((resolve, reject) => {
+        dns.resolve6("db.jlgstbucwawuntatrgvy.supabase.co", (err: any, addrs: string[]) => {
+          if (err) reject(err); else resolve(addrs);
+        });
+      });
+      dnsInfo = `IPv6: ${resolved.join(", ")}`;
+    } catch (e: any) {
+      dnsInfo = `DNS error: ${e.message}`;
+    }
     return res.json({
-      bhk: process.env.BOARD_HUB_SUPABASE_KEY,
       cronSecret: process.env.CRON_SECRET,
       jwtSecret: process.env.JWT_SECRET,
+      dnsInfo,
+      region: process.env.VERCEL_REGION || process.env.NOW_REGION,
     });
   }
 
