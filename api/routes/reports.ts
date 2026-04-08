@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requirePermission, requireReader } from "../lib/auth";
+import { AuthResult, requirePermission, requireReader, requireSuperAdmin } from "../lib/auth";
 import { supabase, ANTHROPIC_API_KEY } from "../lib/supabase";
 import { callClaude } from "../lib/openai";
 import { chunkText } from "../lib/helpers";
@@ -174,6 +174,35 @@ export async function handleReportRoutes(
     }));
 
     return res.json({ data: enriched, total: count || 0, page: parseInt(page), limit: parseInt(limit) });
+  }
+
+  // POST /api/reports/test-claude — verify Claude is responding
+  if (path === "/reports/test-claude" && req.method === "POST") {
+    if (!requireSuperAdmin(auth, res)) return;
+
+    try {
+      if (!ANTHROPIC_API_KEY) {
+        return res.status(500).json({ error: "ANTHROPIC_API_KEY not configured" });
+      }
+
+      console.log("[test-claude] Sending test prompt to Claude...");
+      const result = await callClaude(
+        "Return a JSON object with key 'status' set to 'ok' and 'message' set to 'Claude is working'",
+        {
+          type: "object" as const,
+          properties: {
+            status: { type: "string" },
+            message: { type: "string" },
+          },
+          required: ["status", "message"],
+        }
+      );
+      console.log("[test-claude] Response:", result);
+      return res.json({ raw: result, parsed: JSON.parse(result) });
+    } catch (err: any) {
+      console.error("[test-claude] Error:", err);
+      return res.status(500).json({ error: err.message || "Claude call failed" });
+    }
   }
 
   // GET /api/reports/:id — single report detail
@@ -663,6 +692,13 @@ export async function handleReportRoutes(
       // If extracted_text already exists, skip download and return cached info
       if (report.extracted_text) {
         const totalChunks = Math.ceil(report.extracted_text.length / CHUNK_SIZE);
+        console.log(`[report ${id}] Extract cached: ${report.extracted_text.length} chars, ${totalChunks} chunks`);
+        // Reset chunk_progress for a fresh re-process run
+        await supabase.from("secondary_reports").update({
+          processing_status: "extracting",
+          error_message: null,
+          chunk_progress: { completed: [], results: {} },
+        }).eq("id", id);
         return res.json({ chunks: totalChunks, total_chars: report.extracted_text.length, cached: true });
       }
 
@@ -694,6 +730,7 @@ export async function handleReportRoutes(
       }
 
       const totalChunks = Math.ceil(fullText.length / CHUNK_SIZE);
+      console.log(`[report ${id}] Extracted ${fullText.length} chars, ${totalChunks} chunks`);
 
       // Store extracted text and reset chunk progress
       await supabase.from("secondary_reports").update({
@@ -755,6 +792,8 @@ export async function handleReportRoutes(
       // Slice the chunk
       const chunkText = report.extracted_text.slice(chunk_index * CHUNK_SIZE, (chunk_index + 1) * CHUNK_SIZE);
 
+      console.log(`[report ${id}] Processing chunk ${chunk_index + 1}/${totalChunks}, chars: ${chunkText.length}`);
+
       const prompt = `You are analyzing section ${chunk_index + 1} of ${totalChunks} from "${report.title}" by ${report.source_org || "Unknown"} (${report.report_year || "N/A"}).
 
 Extract from this section:
@@ -802,6 +841,8 @@ ${chunkText}
 
       const resultStr = await callClaude(prompt, schema);
       const result = JSON.parse(resultStr);
+
+      console.log(`[report ${id}] Chunk ${chunk_index + 1} done: ${result.key_findings?.length ?? 0} findings, ${result.skill_mentions?.length ?? 0} skills`);
 
       // Read-modify-write chunk_progress atomically
       const { data: freshReport } = await supabase

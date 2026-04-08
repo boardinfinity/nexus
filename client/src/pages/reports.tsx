@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { supabase } from "@/lib/supabase";
@@ -98,7 +98,8 @@ export default function Reports() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editType, setEditType] = useState("");
   const [editRegion, setEditRegion] = useState("");
-  const [processingReportId, setProcessingReportId] = useState<string | null>(null);
+  const [processingQueue, setProcessingQueue] = useState<string[]>([]);
+  const [activeReportId, setActiveReportId] = useState<string | null>(null);
   const [processProgress, setProcessProgress] = useState<{ chunk: number; total: number } | null>(null);
 
   const queryClient = useQueryClient();
@@ -119,8 +120,23 @@ export default function Reports() {
     },
   });
 
+  function addToQueue(reportId: string) {
+    if (activeReportId === reportId || processingQueue.includes(reportId)) return;
+    setProcessingQueue(prev => [...prev, reportId]);
+  }
+
+  function addAllToQueue(reports: Report[]) {
+    const eligible = reports
+      .filter(r => ["pending", "error", "processing", "extracting"].includes(r.processing_status))
+      .map(r => r.id)
+      .filter(id => id !== activeReportId && !processingQueue.includes(id));
+    if (eligible.length === 0) return;
+    setProcessingQueue(prev => [...prev, ...eligible]);
+  }
+
   async function processReport(reportId: string) {
-    setProcessingReportId(reportId);
+    setActiveReportId(reportId);
+    setProcessProgress(null);
     try {
       // Step 1: Extract (fast, cached if already done)
       const extractRes = await authFetch(`/api/reports/${reportId}/extract`, { method: "POST" });
@@ -158,10 +174,17 @@ export default function Reports() {
       toast({ title: "Processing failed", description: e.message, variant: "destructive" });
       queryClient.invalidateQueries({ queryKey: ["/api/reports"] });
     } finally {
-      setProcessingReportId(null);
+      setActiveReportId(null);
       setProcessProgress(null);
     }
   }
+
+  useEffect(() => {
+    if (activeReportId !== null || processingQueue.length === 0) return;
+    const next = processingQueue[0];
+    setProcessingQueue(prev => prev.slice(1));
+    processReport(next);
+  }, [activeReportId, processingQueue]);
 
   function startEditReport(report: Report, e: React.MouseEvent) {
     e.stopPropagation();
@@ -217,7 +240,19 @@ export default function Reports() {
           <h1 className="text-2xl font-bold tracking-tight">Industry Reports</h1>
           <p className="text-sm text-muted-foreground">Upload and analyze industry reports for skill insights</p>
         </div>
-        <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
+        <div className="flex items-center gap-2">
+          {listData?.data && listData.data.some(r => ["pending", "error", "processing", "extracting"].includes(r.processing_status)) && (
+            <Button
+              variant="outline"
+              onClick={() => addAllToQueue(listData.data)}
+              disabled={activeReportId !== null && processingQueue.length > 0}
+              data-testid="btn-process-all"
+            >
+              <Play className="h-4 w-4 mr-2" />
+              Process All
+            </Button>
+          )}
+          <Dialog open={uploadOpen} onOpenChange={setUploadOpen}>
 
           <DialogTrigger asChild>
             <Button data-testid="btn-upload-report">
@@ -234,6 +269,7 @@ export default function Reports() {
             />
           </DialogContent>
         </Dialog>
+        </div>
       </div>
 
       <Collapsible>
@@ -338,93 +374,98 @@ export default function Reports() {
                   onClick={() => !isEditing && setSelectedReport(report)}
                   data-testid={`report-card-${report.id}`}
                 >
-                  <CardContent className="flex items-center justify-between py-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-1">
-                        <h3 className="font-medium truncate">{report.title}</h3>
-                        <Badge variant="outline" className={statusConf.color}>
-                          <StatusIcon className={`h-3 w-3 mr-1 ${report.processing_status === "processing" ? "animate-spin" : ""}`} />
-                          {statusConf.label}
+                  <CardContent className="py-4">
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="font-medium truncate">{report.title}</h3>
+                      <Badge variant="outline" className={statusConf.color}>
+                        <StatusIcon className={`h-3 w-3 mr-1 ${report.processing_status === "processing" ? "animate-spin" : ""}`} />
+                        {statusConf.label}
+                      </Badge>
+                      {processingQueue.includes(report.id) && (
+                        <Badge variant="outline" className="bg-yellow-50 text-yellow-700 text-xs">
+                          <Clock className="h-3 w-3 mr-1" />
+                          Queued
                         </Badge>
-                      </div>
-                      {isEditing ? (
-                        <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
-                          <Select value={editType} onValueChange={setEditType}>
-                            <SelectTrigger className="h-7 w-[150px] text-xs">
-                              <SelectValue placeholder="Select type..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {REPORT_TYPES.map((t) => (
-                                <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Select value={editRegion} onValueChange={setEditRegion}>
-                            <SelectTrigger className="h-7 w-[130px] text-xs">
-                              <SelectValue placeholder="Select region..." />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {REGIONS.map((r) => (
-                                <SelectItem key={r} value={r}>{r}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={saveEditReport} disabled={updateMutation.isPending}>
-                            {updateMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3 text-green-600" />}
-                          </Button>
-                          <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEditReport}>
-                            <X className="h-3 w-3 text-red-600" />
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-4 text-sm text-muted-foreground">
-                          {report.source_org && <span>{report.source_org}</span>}
-                          {report.report_year && <span>{report.report_year}</span>}
-                          <span>{typeLabel}</span>
-                          <span>{report.region || "—"}</span>
-                          {(report.skill_count ?? 0) > 0 && (
-                            <span className="text-primary font-medium">{report.skill_count} skills</span>
-                          )}
-                          {report.file_size_bytes && (
-                            <span>{(report.file_size_bytes / 1048576).toFixed(1)} MB</span>
-                          )}
-                          {(!report.report_type || !report.region) && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-5 w-5 opacity-40 hover:opacity-100"
-                              onClick={(e) => startEditReport(report, e)}
-                              title="Edit type/region"
-                            >
-                              <Pencil className="h-3 w-3" />
-                            </Button>
-                          )}
-                        </div>
                       )}
                     </div>
-                    {processingReportId === report.id && processProgress ? (
-                      <div className="ml-4 shrink-0 w-40">
+                    {isEditing ? (
+                      <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+                        <Select value={editType} onValueChange={setEditType}>
+                          <SelectTrigger className="h-7 w-[150px] text-xs">
+                            <SelectValue placeholder="Select type..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {REPORT_TYPES.map((t) => (
+                              <SelectItem key={t.value} value={t.value}>{t.label}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Select value={editRegion} onValueChange={setEditRegion}>
+                          <SelectTrigger className="h-7 w-[130px] text-xs">
+                            <SelectValue placeholder="Select region..." />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {REGIONS.map((r) => (
+                              <SelectItem key={r} value={r}>{r}</SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={saveEditReport} disabled={updateMutation.isPending}>
+                          {updateMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <Check className="h-3 w-3 text-green-600" />}
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={cancelEditReport}>
+                          <X className="h-3 w-3 text-red-600" />
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-4 text-sm text-muted-foreground">
+                        {report.source_org && <span>{report.source_org}</span>}
+                        {report.report_year && <span>{report.report_year}</span>}
+                        <span>{typeLabel}</span>
+                        <span>{report.region || "—"}</span>
+                        {(report.skill_count ?? 0) > 0 && (
+                          <span className="text-primary font-medium">{report.skill_count} skills</span>
+                        )}
+                        {report.file_size_bytes && (
+                          <span>{(report.file_size_bytes / 1048576).toFixed(1)} MB</span>
+                        )}
+                        {(!report.report_type || !report.region) && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 opacity-40 hover:opacity-100"
+                            onClick={(e) => startEditReport(report, e)}
+                            title="Edit type/region"
+                          >
+                            <Pencil className="h-3 w-3" />
+                          </Button>
+                        )}
+                        {(report.processing_status === "processing" || report.processing_status === "error" || report.processing_status === "extracting") &&
+                          activeReportId !== report.id && !processingQueue.includes(report.id) && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-xs px-2"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              addToQueue(report.id);
+                            }}
+                            data-testid={`btn-reprocess-${report.id}`}
+                          >
+                            <Play className="h-3 w-3 mr-1" />
+                            Re-process
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                    {activeReportId === report.id && processProgress && (
+                      <div className="mt-2 w-full max-w-xs">
                         <div className="text-xs text-muted-foreground mb-1">
                           Processing chunk {processProgress.chunk} of {processProgress.total}...
                         </div>
                         <Progress value={(processProgress.chunk / processProgress.total) * 100} className="h-1.5" />
                       </div>
-                    ) : (report.processing_status === "processing" || report.processing_status === "error" || report.processing_status === "extracting") && processingReportId !== report.id ? (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="ml-4 shrink-0"
-                        disabled={processingReportId !== null}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          processReport(report.id);
-                        }}
-                        data-testid={`btn-reprocess-${report.id}`}
-                      >
-                        <Play className="h-3 w-3 mr-1" />
-                        Re-process
-                      </Button>
-                    ) : null}
+                    )}
                   </CardContent>
                 </Card>
               );
