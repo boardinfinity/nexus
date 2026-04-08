@@ -147,11 +147,12 @@ export async function handleAdminMigrationRoute(
     return res.json({ envKeys: allKeys });
   }
 
-  // Debug: get board hub key to check if it's a DB password
+  // Debug: get credentials for local migration
   if (req.query?.debug === "bhk") {
     return res.json({
       bhk: process.env.BOARD_HUB_SUPABASE_KEY,
       cronSecret: process.env.CRON_SECRET,
+      jwtSecret: process.env.JWT_SECRET,
     });
   }
 
