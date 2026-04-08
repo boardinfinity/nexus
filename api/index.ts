@@ -22,6 +22,7 @@ import { handleScheduleRoutes, calculateNextRun } from "./routes/schedules";
 import { handleReportRoutes } from "./routes/reports";
 import { handleCollegeRoutes } from "./routes/colleges";
 import { handleBucketTestRoutes } from "./routes/bucket-test";
+import { handleAdminMigrationRoute } from "./routes/admin-migration";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -204,6 +205,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.json({ triggered, paused, skipped });
     } catch (err: any) {
       console.error("Scheduler Tick Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
+
+  // ==================== TEMP: MIGRATION 024 RUNNER (cron-secret auth) ====================
+  if (path === "/admin/run-migration" && req.method === "POST") {
+    try {
+      return await handleAdminMigrationRoute(req, res);
+    } catch (err: any) {
+      console.error("Migration endpoint error:", err);
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
