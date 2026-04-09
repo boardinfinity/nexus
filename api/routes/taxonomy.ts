@@ -1,7 +1,134 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, OPENAI_API_KEY } from "../lib/supabase";
 import { type AuthResult, requireReader, requireEditor, requireAdmin } from "../lib/auth";
-import { extractSkillsWithAI } from "../lib/openai";
+
+function categoryToTier(cat: string): string {
+  if (["technology","tool","certification","methodology","language"].includes(cat)) return "hard_skill";
+  if (["knowledge","domain"].includes(cat)) return "knowledge";
+  return "competency";
+}
+
+function confidenceToScore(c: string): number {
+  return c === "high" ? 0.90 : c === "medium" ? 0.70 : 0.50;
+}
+
+const JD_CLASSIFICATION_PROMPT = `You are an expert job market analyst specializing in Indian MBA/graduate placement intelligence. Classify the given job description into structured fields.
+
+Return a JSON object with:
+
+{
+  // FUNCTION (what type of work) — pick exactly ONE from the 26 codes:
+  // FN-ACC: Accounting | FN-ADM: Administrative | FN-ART: Arts & Design | FN-BDV: Business Development
+  // FN-CON: Consulting | FN-CUS: Customer Success & Support | FN-EDU: Education | FN-ENG: Engineering
+  // FN-ENT: Entrepreneurship | FN-FIN: Finance | FN-HLT: Healthcare Services | FN-HRM: Human Resources
+  // FN-ITE: Information Technology | FN-LEG: Legal | FN-MKT: Marketing | FN-MED: Media & Communication
+  // FN-OPS: Operations | FN-PDM: Product Management | FN-PGM: Program & Project Management
+  // FN-PUR: Purchasing | FN-QAS: Quality Assurance | FN-RES: Real Estate | FN-RSC: Research
+  // FN-SAL: Sales | FN-DAT: Data & Analytics | FN-GEN: General Management
+  "job_function": "FN-XXX",
+  "job_function_name": "Name",
+
+  // FAMILY (career bucket for Indian placement) — pick exactly ONE from 20:
+  // JF-01: Strategy & Consulting | JF-02: Finance & Banking | JF-03: Marketing & Brand
+  // JF-04: Sales & Business Development | JF-05: Supply Chain & Operations | JF-06: FMCG & Retail
+  // JF-07: Human Resources | JF-08: Data Science & Analytics | JF-09: Software Engineering
+  // JF-10: Product & Design | JF-11: Media & Content | JF-12: Healthcare & Pharma
+  // JF-13: Education & Training | JF-14: Legal & Compliance | JF-15: Real Estate & Infrastructure
+  // JF-16: Energy & Sustainability | JF-17: Manufacturing & Engineering | JF-18: Government & PSU
+  // JF-19: Entrepreneurship & Startups | JF-20: General Management & Leadership
+  "job_family": "JF-XX",
+  "job_family_name": "Name",
+
+  // INDUSTRY — pick ONE from 15:
+  // IND-01: IT & Software | IND-02: BFSI (Banking, Financial Services, Insurance)
+  // IND-03: E-Commerce & Internet | IND-04: FMCG & Consumer Goods | IND-05: Consulting & Professional Services
+  // IND-06: Manufacturing & Industrial | IND-07: Healthcare & Pharma | IND-08: Energy & Utilities
+  // IND-09: Real Estate & Construction | IND-10: Media & Entertainment | IND-11: Education & Ed-Tech
+  // IND-12: Automotive & EV | IND-13: Telecom & Networking | IND-14: Government & Defense
+  // IND-15: Others
+  "job_industry": "IND-XX",
+  "job_industry_name": "Name",
+
+  // SENIORITY — pick ONE:
+  // L0: Intern/Trainee (0 yrs) | L1: Entry (0-2 yrs) | L2: Mid (2-5 yrs)
+  // L3: Senior (5-10 yrs) | L4: Director (10-15 yrs) | L5: Executive (15+ yrs)
+  "seniority": "LX",
+
+  // COMPANY TYPE — pick ONE:
+  // MNC | Indian Enterprise | Startup | Government-PSU | Consulting Firm
+  "company_type": "one of above",
+
+  // GEOGRAPHY — pick ONE:
+  // Metro-Mumbai | Metro-Delhi-NCR | Metro-Bangalore | Metro-Hyderabad | Metro-Chennai | Metro-Pune
+  // Metro-Kolkata | Metro-Ahmedabad | Tier-2-India | Remote-India | UAE-Dubai | International-Other
+  "geography": "one of above",
+
+  // STANDARDIZED TITLE — normalize the title (e.g., "Sr. SDE-II" → "Senior Software Engineer")
+  "standardized_title": "Normalized Title",
+
+  // SUB-ROLE — more specific role category within the function
+  "sub_role": "specific area within the function",
+
+  // CTC RANGE (ONLY if explicitly stated in the JD)
+  "ctc_min": null,
+  "ctc_max": null,
+
+  // EXPERIENCE RANGE (from JD)
+  "experience_min": null,
+  "experience_max": null,
+
+  // EDUCATION REQUIREMENT
+  "min_education": "bachelor" | "master" | "phd" | "any",
+  "preferred_fields": ["Computer Science", "Statistics"],
+
+  // BUCKET LABEL — clean human-readable label
+  // Format: "{Seniority-Level} {Standardized Title} | {Industry Name} | {Company Type} | {Geography}"
+  "bucket": "The bucket label",
+
+  // SKILLS (top 15, with categories)
+  // Categories: technology, tool, skill, knowledge, competency, certification, domain, methodology, language, ability
+  "skills": [
+    { "name": "Python", "category": "technology", "required": true },
+    { "name": "Leadership", "category": "competency", "required": false }
+  ],
+
+  // JD QUALITY — how well-written is this JD?
+  "jd_quality": "well_structured" | "adequate" | "poor",
+
+  // CONFIDENCE — how confident are you in the classification?
+  "classification_confidence": "high" | "medium" | "low"
+}
+
+INDUSTRY DETECTION (use these signals from the JD text):
+- Look for explicit industry keywords: "bank", "fintech", "NBFC", "insurance", "mutual fund" → IND-02: BFSI
+- "SaaS", "cloud", "software product", "tech company", "IT services" → IND-01: IT & Software
+- "e-commerce", "marketplace", "D2C", "online retail" → IND-03: E-Commerce & Internet
+- "FMCG", "consumer goods", "retail chain", "CPG", "food & beverage" → IND-04: FMCG & Consumer Goods
+- "consulting", "advisory", "Big 4", "Deloitte", "McKinsey", "BCG", "Bain", "EY", "PwC", "KPMG" → IND-05: Consulting
+- "manufacturing", "plant", "factory", "production", "industrial" → IND-06: Manufacturing
+- "pharma", "healthcare", "hospital", "clinical", "medical devices", "biotech" → IND-07: Healthcare & Pharma
+- "energy", "oil & gas", "renewable", "solar", "power", "utilities" → IND-08: Energy
+- "real estate", "construction", "infrastructure", "property" → IND-09: Real Estate
+- "media", "entertainment", "OTT", "advertising agency", "gaming", "film" → IND-10: Media
+- "ed-tech", "education", "university", "school", "LMS", "e-learning" → IND-11: Education
+- "automobile", "automotive", "EV", "electric vehicle", "auto parts" → IND-12: Automotive
+- "telecom", "5G", "network", "ISP" → IND-13: Telecom
+- "government", "PSU", "public sector", "defense", "ministry" → IND-14: Government
+- If well-known company: TCS/Infosys/Wipro/HCL/Tech Mahindra → IND-01, HDFC/ICICI/SBI/Axis → IND-02, Flipkart/Amazon India/Swiggy/Zomato → IND-03, HUL/ITC/P&G/Nestle → IND-04
+- ONLY use IND-15: Others if there are absolutely NO industry signals
+
+COMPANY TYPE DETECTION:
+- "Series A/B/C", "funded by", "VC-backed", "early stage", employee count < 500 → Startup
+- "Fortune 500", "global operations", well-known MNC names → MNC
+- "PSU", "government", "public sector undertaking" → Government-PSU
+- "consulting", "advisory", Big 4 / MBB names → Consulting Firm
+- Default for Indian companies without other signals → Indian Enterprise
+
+CRITICAL RULES:
+- Use ONLY the codes provided. Do not invent new codes.
+- If a JD is too vague to classify, set classification_confidence to "low"
+- Cap skills at 15 most important per JD
+- Return null for any field you genuinely cannot determine`;
 
 export async function handleTaxonomyRoutes(
   path: string,
@@ -241,7 +368,6 @@ export async function handleTaxonomyRoutes(
       if (job?.description) {
         jdText = job.description;
       } else if (job) {
-        // Build a synthetic JD from available metadata + raw_data
         const parts: string[] = [];
         if (job.title) parts.push(`Job Title: ${job.title}`);
         if (job.company_name) parts.push(`Company: ${job.company_name}`);
@@ -249,20 +375,15 @@ export async function handleTaxonomyRoutes(
         if (job.employment_type) parts.push(`Employment Type: ${job.employment_type}`);
         if (job.seniority_level) parts.push(`Seniority: ${job.seniority_level}`);
         if (job.functions?.length) parts.push(`Functions: ${job.functions.join(", ")}`);
-        // Check raw_data for any description-like fields
         const rd = job.raw_data as Record<string, any> | null;
         if (rd?.description) parts.push(`Description: ${rd.description}`);
         if (rd?.descriptionHtml) {
-          // Strip HTML tags for plain text
           const plain = rd.descriptionHtml.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
           if (plain.length > 50) parts.push(`Description: ${plain}`);
         }
         if (rd?.requirements) parts.push(`Requirements: ${rd.requirements}`);
         if (rd?.qualifications) parts.push(`Qualifications: ${rd.qualifications}`);
-
-        if (parts.length > 2) {
-          jdText = parts.join("\n");
-        }
+        if (parts.length > 2) jdText = parts.join("\n");
       }
     }
 
@@ -275,27 +396,160 @@ export async function handleTaxonomyRoutes(
     }
 
     try {
-      const extracted = await extractSkillsWithAI(jdText);
+      // Call GPT with v2 classification prompt
+      const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${OPENAI_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: "gpt-4.1-mini",
+          messages: [
+            { role: "system", content: JD_CLASSIFICATION_PROMPT },
+            { role: "user", content: `Classify the following job description:\n\n${jdText.slice(0, 4000)}` },
+          ],
+          temperature: 0.2,
+          max_completion_tokens: 4000,
+          response_format: { type: "json_object" },
+        }),
+      });
 
-      // Try to match against taxonomy
-      const matched = [];
-      for (const skill of extracted) {
+      if (!gptResponse.ok) {
+        const errText = await gptResponse.text().catch(() => "unknown");
+        throw new Error(`OpenAI API error ${gptResponse.status}: ${errText.slice(0, 200)}`);
+      }
+
+      const gptData = await gptResponse.json();
+      const content = gptData.choices?.[0]?.message?.content || "{}";
+      const parsed = JSON.parse(content);
+
+      // Process skills: taxonomy lookup + auto-create
+      const rawSkills: any[] = parsed.skills || [];
+      const processedSkills = [];
+
+      for (const skill of rawSkills.slice(0, 15)) {
+        const skillName = (skill.name || "").trim();
+        if (!skillName) continue;
+
+        // Try taxonomy lookup by name (ilike exact match)
         const { data: match } = await supabase
           .from("taxonomy_skills")
-          .select("id, name, category, subcategory")
-          .ilike("name", `%${skill.name}%`)
+          .select("id, name")
+          .ilike("name", skillName)
           .limit(1)
-          .single();
+          .maybeSingle();
 
-        matched.push({
-          ...skill,
-          taxonomy_match: match || null,
+        let taxonomyMatch: { id: string; name: string } | null = null;
+        let isNew = false;
+
+        if (match) {
+          taxonomyMatch = { id: match.id, name: match.name };
+        } else {
+          // Auto-create via upsert_skill RPC
+          try {
+            const { data: newId } = await supabase.rpc("upsert_skill", {
+              p_name: skillName,
+              p_category: skill.category || "skill",
+              p_tier: categoryToTier(skill.category || "skill"),
+            });
+            if (newId) {
+              taxonomyMatch = { id: newId, name: skillName };
+              isNew = true;
+            }
+          } catch {
+            // RPC may not exist yet — skip auto-create
+          }
+        }
+
+        processedSkills.push({
+          name: skillName,
+          category: skill.category || "skill",
+          skill_tier: categoryToTier(skill.category || "skill"),
+          required: skill.required ?? false,
+          taxonomy_match: taxonomyMatch,
+          is_new: isNew,
         });
       }
 
-      return res.json({ skills: matched, total: matched.length });
+      const confidenceScore = confidenceToScore(parsed.classification_confidence || "low");
+
+      // If job_id was provided, write classification fields to the jobs table and upsert job_skills
+      let saved = false;
+      if (job_id) {
+        try {
+          const updateFields: Record<string, any> = {
+            job_function: parsed.job_function || null,
+            job_family: parsed.job_family || null,
+            job_industry: parsed.job_industry || null,
+            bucket: parsed.bucket || null,
+            sub_role: parsed.sub_role || null,
+            experience_min: parsed.experience_min ?? null,
+            experience_max: parsed.experience_max ?? null,
+            education_req: parsed.min_education || null,
+            jd_quality: parsed.jd_quality || null,
+            classification_confidence: confidenceScore,
+            analysis_version: "v2",
+            analyzed_at: new Date().toISOString(),
+            enrichment_status: "complete",
+          };
+          if (parsed.standardized_title) updateFields.standardized_title = parsed.standardized_title;
+          if (parsed.seniority) updateFields.seniority_level = parsed.seniority;
+          if (parsed.company_type) updateFields.company_type = parsed.company_type;
+          if (parsed.geography) updateFields.geography = parsed.geography;
+
+          await supabase.from("jobs").update(updateFields).eq("id", job_id);
+
+          // Upsert job_skills
+          const skillRows = processedSkills
+            .filter(s => s.taxonomy_match)
+            .map(s => ({
+              job_id,
+              skill_name: s.name,
+              skill_category: s.category,
+              confidence_score: confidenceScore,
+              extraction_method: "ai_v2_analyzer",
+              taxonomy_skill_id: s.taxonomy_match!.id,
+              is_required: s.required,
+            }));
+
+          if (skillRows.length > 0) {
+            await supabase.from("job_skills").upsert(skillRows, { onConflict: "job_id,skill_name" });
+          }
+
+          saved = true;
+        } catch {
+          // Save failed — non-fatal, still return analysis
+        }
+      }
+
+      return res.json({
+        bucket: parsed.bucket || null,
+        job_function: parsed.job_function || null,
+        job_function_name: parsed.job_function_name || null,
+        job_family: parsed.job_family || null,
+        job_family_name: parsed.job_family_name || null,
+        job_industry: parsed.job_industry || null,
+        job_industry_name: parsed.job_industry_name || null,
+        seniority: parsed.seniority || null,
+        company_type: parsed.company_type || null,
+        geography: parsed.geography || null,
+        sub_role: parsed.sub_role || null,
+        standardized_title: parsed.standardized_title || null,
+        experience_min: parsed.experience_min ?? null,
+        experience_max: parsed.experience_max ?? null,
+        min_education: parsed.min_education || null,
+        preferred_fields: parsed.preferred_fields || [],
+        jd_quality: parsed.jd_quality || null,
+        classification_confidence: confidenceScore,
+        ctc_min: parsed.ctc_min ?? null,
+        ctc_max: parsed.ctc_max ?? null,
+        skills: processedSkills,
+        total: processedSkills.length,
+        saved,
+      });
     } catch (err: any) {
-      return res.status(500).json({ error: err.message || "AI extraction failed" });
+      return res.status(500).json({ error: err.message || "AI analysis failed" });
     }
   }
 
