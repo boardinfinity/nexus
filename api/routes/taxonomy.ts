@@ -553,5 +553,108 @@ export async function handleTaxonomyRoutes(
     }
   }
 
+  // ── Salary lookup: start AmbitionBox Apify run ──────────────────────────────
+  if (path === "/taxonomy/salary-lookup" && req.method === "POST") {
+    if (!requireReader(auth, "jobs", res)) return;
+    const { company_name, job_title } = req.body || {};
+    if (!company_name || !job_title) return res.status(400).json({ error: "company_name and job_title required" });
+
+    const APIFY_TOKEN = process.env.APIFY_API_KEY || "";
+    if (!APIFY_TOKEN) return res.status(500).json({ error: "Apify not configured" });
+
+    const slug = company_name.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-");
+    const startUrl = `https://www.ambitionbox.com/salaries/${slug}-salaries`;
+
+    try {
+      const runRes = await fetch(
+        `https://api.apify.com/v2/acts/Pw4eFjQ39ZoflDCyK/runs?token=${APIFY_TOKEN}&timeout=240&memory=1024`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ startUrls: [{ url: startUrl }], maxItems: 50 }),
+        }
+      );
+      if (!runRes.ok) {
+        const err = await runRes.text();
+        return res.status(500).json({ error: `Apify error: ${err.slice(0, 200)}` });
+      }
+      const runData = await runRes.json();
+      const run = runData?.data || {};
+      return res.json({
+        run_id: run.id,
+        dataset_id: run.defaultDatasetId,
+        status: "fetching",
+        company: company_name,
+        slug,
+        message: "Fetching from AmbitionBox (~2-3 min). Results will appear automatically.",
+      });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+  // ── Salary lookup: poll Apify run result ────────────────────────────────────
+  if (path === "/taxonomy/salary-lookup/result" && req.method === "GET") {
+    if (!requireReader(auth, "jobs", res)) return;
+    const run_id = req.query?.run_id as string;
+    if (!run_id) return res.status(400).json({ error: "run_id required" });
+
+    const APIFY_TOKEN = process.env.APIFY_API_KEY || "";
+    const company = (req.query?.company as string) || "";
+    const job_title = (req.query?.job_title as string) || "";
+
+    try {
+      const runRes = await fetch(`https://api.apify.com/v2/actor-runs/${run_id}?token=${APIFY_TOKEN}`);
+      if (!runRes.ok) return res.status(500).json({ error: "Failed to check run status" });
+      const runData = await runRes.json();
+      const status = runData?.data?.status || "UNKNOWN";
+      const datasetId = runData?.data?.defaultDatasetId;
+
+      if (["RUNNING", "READY", "CREATED"].includes(status)) {
+        return res.json({ status: "running" });
+      }
+      if (status === "FAILED" || status === "TIMED-OUT" || status === "ABORTED") {
+        return res.json({ status: "failed", error: `Apify run ${status.toLowerCase()}` });
+      }
+      if (status === "SUCCEEDED" && datasetId) {
+        const itemsRes = await fetch(
+          `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_TOKEN}&limit=100`
+        );
+        const items: any[] = (await itemsRes.json()) || [];
+
+        // Filter by job title similarity — match roles containing any significant word
+        const titleWords = job_title.toLowerCase().split(/\s+/).filter((w: string) => w.length > 4);
+        let matches = items.filter((item: any) => {
+          const roleName = (item.jobProfileName || "").toLowerCase();
+          return titleWords.some((w: string) => roleName.includes(w));
+        });
+        if (matches.length === 0) matches = [...items].sort((a: any, b: any) => (b.avgCtc || 0) - (a.avgCtc || 0)).slice(0, 5);
+
+        const formatLPA = (v: any) => v ? Math.round(Number(v) / 100000 * 10) / 10 : null;
+        return res.json({
+          status: "done",
+          source: "ambitionbox",
+          company,
+          all_roles_count: items.length,
+          matches: matches.slice(0, 8).map((item: any) => ({
+            role: item.jobProfileName || "",
+            min_lpa: formatLPA(item.minCtc),
+            max_lpa: formatLPA(item.maxCtc),
+            avg_lpa: formatLPA(item.avgCtc),
+            typical_min_lpa: formatLPA(item.typicalMinCtc),
+            typical_max_lpa: formatLPA(item.typicalMaxCtc),
+            experience_range: item.minExperience != null && item.maxExperience != null
+              ? `${item.minExperience}–${item.maxExperience} yrs` : null,
+            data_points: Number(item.dataPoints) || 0,
+          })),
+        });
+      }
+      return res.json({ status: "running" });
+    } catch (err: any) {
+      return res.status(500).json({ error: err.message });
+    }
+  }
+
+
   return undefined;
 }

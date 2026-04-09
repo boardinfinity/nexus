@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check, Info, ChevronDown } from "lucide-react";
+import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check, Info, ChevronDown, IndianRupee } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -66,6 +66,12 @@ export default function JDAnalyzer() {
   const [text, setText] = useState("");
   const [selectedJobId, setSelectedJobId] = useState("");
   const [selectedJobLabel, setSelectedJobLabel] = useState("");
+  const [selectedJobCompany, setSelectedJobCompany] = useState("");
+  const [salaryRunId, setSalaryRunId] = useState<string | null>(null);
+  const [salaryStatus, setSalaryStatus] = useState<"idle"|"fetching"|"running"|"done"|"failed">("idle");
+  const [salaryData, setSalaryData] = useState<any>(null);
+  const [salaryError, setSalaryError] = useState<string | null>(null);
+  const salaryPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [result, setResult] = useState<AnalyzeResult | null>(null);
   const [jobSearchOpen, setJobSearchOpen] = useState(false);
   const [jobSearchQuery, setJobSearchQuery] = useState("");
@@ -107,6 +113,8 @@ export default function JDAnalyzer() {
     },
     onSuccess: (data) => {
       setResult(data);
+      setSalaryStatus("idle"); setSalaryData(null); setSalaryError(null); setSalaryRunId(null);
+      if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
       if (data.total === 0 && !data.bucket) {
         toast({
           title: "No results",
@@ -125,6 +133,46 @@ export default function JDAnalyzer() {
   const hardSkills = result?.skills.filter(s => s.skill_tier === "hard_skill") || [];
   const knowledgeSkills = result?.skills.filter(s => s.skill_tier === "knowledge") || [];
   const competencies = result?.skills.filter(s => s.skill_tier === "competency") || [];
+
+
+  const pollSalary = async (run_id: string, company: string, job_title: string) => {
+    try {
+      const res = await authFetch(`/api/taxonomy/salary-lookup/result?run_id=${run_id}&company=${encodeURIComponent(company)}&job_title=${encodeURIComponent(job_title)}`);
+      const data = await res.json();
+      if (data.status === "done") {
+        setSalaryData(data);
+        setSalaryStatus("done");
+        if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
+      } else if (data.status === "failed") {
+        setSalaryError(data.error || "AmbitionBox fetch failed");
+        setSalaryStatus("failed");
+        if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
+      }
+    } catch (e) { /* keep polling */ }
+  };
+
+  const handleGetSalary = async () => {
+    if (!result) return;
+    const company = selectedJobCompany || result.company_type || "";
+    const job_title = result.standardized_title || "";
+    if (!company) { setSalaryError("No company detected. Select a job first."); setSalaryStatus("failed"); return; }
+    setSalaryStatus("fetching"); setSalaryData(null); setSalaryError(null);
+    try {
+      const res = await authFetch("/api/taxonomy/salary-lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ company_name: company, job_title }) });
+      const data = await res.json();
+      if (data.run_id) {
+        setSalaryRunId(data.run_id);
+        setSalaryStatus("running");
+        salaryPollRef.current = setInterval(() => pollSalary(data.run_id, company, job_title), 15000);
+      } else {
+        setSalaryError(data.error || "Failed to start fetch");
+        setSalaryStatus("failed");
+      }
+    } catch (e: any) { setSalaryError(e.message); setSalaryStatus("failed"); }
+  };
+
+  // Cleanup poll on unmount
+  useEffect(() => { return () => { if (salaryPollRef.current) clearInterval(salaryPollRef.current); }; }, []);
 
   return (
     <div className="space-y-6" data-testid="jd-analyzer-page">
@@ -236,6 +284,7 @@ export default function JDAnalyzer() {
                                     setSelectedJobLabel(
                                       `${job.title}${job.company_name ? ` @ ${job.company_name}` : ""}`
                                     );
+                                    setSelectedJobCompany(job.company_name || "");
                                     setJobSearchOpen(false);
                                   }}
                                 >
@@ -450,6 +499,74 @@ export default function JDAnalyzer() {
               {result.total === 0 && (
                 <p className="text-sm text-muted-foreground text-center py-4">No skills extracted</p>
               )}
+
+              {/* 4. Salary Insights Card */}
+              <Card>
+                <CardHeader className="pb-3">
+                  <CardTitle className="text-sm font-medium flex items-center gap-2">
+                    <IndianRupee className="h-4 w-4 text-green-600" /> AmbitionBox Salary Data
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {salaryStatus === "idle" && (
+                    <div className="flex flex-col gap-2">
+                      <p className="text-xs text-muted-foreground">Get real salary data for this role from AmbitionBox (India). Takes ~2 minutes.</p>
+                      <Button variant="outline" size="sm" onClick={handleGetSalary} className="w-fit border-green-600 text-green-700 hover:bg-green-50">
+                        <IndianRupee className="h-3 w-3 mr-1" /> Get AmbitionBox Salary Data
+                      </Button>
+                    </div>
+                  )}
+                  {(salaryStatus === "fetching" || salaryStatus === "running") && (
+                    <div className="rounded-lg bg-amber-50 border border-amber-200 p-4 flex items-start gap-3">
+                      <Loader2 className="h-4 w-4 text-amber-600 animate-spin mt-0.5 shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">Fetching from AmbitionBox...</p>
+                        <p className="text-xs text-amber-600 mt-1">Using residential proxies to access salary data. Usually takes 2–3 minutes. Results will appear automatically.</p>
+                      </div>
+                    </div>
+                  )}
+                  {salaryStatus === "done" && salaryData && (
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs text-muted-foreground">{salaryData.matches?.length} matching roles from {salaryData.all_roles_count} total at {salaryData.company}</p>
+                        <Badge variant="outline" className="text-xs">AmbitionBox</Badge>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-xs border-collapse">
+                          <thead>
+                            <tr className="border-b">
+                              <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Role</th>
+                              <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Exp</th>
+                              <th className="text-right py-1.5 pr-3 font-medium text-muted-foreground">Min</th>
+                              <th className="text-right py-1.5 pr-3 font-medium text-green-700">Avg</th>
+                              <th className="text-right py-1.5 pr-3 font-medium text-muted-foreground">Max</th>
+                              <th className="text-right py-1.5 font-medium text-muted-foreground">Responses</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {salaryData.matches?.map((m: any, i: number) => (
+                              <tr key={i} className="border-b last:border-0 hover:bg-muted/30">
+                                <td className="py-1.5 pr-3 font-medium">{m.role}</td>
+                                <td className="py-1.5 pr-3 text-muted-foreground">{m.experience_range || "—"}</td>
+                                <td className="py-1.5 pr-3 text-right">{m.min_lpa != null ? `₹${m.min_lpa}L` : "—"}</td>
+                                <td className="py-1.5 pr-3 text-right font-semibold text-green-700">{m.avg_lpa != null ? `₹${m.avg_lpa}L` : "—"}</td>
+                                <td className="py-1.5 pr-3 text-right">{m.max_lpa != null ? `₹${m.max_lpa}L` : "—"}</td>
+                                <td className="py-1.5 text-right text-muted-foreground">{m.data_points}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                  {salaryStatus === "failed" && (
+                    <div className="rounded-lg bg-red-50 border border-red-200 p-3 flex items-center justify-between">
+                      <p className="text-sm text-red-700">{salaryError || "Failed to fetch salary data"}</p>
+                      <Button variant="ghost" size="sm" onClick={() => setSalaryStatus("idle")} className="text-red-600 shrink-0 ml-2">Try Again</Button>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
             </CardContent>
           </Card>
         </div>
