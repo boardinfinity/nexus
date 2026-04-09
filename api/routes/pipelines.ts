@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, APIFY_API_KEY, RAPIDAPI_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
+import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
@@ -110,7 +111,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     if (error) return res.status(500).json({ error: error.message });
 
     // For non-external pipelines (company_enrichment, jd_enrichment, people_search, people_enrich), execute synchronously
-    if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment" || pipeline_type === "jd_fetch" || pipeline_type === "people_enrichment") {
+    if (pipeline_type === "company_enrichment" || pipeline_type === "jd_enrichment" || pipeline_type === "jd_fetch" || pipeline_type === "people_enrichment" || pipeline_type === "jd_batch_submit" || pipeline_type === "jd_batch_poll") {
       await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
     }
 
@@ -435,6 +436,10 @@ export export async function executePipeline(runId: string, pipelineType: string
       await executeJDEnrichment(runId, config);
     } else if (pipelineType === "people_enrichment") {
       await executePeopleEnrichment(runId, config);
+    } else if (pipelineType === "jd_batch_submit") {
+      await executeJDBatchSubmit(runId, config);
+    } else if (pipelineType === "jd_batch_poll") {
+      await executeJDBatchPoll(runId, config);
     } else if (pipelineType === "deduplication") {
       await executeDeduplication(runId, config);
     } else if (pipelineType === "cooccurrence") {
@@ -1862,3 +1867,70 @@ async function executePeopleEnrichment(runId: string, config: any) {
     completed_at: new Date().toISOString(),
   }).eq("id", runId);
 }
+
+// ==================== JD BATCH API PIPELINE ====================
+
+async function executeJDBatchSubmit(runId: string, config: any) {
+  const batchSize = Math.min(parseInt(config.batch_size) || 2000, 5000);
+  
+  // Fetch jobs needing enrichment
+  const { data: jobs, error } = await supabase
+    .from("jobs")
+    .select("id, title, company_name, description")
+    .or("analysis_version.is.null,analysis_version.neq.v2")
+    .not("description", "is", null)
+    .limit(batchSize);
+
+  if (error) throw error;
+  if (!jobs?.length) {
+    await supabase.from("pipeline_runs").update({ status: "completed", total_items: 0, processed_items: 0, completed_at: new Date().toISOString() }).eq("id", runId);
+    return;
+  }
+
+  await supabase.from("pipeline_runs").update({ status: "running", total_items: jobs.length }).eq("id", runId);
+
+  const validJobs = jobs.filter(j => j.description && j.description.length >= 100);
+  const result = await submitJDBatch(validJobs);
+
+  // Store batch_id in run config for polling
+  await supabase.from("pipeline_runs").update({
+    config: { ...config, _batch_id: result.batch_id, _job_count: result.request_count },
+    status: "running",
+    processed_items: 0,
+  }).eq("id", runId);
+
+  console.log(`[jd_batch_submit] Submitted ${result.request_count} jobs, batch_id: ${result.batch_id}`);
+}
+
+async function executeJDBatchPoll(runId: string, config: any) {
+  const batchId = config._batch_id || config.batch_id;
+  if (!batchId) throw new Error("batch_id required in config");
+
+  const status = await pollBatch(batchId);
+  
+  await supabase.from("pipeline_runs").update({
+    config: { ...config, _batch_status: status.status, _completed: status.completed, _total: status.total },
+    processed_items: status.completed,
+    failed_items: status.failed,
+  }).eq("id", runId);
+
+  if (status.status === "completed" && status.output_file_id) {
+    const result = await processBatchResults(status.output_file_id, runId);
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      processed_items: result.processed,
+      failed_items: result.failed,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+  } else if (["failed","expired","cancelled"].includes(status.status)) {
+    await supabase.from("pipeline_runs").update({
+      status: "failed",
+      error_message: `Batch API ${status.status}`,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+  } else {
+    // Still in progress — mark as running with progress
+    await supabase.from("pipeline_runs").update({ status: "running" }).eq("id", runId);
+  }
+}
+
