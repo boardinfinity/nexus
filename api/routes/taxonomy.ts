@@ -408,7 +408,7 @@ export async function handleTaxonomyRoutes(
           model: "gpt-4.1",
           messages: [
             { role: "system", content: JD_CLASSIFICATION_PROMPT },
-            { role: "user", content: `Classify the following job description:\n\n${jdText.slice(0, 4000)}` },
+            { role: "user", content: filename ? `Filename: ${filename}\n\nIMPORTANT: If the company name is NOT in the JD text below, extract it from the filename above.\n\nClassify the following job description:\n\n${jdText.slice(0, 4000)}` : `Classify the following job description:\n\n${jdText.slice(0, 4000)}` },
           ],
           temperature: 0.2,
           max_completion_tokens: 4000,
