@@ -114,6 +114,7 @@ export default function JDAnalyzer() {
       const body: Record<string, string> = {};
       if ((mode === "paste" || mode === "upload") && text.trim()) {
         body.text = text;
+        if (mode === "upload" && uploadedFilename) body.filename = uploadedFilename;
       } else if (mode === "select" && selectedJobId) {
         body.job_id = selectedJobId;
       } else {

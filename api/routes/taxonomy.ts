@@ -356,7 +356,7 @@ export async function handleTaxonomyRoutes(
   }
 
   if (path === "/analyze-jd" && req.method === "POST") {
-    const { text, job_id } = req.body || {};
+    const { text, job_id, filename } = req.body || {};
     let jdText = text;
 
     if (!jdText && job_id) {
@@ -405,7 +405,7 @@ export async function handleTaxonomyRoutes(
           "Authorization": `Bearer ${OPENAI_API_KEY}`,
         },
         body: JSON.stringify({
-          model: "gpt-4.1-mini",
+          model: "gpt-4.1",
           messages: [
             { role: "system", content: JD_CLASSIFICATION_PROMPT },
             { role: "user", content: `Classify the following job description:\n\n${jdText.slice(0, 4000)}` },
