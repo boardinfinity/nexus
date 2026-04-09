@@ -214,21 +214,16 @@ export default function JDAnalyzer() {
 
   const handleGetSalary = async () => {
     if (!result) return;
-    const company = selectedJobCompany || result.company_type || "";
+    const company = selectedJobCompany || result.company_name || "";
     const job_title = result.standardized_title || "";
-    if (!company) { setSalaryError("No company detected. Select a job first."); setSalaryStatus("failed"); return; }
+    if (!job_title) { setSalaryError("No job title detected. Analyze a JD first."); setSalaryStatus("failed"); return; }
     setSalaryStatus("fetching"); setSalaryData(null); setSalaryError(null);
     try {
-      const res = await authFetch("/api/taxonomy/salary-lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ company_name: company, job_title }) });
+      const res = await authFetch("/api/taxonomy/salary-lookup", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ company_name: company || "Any", job_title }) });
       const data = await res.json();
-      if (data.run_id) {
-        setSalaryRunId(data.run_id);
-        setSalaryStatus("running");
-        salaryPollRef.current = setInterval(() => pollSalary(data.run_id, company, job_title), 15000);
-      } else {
-        setSalaryError(data.error || "Failed to start fetch");
-        setSalaryStatus("failed");
-      }
+      if (!res.ok) throw new Error(data.error || "Salary lookup failed");
+      setSalaryData(data);
+      setSalaryStatus("done");
     } catch (e: any) { setSalaryError(e.message); setSalaryStatus("failed"); }
   };
 
@@ -646,53 +641,40 @@ export default function JDAnalyzer() {
                 <CardContent>
                   {salaryStatus === "idle" && (
                     <div className="flex flex-col gap-2">
-                      <p className="text-xs text-muted-foreground">Get real salary data for this role from AmbitionBox (India). Takes ~2 minutes.</p>
+                      <p className="text-xs text-muted-foreground">Get estimated salary data for this role from JSearch.</p>
                       <Button variant="outline" size="sm" onClick={handleGetSalary} className="w-fit border-green-600 text-green-700 hover:bg-green-50">
                         <IndianRupee className="h-3 w-3 mr-1" /> Get AmbitionBox Salary Data
                       </Button>
                     </div>
                   )}
-                  {(salaryStatus === "fetching" || salaryStatus === "running") && (
-                    <div className="rounded-lg bg-amber-50 border border-amber-200 p-4 flex items-start gap-3">
-                      <Loader2 className="h-4 w-4 text-amber-600 animate-spin mt-0.5 shrink-0" />
-                      <div>
-                        <p className="text-sm font-medium text-amber-800">Fetching from AmbitionBox...</p>
-                        <p className="text-xs text-amber-600 mt-1">Using residential proxies to access salary data. Usually takes 2–3 minutes. Results will appear automatically.</p>
-                      </div>
+                  {salaryStatus === "fetching" && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Loader2 className="h-4 w-4 animate-spin" /> Fetching salary data...
                     </div>
                   )}
                   {salaryStatus === "done" && salaryData && (
                     <div className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <p className="text-xs text-muted-foreground">{salaryData.matches?.length} matching roles from {salaryData.all_roles_count} total at {salaryData.company}</p>
-                        <Badge variant="outline" className="text-xs">AmbitionBox</Badge>
+                        <p className="text-xs text-muted-foreground">{salaryData.matches?.length} result{salaryData.matches?.length !== 1 ? "s" : ""} for "{salaryData.role}"</p>
+                        <Badge variant="outline" className="text-xs">JSearch</Badge>
                       </div>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs border-collapse">
-                          <thead>
-                            <tr className="border-b">
-                              <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Role</th>
-                              <th className="text-left py-1.5 pr-3 font-medium text-muted-foreground">Exp</th>
-                              <th className="text-right py-1.5 pr-3 font-medium text-muted-foreground">Min</th>
-                              <th className="text-right py-1.5 pr-3 font-medium text-green-700">Avg</th>
-                              <th className="text-right py-1.5 pr-3 font-medium text-muted-foreground">Max</th>
-                              <th className="text-right py-1.5 font-medium text-muted-foreground">Responses</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {salaryData.matches?.map((m: any, i: number) => (
-                              <tr key={i} className="border-b last:border-0 hover:bg-muted/30">
-                                <td className="py-1.5 pr-3 font-medium">{m.role}</td>
-                                <td className="py-1.5 pr-3 text-muted-foreground">{m.experience_range || "—"}</td>
-                                <td className="py-1.5 pr-3 text-right">{m.min_lpa != null ? `₹${m.min_lpa}L` : "—"}</td>
-                                <td className="py-1.5 pr-3 text-right font-semibold text-green-700">{m.avg_lpa != null ? `₹${m.avg_lpa}L` : "—"}</td>
-                                <td className="py-1.5 pr-3 text-right">{m.max_lpa != null ? `₹${m.max_lpa}L` : "—"}</td>
-                                <td className="py-1.5 text-right text-muted-foreground">{m.data_points}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                      <div className="space-y-1.5">
+                        {salaryData.matches?.map((m: any, i: number) => {
+                          const fmt = (v: number | null) => v != null ? `${m.salary_currency === "USD" ? "$" : "₹"}${Math.round(v).toLocaleString()}` : "—";
+                          return (
+                            <div key={i} className="rounded-md border p-2.5 text-xs">
+                              <div className="font-medium mb-1">{m.role}{m.location ? ` · ${m.location}` : ""}</div>
+                              <div className="flex gap-4 text-muted-foreground">
+                                <span>Min: <span className="text-foreground">{fmt(m.min_salary)}</span></span>
+                                <span>Median: <span className="text-green-700 font-semibold">{fmt(m.median_salary)}</span></span>
+                                <span>Max: <span className="text-foreground">{fmt(m.max_salary)}</span></span>
+                                <span className="ml-auto">{m.salary_period === "YEAR" ? "/yr" : "/mo"}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
+                      <p className="text-[10px] text-muted-foreground">Source: JSearch aggregated data · Figures are estimates</p>
                     </div>
                   )}
                   {salaryStatus === "failed" && (
