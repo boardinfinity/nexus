@@ -67,6 +67,16 @@ export default function JDAnalyzer() {
   const [selectedJobId, setSelectedJobId] = useState("");
   const [selectedJobLabel, setSelectedJobLabel] = useState("");
   const [selectedJobCompany, setSelectedJobCompany] = useState("");
+  const [uploadedFilename, setUploadedFilename] = useState("");
+  const [uploadWordCount, setUploadWordCount] = useState(0);
+  const [uploadLoading, setUploadLoading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [saveTitle, setSaveTitle] = useState("");
+  const [saveCompany, setSaveCompany] = useState("");
+  const [saveLocation, setSaveLocation] = useState("");
+  const [saveStatus, setSaveStatus] = useState<"idle"|"saving"|"done"|"error">("idle");
+  const [savedJobId, setSavedJobId] = useState<string | null>(null);
   const [salaryRunId, setSalaryRunId] = useState<string | null>(null);
   const [salaryStatus, setSalaryStatus] = useState<"idle"|"fetching"|"running"|"done"|"failed">("idle");
   const [salaryData, setSalaryData] = useState<any>(null);
@@ -90,7 +100,7 @@ export default function JDAnalyzer() {
   const { data: jobs, isLoading: jobsLoading } = useQuery<{ data: Job[] }>({
     queryKey: ["/api/jobs-search", debouncedSearch],
     queryFn: async () => {
-      const params = new URLSearchParams({ limit: "50", page: "1", has_description: "true" });
+      const params = new URLSearchParams({ limit: "50", page: "1" });
       if (debouncedSearch) params.set("search", debouncedSearch);
       const res = await authFetch(`/api/jobs?${params}`);
       if (!res.ok) throw new Error("Failed to fetch jobs");
@@ -101,7 +111,7 @@ export default function JDAnalyzer() {
   const analyze = useMutation({
     mutationFn: async () => {
       const body: Record<string, string> = {};
-      if (mode === "paste" && text.trim()) {
+      if ((mode === "paste" || mode === "upload") && text.trim()) {
         body.text = text;
       } else if (mode === "select" && selectedJobId) {
         body.job_id = selectedJobId;
@@ -114,6 +124,9 @@ export default function JDAnalyzer() {
     onSuccess: (data) => {
       setResult(data);
       setSalaryStatus("idle"); setSalaryData(null); setSalaryError(null); setSalaryRunId(null);
+      setSaveStatus("idle"); setSavedJobId(null);
+      if (data.standardized_title) setSaveTitle(data.standardized_title);
+      if (data.geography) setSaveLocation(data.geography);
       if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
       if (data.total === 0 && !data.bucket) {
         toast({
@@ -149,6 +162,51 @@ export default function JDAnalyzer() {
         if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
       }
     } catch (e) { /* keep polling */ }
+  };
+
+
+  const handleFileUpload = async (file: File) => {
+    const allowed = [".txt", ".pdf", ".docx", ".doc"];
+    const ext = file.name.substring(file.name.lastIndexOf(".")).toLowerCase();
+    if (!allowed.includes(ext)) {
+      setUploadError("Unsupported file type. Use .txt, .pdf, .docx, or .doc");
+      return;
+    }
+    setUploadLoading(true); setUploadError(null);
+    const formData = new FormData();
+    formData.append("file", file);
+    try {
+      const res = await authFetch("/api/taxonomy/extract-text", { method: "POST", body: formData });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Extraction failed");
+      setText(data.text);
+      setUploadedFilename(data.filename);
+      setUploadWordCount(data.word_count);
+    } catch (e: any) {
+      setUploadError(e.message);
+    } finally {
+      setUploadLoading(false);
+    }
+  };
+
+
+  const handleSaveToNexus = async () => {
+    if (!saveTitle.trim() || !saveCompany.trim()) return;
+    setSaveStatus("saving");
+    try {
+      const res = await authFetch("/api/jobs/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: saveTitle, company_name: saveCompany, description: text, location_raw: saveLocation }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Save failed");
+      setSavedJobId(data.id);
+      setSaveStatus("done");
+    } catch (e: any) {
+      setSaveStatus("error");
+      setSalaryError(e.message);
+    }
   };
 
   const handleGetSalary = async () => {
@@ -228,6 +286,7 @@ export default function JDAnalyzer() {
                 <SelectContent>
                   <SelectItem value="paste">Paste JD Text</SelectItem>
                   <SelectItem value="select">Select Existing Job</SelectItem>
+                  <SelectItem value="upload">Upload File</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -243,6 +302,44 @@ export default function JDAnalyzer() {
                   data-testid="jd-text"
                 />
               </div>
+            ) : mode === "upload" ? (
+              <div className="space-y-2">
+                <Label className="text-xs">Upload JD File</Label>
+                <div
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) handleFileUpload(f); }}
+                  className="border-2 border-dashed border-primary/30 rounded-lg p-8 text-center cursor-pointer hover:border-primary/60 hover:bg-primary/5 transition-colors"
+                >
+                  {uploadLoading ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                      <p className="text-sm text-muted-foreground">Extracting text...</p>
+                    </div>
+                  ) : uploadedFilename ? (
+                    <div className="flex flex-col items-center gap-2">
+                      <CheckCircle className="h-8 w-8 text-green-600" />
+                      <p className="text-sm font-medium">{uploadedFilename}</p>
+                      <Badge variant="outline" className="text-green-700 border-green-300">✓ {uploadWordCount} words extracted</Badge>
+                      <p className="text-xs text-muted-foreground mt-1">Click to upload a different file</p>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-2">
+                      <FileText className="h-8 w-8 text-muted-foreground" />
+                      <p className="text-sm font-medium">Drop file here or click to browse</p>
+                      <p className="text-xs text-muted-foreground">PDF, DOCX, DOC, TXT supported</p>
+                    </div>
+                  )}
+                </div>
+                <input ref={fileInputRef} type="file" accept=".txt,.pdf,.docx,.doc" className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0]; if (f) handleFileUpload(f); }} />
+                {uploadError && <p className="text-xs text-red-600">{uploadError}</p>}
+                {uploadedFilename && text && (
+                  <div className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground line-clamp-3">
+                    <span className="font-medium">Preview: </span>{text.slice(0, 300)}...
+                  </div>
+                )}
+              </div>
             ) : (
               <div className="space-y-2">
                 <Label className="text-xs">Select a Job</Label>
@@ -255,7 +352,7 @@ export default function JDAnalyzer() {
                       className="w-full justify-between text-sm font-normal h-10"
                       data-testid="jd-job-select"
                     >
-                      {selectedJobLabel || "Search and select a job..."}
+                      {selectedJobLabel || "Search by title or company..."}
                       <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                     </Button>
                   </PopoverTrigger>
@@ -315,10 +412,46 @@ export default function JDAnalyzer() {
               </div>
             )}
 
+
+            {/* Save to Nexus — shown after analysis of pasted/uploaded JD */}
+            {result && (mode === "paste" || mode === "upload") && (
+              <div className="border rounded-lg p-3 space-y-2 bg-muted/20">
+                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">Save this JD to Nexus</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Job Title *</Label>
+                    <input value={saveTitle} onChange={e => setSaveTitle(e.target.value)}
+                      placeholder="e.g. Data Analyst" className="w-full mt-0.5 px-2 py-1.5 text-xs border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Company *</Label>
+                    <input value={saveCompany} onChange={e => setSaveCompany(e.target.value)}
+                      placeholder="e.g. Accenture" className="w-full mt-0.5 px-2 py-1.5 text-xs border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">Location (optional)</Label>
+                  <input value={saveLocation} onChange={e => setSaveLocation(e.target.value)}
+                    placeholder="e.g. Bangalore" className="w-full mt-0.5 px-2 py-1.5 text-xs border rounded-md bg-background focus:outline-none focus:ring-1 focus:ring-primary" />
+                </div>
+                {saveStatus === "done" ? (
+                  <p className="text-xs text-green-700 font-medium">✓ Saved to Nexus — Job ID: {savedJobId}</p>
+                ) : saveStatus === "error" ? (
+                  <p className="text-xs text-red-600">Save failed. Try again.</p>
+                ) : (
+                  <Button size="sm" onClick={handleSaveToNexus}
+                    disabled={saveStatus === "saving" || !saveTitle.trim() || !saveCompany.trim()}
+                    className="w-full text-xs h-8">
+                    {saveStatus === "saving" ? <><Loader2 className="h-3 w-3 mr-1 animate-spin" />Saving...</> : "Save to Nexus"}
+                  </Button>
+                )}
+              </div>
+            )}
+
             <Button
               className="w-full"
               onClick={() => analyze.mutate()}
-              disabled={analyze.isPending}
+              disabled={analyze.isPending || (mode === "paste" && !text.trim()) || (mode === "select" && !selectedJobId) || (mode === "upload" && !text.trim())}
               data-testid="jd-analyze-btn"
             >
               {analyze.isPending ? (

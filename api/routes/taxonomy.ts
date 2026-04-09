@@ -553,6 +553,80 @@ export async function handleTaxonomyRoutes(
     }
   }
 
+  // ── Extract text from uploaded file (PDF, DOCX, TXT) ────────────────────────
+  if (path === "/taxonomy/extract-text" && req.method === "POST") {
+    if (!requireReader(auth, "jobs", res)) return;
+
+    // Parse multipart manually using raw body
+    const contentType = req.headers["content-type"] || "";
+    if (!contentType.includes("multipart/form-data")) {
+      return res.status(400).json({ error: "Expected multipart/form-data" });
+    }
+
+    const boundary = contentType.split("boundary=")[1]?.trim();
+    if (!boundary) return res.status(400).json({ error: "No boundary in content-type" });
+
+    const rawBody: Buffer = await new Promise((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk: Buffer) => chunks.push(chunk));
+      req.on("end", () => resolve(Buffer.concat(chunks)));
+      req.on("error", reject);
+    });
+
+    // Extract file from multipart body
+    const boundaryBuf = Buffer.from("--" + boundary);
+    const parts = rawBody.toString("binary").split("--" + boundary);
+    let fileBuffer: Buffer | null = null;
+    let filename = "upload";
+    let ext = ".txt";
+
+    for (const part of parts) {
+      if (part.includes("Content-Disposition") && part.includes("filename=")) {
+        const nameMatch = part.match(/filename="([^"]+)"/);
+        if (nameMatch) {
+          filename = nameMatch[1];
+          ext = filename.substring(filename.lastIndexOf(".")).toLowerCase();
+        }
+        const headerEnd = part.indexOf("\r\n\r\n");
+        if (headerEnd !== -1) {
+          const filePart = part.substring(headerEnd + 4).replace(/\r\n$/, "");
+          fileBuffer = Buffer.from(filePart, "binary");
+        }
+        break;
+      }
+    }
+
+    if (!fileBuffer) return res.status(400).json({ error: "No file found in upload" });
+
+    const allowed = [".txt", ".pdf", ".docx", ".doc"];
+    if (!allowed.includes(ext)) return res.status(400).json({ error: `Unsupported type: ${ext}. Use PDF, DOCX, or TXT.` });
+
+    try {
+      let text = "";
+
+      if (ext === ".txt") {
+        text = fileBuffer.toString("utf-8");
+      } else if (ext === ".pdf") {
+        // Dynamic import to avoid build issues
+        const pdfParse = (await import("pdf-parse")).default;
+        const result = await pdfParse(fileBuffer);
+        text = result.text;
+      } else if (ext === ".docx" || ext === ".doc") {
+        const mammoth = await import("mammoth");
+        const result = await mammoth.extractRawText({ buffer: fileBuffer });
+        text = result.value;
+      }
+
+      text = text.replace(/\s+/g, " ").trim();
+      const word_count = text.split(/\s+/).filter(Boolean).length;
+
+      return res.json({ text, filename, word_count });
+    } catch (err: any) {
+      return res.status(500).json({ error: `Extraction failed: ${err.message}` });
+    }
+  }
+
+
   // ── Salary lookup: start AmbitionBox Apify run ──────────────────────────────
   if (path === "/taxonomy/salary-lookup" && req.method === "POST") {
     if (!requireReader(auth, "jobs", res)) return;
