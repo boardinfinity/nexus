@@ -796,14 +796,25 @@ async function executeCompanyEnrichment(runId: string, config: any) {
 
 async function executeJDFetch(runId: string, config: any) {
   const batchSize = Math.min(parseInt(config.batch_size) || 10, 50);
+  const jobIds: string[] = config.job_ids || [];
 
-  const { data: jobs, error } = await supabase
+  // If specific job IDs provided (e.g. from single-job "Fetch JD" button), use those.
+  // Otherwise fall back to queue-based fetch (jd_fetch_status = pending).
+  let query = supabase
     .from("jobs")
-    .select("id, title, company_name, source, source_url, description")
-    .eq("jd_fetch_status", "pending")
-    .or("description.is.null,description.lt.100")
-    .order("created_at", { ascending: false })
-    .limit(batchSize);
+    .select("id, title, company_name, source, source_url, description");
+
+  if (jobIds.length > 0) {
+    query = query.in("id", jobIds);
+  } else {
+    query = query
+      .eq("jd_fetch_status", "pending")
+      .or("description.is.null,description.lt.100")
+      .order("created_at", { ascending: false })
+      .limit(batchSize);
+  }
+
+  const { data: jobs, error } = await query;
 
   if (error) throw error;
   if (!jobs?.length) {
