@@ -1056,13 +1056,25 @@ async function executeJDEnrichment(runId: string, config: any) {
   const GPT_BATCH = parseInt(config.gpt_batch_size) || 3; // jobs per GPT call (default 3, configurable)
   const CONCURRENCY = 3; // parallel GPT calls
 
-  const { data: jobs, error } = await supabase
+  const jobIds: string[] = config.job_ids || [];
+
+  // If specific job IDs passed (single-job "Analyze JD" button), fetch those directly.
+  // Otherwise process queue: pending/partial enrichment status.
+  let jobQuery = supabase
     .from("jobs")
-    .select("id, title, company_name, description")
-    .in("enrichment_status", ["pending", "partial"])
-    .not("description", "is", null)
-    .order("created_at", { ascending: false })
-    .limit(batchSize);
+    .select("id, title, company_name, description");
+
+  if (jobIds.length > 0) {
+    jobQuery = jobQuery.in("id", jobIds).not("description", "is", null);
+  } else {
+    jobQuery = jobQuery
+      .in("enrichment_status", ["pending", "partial"])
+      .not("description", "is", null)
+      .order("created_at", { ascending: false })
+      .limit(batchSize);
+  }
+
+  const { data: jobs, error } = await jobQuery;
 
   if (error) throw error;
   if (!jobs?.length) {
