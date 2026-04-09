@@ -55,6 +55,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
     const { title, company_name, description, location_raw } = req.body || {};
     if (!title || !company_name) return res.status(400).json({ error: "title and company_name required" });
     const { data, error } = await supabase.from("jobs").insert({
+      external_id: `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       title: title.trim(),
       company_name: company_name.trim(),
       description: description || null,
@@ -63,7 +64,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
       enrichment_status: "partial",
       created_at: new Date().toISOString(),
     }).select("id, title, company_name").single();
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return res.status(500).json({ error: error.message, detail: error.details });
     return res.json(data);
   }
 

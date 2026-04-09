@@ -203,7 +203,7 @@ export default function JDAnalyzer() {
         body: JSON.stringify({ title: saveTitle, company_name: saveCompany, description: text, location_raw: saveLocation }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Save failed");
+      if (!res.ok) throw new Error(data.error || data.detail || "Save failed — check console");
       setSavedJobId(data.id);
       setSaveStatus("done");
     } catch (e: any) {
