@@ -84,6 +84,7 @@ Return a JSON object with:
   // BUCKET LABEL — clean human-readable label
   // Format: "{Seniority-Level} {Standardized Title} | {Industry Name} | {Company Type} | {Geography}"
   "bucket": "The bucket label",
+  "company_name": "Company name extracted from the JD text (null if not mentioned)",
 
   // SKILLS (top 15, with categories)
   // Categories: technology, tool, skill, knowledge, competency, certification, domain, methodology, language, ability
@@ -482,7 +483,7 @@ export async function handleTaxonomyRoutes(
             job_function: parsed.job_function || null,
             job_family: parsed.job_family || null,
             job_industry: parsed.job_industry || null,
-            bucket: parsed.bucket || null,
+            bucket: parsed.bucket ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim() : null,
             sub_role: parsed.sub_role || null,
             experience_min: parsed.experience_min ?? null,
             experience_max: parsed.experience_max ?? null,
@@ -524,7 +525,7 @@ export async function handleTaxonomyRoutes(
       }
 
       return res.json({
-        bucket: parsed.bucket || null,
+        bucket: parsed.bucket ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim() : null,
         job_function: parsed.job_function || null,
         job_function_name: parsed.job_function_name || null,
         job_family: parsed.job_family || null,
