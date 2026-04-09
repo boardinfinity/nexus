@@ -29,6 +29,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     "https://nexus-bi-one.vercel.app",
     "https://nexus-bi-abhay-9478s-projects.vercel.app",
     "https://nexus-bi-git-main-abhay-9478s-projects.vercel.app",
+    "https://nexus.boardinfinity.com",
   ];
   const origin = req.headers.origin || "";
   if (allowedOrigins.includes(origin) || origin.endsWith(".vercel.app")) {
