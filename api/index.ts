@@ -12,6 +12,7 @@ import { handleJobsRoutes } from "./routes/jobs";
 import { handleCompaniesRoutes } from "./routes/companies";
 import { handlePeopleRoutes } from "./routes/people";
 import { handlePipelineRoutes, executePipeline } from "./routes/pipelines";
+import { handleSchedulerRoutes } from "./routes/scheduler";
 import { handleSettingsRoutes } from "./routes/settings";
 import { handleUsersRoutes } from "./routes/users";
 import { handleTaxonomyRoutes } from "./routes/taxonomy";
@@ -227,6 +228,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleCompaniesRoutes(path, req, res, auth);
     } else if (path.startsWith("/people")) {
       result = await handlePeopleRoutes(path, req, res, auth);
+    } else if (path.startsWith("/scheduler") && path !== "/scheduler/tick") {
+      result = await handleSchedulerRoutes(path, req, res, auth);
     } else if (path.startsWith("/pipelines") || path.startsWith("/providers") || path.startsWith("/monitoring")) {
       result = await handlePipelineRoutes(path, req, res, auth);
     } else if (path.startsWith("/alumni")) {

@@ -292,20 +292,25 @@ export async function executeDeduplication(runId: string, _config: any) {
   const dupGroups = groups || [];
   let totalDuplicates = 0;
 
-  // Step 4: For each group, keep highest quality_score job, mark others
+  // Step 4: Bulk mark duplicates (group by canonical_id, one UPDATE per canonical)
+  const dupsByCanonical = new Map<string, string[]>();
   for (const group of dupGroups) {
     const jobIds: string[] = group.job_ids;
     if (jobIds.length < 2) continue;
-
-    const bestId = jobIds[0]; // Already sorted by quality_score DESC
+    const bestId = jobIds[0]; // Sorted by quality_score DESC
     const dupeIds = jobIds.slice(1);
+    totalDuplicates += dupeIds.length;
+    dupsByCanonical.set(bestId, (dupsByCanonical.get(bestId) || []).concat(dupeIds));
+  }
 
-    for (const dupeId of dupeIds) {
+  // Single bulk UPDATE per canonical_id (chunked at 500 to avoid query size limits)
+  for (const [bestId, dupeIds] of dupsByCanonical) {
+    const CHUNK = 500;
+    for (let i = 0; i < dupeIds.length; i += CHUNK) {
       await supabase
         .from("jobs")
         .update({ is_duplicate: true, duplicate_of: bestId })
-        .eq("id", dupeId);
-      totalDuplicates++;
+        .in("id", dupeIds.slice(i, i + CHUNK));
     }
   }
 
@@ -415,7 +420,7 @@ export async function executeCooccurrence(runId: string, _config: any) {
 
 // ==================== PIPELINE EXECUTION ====================
 
-export async function executePipeline(runId: string, pipelineType: string, config: any) {
+export export async function executePipeline(runId: string, pipelineType: string, config: any) {
   try {
     if (pipelineType === "linkedin_jobs" || pipelineType === "alumni") {
       // These are handled by the run/poll endpoints, not here
@@ -450,19 +455,22 @@ export async function executePipeline(runId: string, pipelineType: string, confi
 // Process LinkedIn job results from Apify dataset (called by /poll endpoint)
 async function processLinkedInResults(runId: string, datasetId: string, config: any) {
   // Fetch results from Apify dataset
-  const resultsRes = await fetch(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=1000`
-  );
-  const rawResults = await resultsRes.json();
-
-  // Flatten nested structure
+  // Paginate through ALL dataset items (remove old limit=1000 hardcode)
   const jobs: any[] = [];
-  for (const item of rawResults) {
-    if (Array.isArray(item.jobs)) {
-      jobs.push(...item.jobs);
-    } else {
-      jobs.push(item);
+  const PAGE_SIZE = 1000;
+  let dsOffset = 0;
+  while (true) {
+    const pageRes = await fetch(
+      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=${PAGE_SIZE}&offset=${dsOffset}`
+    );
+    const page = await pageRes.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    for (const item of page) {
+      if (Array.isArray(item.jobs)) jobs.push(...item.jobs);
+      else jobs.push(item);
     }
+    if (page.length < PAGE_SIZE) break;
+    dsOffset += PAGE_SIZE;
   }
 
   let processed = 0;
@@ -717,8 +725,8 @@ async function executeGoogleJobs(runId: string, config: any) {
         }
       }
 
-      // Rate limit: 1 second between API calls
-      await new Promise(r => setTimeout(r, 1000));
+      // Rate limit: 300ms between API calls (was 1000ms)
+      await new Promise(r => setTimeout(r, 300));
     }
   }
 
@@ -1028,8 +1036,8 @@ async function getTaxonomyMap(): Promise<Map<string, { id: string; category: str
 // ==================== JD ANALYSIS PIPELINE (Feature 5 — Enhanced jd_enrichment) ====================
 
 async function executeJDEnrichment(runId: string, config: any) {
-  const batchSize = Math.min(parseInt(config.batch_size) || 50, 200);
-  const GPT_BATCH = 5; // jobs per GPT call
+  const batchSize = Math.min(parseInt(config.batch_size) || 200, 2000);
+  const GPT_BATCH = parseInt(config.gpt_batch_size) || 3; // jobs per GPT call (default 3, configurable)
   const CONCURRENCY = 3; // parallel GPT calls
 
   const { data: jobs, error } = await supabase
@@ -1161,21 +1169,32 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
         });
       }
 
-      // Fuzzy match only for unmatched skills (batch RPC call)
+      // Bulk auto-create unmatched skills as 'unverified' (replaces per-skill RPC N+1)
       if (unmatchedSkills.length > 0) {
-        for (const skillName of unmatchedSkills) {
-          try {
-            const { data: fuzzyMatch } = await supabase
-              .rpc("find_similar_skill", { search_term: skillName })
-              .limit(1)
-              .maybeSingle();
-            if ((fuzzyMatch as any)?.id) {
-              const row = skillRows.find(r => r.skill_name === skillName);
-              if (row) row.taxonomy_skill_id = (fuzzyMatch as any).id;
-            }
-          } catch {
-            // RPC may not exist — skip fuzzy matching
+        try {
+          // Step 1: Bulk insert new skills (ON CONFLICT DO NOTHING = safe)
+          await supabase.from("taxonomy_skills").insert(
+            unmatchedSkills.map(name => ({
+              name: name.trim(),
+              status: "unverified",
+              is_auto_created: true,
+              created_at: new Date().toISOString(),
+            }))
+          ).onConflict("name");
+          
+          // Step 2: Fetch IDs for ALL unmatched skills in ONE query
+          const { data: newSkillRows } = await supabase
+            .from("taxonomy_skills")
+            .select("id, name")
+            .in("name", unmatchedSkills.map(n => n.trim()));
+          
+          // Step 3: Update skillRows with the fetched IDs
+          for (const s of newSkillRows || []) {
+            const row = skillRows.find(r => r.skill_name?.toLowerCase() === s.name?.toLowerCase());
+            if (row) row.taxonomy_skill_id = s.id;
           }
+        } catch (e) {
+          // Skip if taxonomy_skills schema mismatch — skills still inserted without ID
         }
       }
 
@@ -1206,7 +1225,7 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
         operation: "jd_analysis",
         status: "success",
         credits_used: Math.round((tokenUsage.total_tokens || 0) / batch.length),
-        details: { skills_extracted: skills.length, model: "gpt-4o-mini", tokens: tokenUsage, batch_size: batch.length },
+        details: { skills_extracted: skills.length, model: "gpt-4.1-mini", tokens: tokenUsage, batch_size: batch.length },
       });
 
       processed++;
