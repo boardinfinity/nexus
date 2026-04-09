@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, OPENAI_API_KEY } from "../lib/supabase";
-import { type AuthResult, requireReader, requireEditor } from "../lib/auth";
+import { type AuthResult, requireReader, requireEditor, requireAdmin } from "../lib/auth";
 import { extractSkillsWithAI } from "../lib/openai";
 
 export async function handleTaxonomyRoutes(
@@ -74,12 +74,66 @@ export async function handleTaxonomyRoutes(
     const { data, error } = await supabase.rpc("get_taxonomy_stats");
     if (error) return res.status(500).json({ error: error.message });
 
+    // Fetch skill lifecycle counts
+    const [unverifiedRes, validatedRes, autoCreatedRes] = await Promise.all([
+      supabase.from("taxonomy_skills").select("id", { count: "exact", head: true }).eq("status", "unverified"),
+      supabase.from("taxonomy_skills").select("id", { count: "exact", head: true }).eq("status", "validated"),
+      supabase.from("taxonomy_skills").select("id", { count: "exact", head: true }).eq("is_auto_created", true),
+    ]);
+
     return res.json({
       total: data?.total || 0,
       by_category: data?.by_category || {},
       hot_technologies: data?.hot_technologies || 0,
       top_skills: (data?.top_skills || []).map((s: any) => ({ name: s.name, job_count: Number(s.job_count) })),
+      unverified_count: unverifiedRes.count || 0,
+      validated_count: validatedRes.count || 0,
+      auto_created_count: autoCreatedRes.count || 0,
     });
+  }
+
+  // Reference data: all job_functions, job_families, job_industries in one call
+  if (path === "/taxonomy/reference-data" && req.method === "GET") {
+    const [funcRes, famRes, indRes] = await Promise.all([
+      supabase.from("job_functions").select("id, name").order("id"),
+      supabase.from("job_families").select("id, name").order("id"),
+      supabase.from("job_industries").select("id, name").order("id"),
+    ]);
+
+    if (funcRes.error || famRes.error || indRes.error) {
+      return res.status(500).json({ error: "Failed to fetch reference data" });
+    }
+
+    return res.json({
+      functions: funcRes.data || [],
+      families: famRes.data || [],
+      industries: indRes.data || [],
+    });
+  }
+
+  // Validate skills: triggers validate_skills() DB function (admin only)
+  if (path === "/taxonomy/validate-skills" && req.method === "POST") {
+    if (!requireAdmin(auth, res)) return;
+
+    const { data, error } = await supabase.rpc("validate_skills");
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ validated: data || 0 });
+  }
+
+  // Unverified skills: top N by mention_count
+  if (path === "/taxonomy/skills/unverified" && req.method === "GET") {
+    const limit = Math.min(parseInt((req.query as Record<string, string>).limit || "20"), 100);
+
+    const { data, error } = await supabase
+      .from("taxonomy_skills")
+      .select("id, name, category, status, mention_count, company_count, is_auto_created, first_seen_at")
+      .eq("status", "unverified")
+      .order("mention_count", { ascending: false })
+      .limit(limit);
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ data: data || [], total: data?.length || 0 });
   }
 
   if (path.match(/^\/taxonomy\/[^/]+$/) && req.method === "GET") {
