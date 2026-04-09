@@ -536,6 +536,7 @@ export async function handleTaxonomyRoutes(
         geography: parsed.geography || null,
         sub_role: parsed.sub_role || null,
         standardized_title: parsed.standardized_title || null,
+        company_name: parsed.company_name || null,
         experience_min: parsed.experience_min ?? null,
         experience_max: parsed.experience_max ?? null,
         min_education: parsed.min_education || null,

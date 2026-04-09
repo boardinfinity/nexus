@@ -36,6 +36,7 @@ interface AnalyzeResult {
   geography: string | null;
   sub_role: string | null;
   standardized_title: string | null;
+  company_name: string | null;
   experience_min: number | null;
   experience_max: number | null;
   min_education: string | null;
@@ -126,6 +127,7 @@ export default function JDAnalyzer() {
       setSalaryStatus("idle"); setSalaryData(null); setSalaryError(null); setSalaryRunId(null);
       setSaveStatus("idle"); setSavedJobId(null);
       if (data.standardized_title) setSaveTitle(data.standardized_title);
+      if (data.company_name) setSaveCompany(data.company_name);
       if (data.geography) setSaveLocation(data.geography);
       if (salaryPollRef.current) { clearInterval(salaryPollRef.current); salaryPollRef.current = null; }
       if (data.total === 0 && !data.bucket) {

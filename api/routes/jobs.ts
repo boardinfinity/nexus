@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { AuthResult, requireReader } from "../lib/auth";
+import { AuthResult, requireReader, requireEditor } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 
 export async function handleJobsRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
