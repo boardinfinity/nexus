@@ -364,6 +364,24 @@ export default function Pipelines() {
               { name: "batch_size", label: "Batch Size", type: "number", placeholder: "25", defaultValue: "25" },
             ]}
           />
+          <PipelineTrigger
+            type="jd_batch_submit"
+            title="JD Batch Submit"
+            description="Submit JDs to OpenAI Batch API (50% cheaper, 2-4h turnaround). Use for nightly bulk processing."
+            icon={Brain}
+            fields={[
+              { name: "batch_size", label: "Jobs to Submit", type: "number", placeholder: "50", defaultValue: "50" },
+            ]}
+          />
+          <PipelineTrigger
+            type="jd_batch_poll"
+            title="JD Batch Poll"
+            description="Check status of an OpenAI Batch API submission and process results when complete."
+            icon={Brain}
+            fields={[
+              { name: "batch_id", label: "OpenAI Batch ID", type: "text", placeholder: "batch_abc123..." },
+            ]}
+          />
         </div>
       </div>
 
