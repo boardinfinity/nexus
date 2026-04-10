@@ -13,6 +13,11 @@ import Jobs from "@/pages/jobs";
 import Companies from "@/pages/companies";
 import People from "@/pages/people";
 import Pipelines from "@/pages/pipelines";
+import JobCollection from "@/pages/pipelines/job-collection";
+import JDIntelligence from "@/pages/pipelines/jd-intelligence";
+import PeopleAlumni from "@/pages/pipelines/people-alumni";
+import DataQualityPipelines from "@/pages/pipelines/data-quality";
+import CompanyIntel from "@/pages/pipelines/company-intel";
 import Schedules from "@/pages/schedules";
 import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
@@ -45,6 +50,11 @@ function AppRouter() {
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />
+      <Route path="/pipelines/jobs" component={JobCollection} />
+      <Route path="/pipelines/jd" component={JDIntelligence} />
+      <Route path="/pipelines/people" component={PeopleAlumni} />
+      <Route path="/pipelines/quality" component={DataQualityPipelines} />
+      <Route path="/pipelines/companies" component={CompanyIntel} />
       <Route path="/pipelines" component={Pipelines} />
       <Route path="/schedules" component={Schedules} />
       <Route path="/monitoring" component={Monitoring} />
