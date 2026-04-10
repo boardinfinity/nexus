@@ -12,7 +12,7 @@ import Dashboard from "@/pages/dashboard";
 import Jobs from "@/pages/jobs";
 import Companies from "@/pages/companies";
 import People from "@/pages/people";
-import Pipelines from "@/pages/pipelines";
+import Pipelines from "@/pages/pipelines/index";
 import JobCollection from "@/pages/pipelines/job-collection";
 import JDIntelligence from "@/pages/pipelines/jd-intelligence";
 import PeopleAlumni from "@/pages/pipelines/people-alumni";
