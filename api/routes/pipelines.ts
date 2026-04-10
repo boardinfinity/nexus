@@ -1201,14 +1201,15 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
       if (unmatchedSkills.length > 0) {
         try {
           // Step 1: Bulk insert new skills (ON CONFLICT DO NOTHING = safe)
-          await supabase.from("taxonomy_skills").insert(
+          await supabase.from("taxonomy_skills").upsert(
             unmatchedSkills.map(name => ({
               name: name.trim(),
               status: "unverified",
               is_auto_created: true,
               created_at: new Date().toISOString(),
-            }))
-          ).onConflict("name");
+            })),
+            { onConflict: "name", ignoreDuplicates: true }
+          );
           
           // Step 2: Fetch IDs for ALL unmatched skills in ONE query
           const { data: newSkillRows } = await supabase

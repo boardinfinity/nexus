@@ -224,9 +224,10 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
 
           // Auto-create unmatched skills (bulk)
           if (unmatchedNames.length > 0) {
-            await supabase.from("taxonomy_skills").insert(
-              unmatchedNames.map(name => ({ name, status: "unverified", is_auto_created: true }))
-            ).onConflict("name");
+            await supabase.from("taxonomy_skills").upsert(
+              unmatchedNames.map(name => ({ name, status: "unverified", is_auto_created: true, created_at: new Date().toISOString() })),
+              { onConflict: "name", ignoreDuplicates: true }
+            );
             
             const { data: newSkills } = await supabase
               .from("taxonomy_skills").select("id, name").in("name", unmatchedNames);
@@ -238,11 +239,15 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           }
 
           await supabase.from("job_skills").delete().eq("job_id", jobId);
-          await supabase.from("job_skills").insert(skillRows);
+          const validSkillRows = skillRows.filter((r: any) => r.taxonomy_skill_id != null);
+          if (validSkillRows.length > 0) {
+            await supabase.from("job_skills").insert(validSkillRows);
+          }
         }
 
         processed++;
-      } catch (e) {
+      } catch (e: any) {
+        console.error(`[batch] Failed job ${jobId}:`, e.message?.slice(0, 200) || e);
         failed++;
       }
     }
