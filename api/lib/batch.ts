@@ -146,7 +146,16 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
   });
   if (!fileRes.ok) throw new Error(`Download failed: ${await fileRes.text()}`);
   const rawText = await fileRes.text();
-  console.log(`[batch] Downloaded output file: ${rawText.length} chars, ${rawText.split("\n").filter(Boolean).length} lines`);
+  const debugInfo: any = {
+    _file_size: rawText.length,
+    _file_lines: rawText.split("\n").filter(Boolean).length,
+    _file_preview: rawText.slice(0, 500),
+    _errors: [] as string[],
+  };
+  console.log(`[batch] Downloaded output file: ${rawText.length} chars, ${debugInfo._file_lines} lines`);
+
+  // Store debug info immediately so we can see it even if processing crashes
+  await supabase.from("pipeline_runs").update({ config: debugInfo }).eq("id", batchRunId);
 
   const lines = rawText.trim().split("\n").filter(Boolean);
   let processed = 0;
@@ -256,7 +265,9 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
 
         processed++;
       } catch (e: any) {
-        console.error(`[batch] Failed job ${jobId}:`, e.message?.slice(0, 200) || e);
+        const errMsg = `job=${jobId}: ${e.message?.slice(0, 150) || String(e)}`;
+        console.error(`[batch] Failed:`, errMsg);
+        debugInfo._errors.push(errMsg);
         failed++;
       }
     }
@@ -264,6 +275,14 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
     // Update run progress
     await supabase.from("pipeline_runs").update({ processed_items: processed, failed_items: failed }).eq("id", batchRunId);
   }
+
+  // Store final debug info with results
+  debugInfo._processed = processed;
+  debugInfo._failed = failed;
+  debugInfo._errors = debugInfo._errors.slice(0, 10); // keep first 10 errors
+  await supabase.from("pipeline_runs").update({ 
+    config: debugInfo 
+  }).eq("id", batchRunId);
 
   return { processed, failed };
 }
