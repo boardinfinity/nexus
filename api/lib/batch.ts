@@ -146,6 +146,7 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
   });
   if (!fileRes.ok) throw new Error(`Download failed: ${await fileRes.text()}`);
   const rawText = await fileRes.text();
+  console.log(`[batch] Downloaded output file: ${rawText.length} chars, ${rawText.split("\n").filter(Boolean).length} lines`);
 
   const lines = rawText.trim().split("\n").filter(Boolean);
   let processed = 0;
@@ -183,7 +184,7 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
 
         // Update job record
         const bucket = (parsed.bucket_label || "").replace(/\s*\|\s*null\b/g, "").trim() || null;
-        await supabase.from("jobs").update({
+        const { error: jobUpdateErr } = await supabase.from("jobs").update({
           job_function: parsed.job_function || null,
           job_family: parsed.job_family || null,
           job_industry: parsed.job_industry || null,
@@ -199,6 +200,12 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           enrichment_status: "complete",
           seniority_level: parsed.seniority || null,
         }).eq("id", jobId);
+
+        if (jobUpdateErr) {
+          console.error(`[batch] Job update FAILED for ${jobId}: ${jobUpdateErr.message} | code: ${jobUpdateErr.code}`);
+          failed++;
+          continue;
+        }
 
         // Bulk skill processing
         const skills = (parsed.skills || []).slice(0, 15);
@@ -224,10 +231,11 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
 
           // Auto-create unmatched skills (bulk)
           if (unmatchedNames.length > 0) {
-            await supabase.from("taxonomy_skills").upsert(
+            const { error: skillUpsertErr } = await supabase.from("taxonomy_skills").upsert(
               unmatchedNames.map(name => ({ name, status: "unverified", is_auto_created: true, created_at: new Date().toISOString() })),
               { onConflict: "name", ignoreDuplicates: true }
             );
+            if (skillUpsertErr) console.error(`[batch] Skill upsert error: ${skillUpsertErr.message}`);
             
             const { data: newSkills } = await supabase
               .from("taxonomy_skills").select("id, name").in("name", unmatchedNames);
@@ -241,7 +249,8 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           await supabase.from("job_skills").delete().eq("job_id", jobId);
           const validSkillRows = skillRows.filter((r: any) => r.taxonomy_skill_id != null);
           if (validSkillRows.length > 0) {
-            await supabase.from("job_skills").insert(validSkillRows);
+            const { error: jsErr } = await supabase.from("job_skills").insert(validSkillRows);
+            if (jsErr) console.error(`[batch] job_skills insert error for ${jobId}: ${jsErr.message}`);
           }
         }
 
