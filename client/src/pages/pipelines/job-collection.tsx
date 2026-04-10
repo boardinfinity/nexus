@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ArrowLeft, Linkedin, Globe, Play, Loader2 } from "lucide-react";
+import { ArrowLeft, Link2, Globe, Play, Loader2 } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { RunHistory } from "./run-history";
@@ -85,7 +85,7 @@ function LinkedInForm() {
     <Card>
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center gap-2">
-          <Linkedin className="h-4 w-4 text-blue-600" /> LinkedIn Jobs
+          <Link2 className="h-4 w-4 text-blue-600" /> LinkedIn Jobs
         </CardTitle>
         <p className="text-xs text-muted-foreground">$0.001/job via Apify. +$0.001 with descriptions.</p>
       </CardHeader>
