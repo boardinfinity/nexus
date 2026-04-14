@@ -53,6 +53,20 @@ export function mapSeniority(raw: string | null): string | null {
   return "other";
 }
 
+// O*NET Job Zone to seniority mapping (from Google Jobs Apify actor)
+// Zone 1: Little or No Preparation, Zone 2: Some Preparation, Zone 3: Medium Preparation
+// Zone 4: Considerable Preparation, Zone 5: Extensive Preparation
+export function mapOnetJobZone(zone: string | number | null): string | null {
+  if (!zone) return null;
+  const z = parseInt(String(zone));
+  if (z === 1) return "internship";
+  if (z === 2) return "entry_level";
+  if (z === 3) return "associate";
+  if (z === 4) return "mid_senior";
+  if (z === 5) return "director";
+  return null;
+}
+
 const SENIORITY_MAP: Record<string, string> = {
   "associate": "associate",
   "entry level": "entry_level",

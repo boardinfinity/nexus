@@ -3,7 +3,7 @@ import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, APIFY_API_KEY, RAPIDAPI_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
-import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
+import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
@@ -794,15 +794,23 @@ async function executeGoogleJobs(runId: string, config: any) {
                 location_state: item.jobState || null,
                 location_country: item.jobCountry || null,
                 employment_type: mapEmploymentTypeExtended(item.employmentType),
+                seniority_level: item.jobOnetJobZone ? mapOnetJobZone(item.jobOnetJobZone) : null,
                 salary_min: item.minSalary || null,
                 salary_max: item.maxSalary || null,
                 salary_currency: null,
                 salary_unit: item.salaryPeriod || null,
+                salary_text: item.salary || null,
                 posted_at: item.jobPostedAtDatetime || null,
                 application_url: item.jobApplyLink || null,
                 source_url: item.jobGoogleLink || null,
+                is_remote: item.isRemote || null,
+                job_publisher: item.jobPublisher || null,
+                apply_platforms: item.applyPlatforms || null,
+                qualifications: item.qualifications || null,
+                responsibilities: item.responsibilities || null,
+                benefits: item.benefitsList || item.benefits || null,
                 enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
-                raw_data: { ...item, search_query: query, job_publisher: item.jobPublisher },
+                raw_data: { ...item, search_query: query },
               });
               allProcessed++;
             } catch (e) { allFailed++; }

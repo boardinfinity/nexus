@@ -119,6 +119,15 @@ export interface Job {
   job_role_id: string | null;
   job_status: string | null;
   status_checked_at: string | null;
+  is_remote: boolean | null;
+  job_publisher: string | null;
+  apply_platforms: string | null;
+  qualifications: string[] | null;
+  responsibilities: string[] | null;
+  benefits: string[] | null;
+  salary_text: string | null;
+  title_normalized: string | null;
+  company_name_normalized: string | null;
   raw_data: unknown;
   created_at: string;
   updated_at: string;
