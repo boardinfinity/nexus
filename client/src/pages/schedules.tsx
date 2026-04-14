@@ -5,9 +5,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription,
 } from "@/components/ui/dialog";
@@ -16,11 +19,17 @@ import {
   AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
-  Clock, Plus, Pause, Play, Pencil, Trash2, Loader2, CheckCircle2, XCircle, CalendarClock, Info, ChevronDown,
+  Plus, Pause, Play, Pencil, Trash2, Loader2, CheckCircle2, XCircle, CalendarClock, Info, ChevronDown, Search, X,
 } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import cronstrue from "cronstrue";
+import { ChipSelect } from "@/pages/pipelines/job-collection";
+import {
+  COUNTRIES, COUNTRY_CODE_MAP, EXP_LEVELS, WORK_TYPES, WORK_LOCATIONS, INDUSTRIES,
+  TIME_OPTIONS, LIMIT_PRESETS, JOB_FAMILIES, GOOGLE_EMP_TYPES,
+  type JobRole,
+} from "@/lib/pipeline-constants";
 
 interface Schedule {
   id: string;
@@ -73,102 +82,96 @@ function pipelineTypeLabel(type: string): string {
   return PIPELINE_TYPES.find(p => p.value === type)?.label || type;
 }
 
-function PipelineConfigFields({ pipelineType, config, onChange }: {
-  pipelineType: string;
-  config: any;
-  onChange: (config: any) => void;
-}) {
-  const update = (key: string, value: any) => onChange({ ...config, [key]: value });
+// ── Job Roles selector (shared between LinkedIn & Google config) ─────────────
 
-  switch (pipelineType) {
-    case "google_jobs":
-      return (
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label className="text-xs">Search Queries (one per line)</Label>
-            <Textarea className="text-xs min-h-[80px]" placeholder="Financial Analyst Dubai"
-              value={config.queries?.join?.("\n") || config.queries || ""}
-              onChange={(e) => update("queries", e.target.value.split("\n").filter(Boolean))} />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-xs">Country</Label>
-              <Input className="h-8 text-xs" placeholder="e.g. AE, IN, US"
-                value={config.country || ""} onChange={(e) => update("country", e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Pages per Query</Label>
-              <Input type="number" className="h-8 text-xs" min={1} max={10}
-                value={config.pages_per_query || 3} onChange={(e) => update("pages_per_query", parseInt(e.target.value) || 3)} />
-            </div>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Date Posted</Label>
-            <Select value={config.date_posted || "week"} onValueChange={(v) => update("date_posted", v)}>
-              <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">Any Time</SelectItem>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="3days">Past 3 Days</SelectItem>
-                <SelectItem value="week">Past Week</SelectItem>
-                <SelectItem value="month">Past Month</SelectItem>
-              </SelectContent>
-            </Select>
+function JobRolesSection({ allRoles, rolesLoading, selectedRoleIds, onToggleRole, onClearAll }: {
+  allRoles: JobRole[];
+  rolesLoading: boolean;
+  selectedRoleIds: string[];
+  onToggleRole: (id: string) => void;
+  onClearAll: () => void;
+}) {
+  const [selectedFamily, setSelectedFamily] = useState<string>("all");
+  const [roleSearch, setRoleSearch] = useState("");
+
+  const filteredRoles = allRoles.filter(r => {
+    if (selectedFamily !== "all" && r.family !== selectedFamily) return false;
+    if (roleSearch && !r.name.toLowerCase().includes(roleSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const selectedRoles = allRoles.filter(r => selectedRoleIds.includes(r.id));
+  const allSynonyms = selectedRoles.flatMap(r => r.synonyms);
+
+  return (
+    <div className="space-y-2">
+      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Job Roles</p>
+      <p className="text-[10px] text-muted-foreground">Select roles — synonyms auto-expand into search queries</p>
+      <div className="grid grid-cols-2 gap-2">
+        <div>
+          <Label className="text-xs">Job Family</Label>
+          <Select value={selectedFamily} onValueChange={setSelectedFamily}>
+            <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Families</SelectItem>
+              {JOB_FAMILIES.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+        <div>
+          <Label className="text-xs">Search Roles</Label>
+          <div className="relative mt-1">
+            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+            <Input value={roleSearch} onChange={e => setRoleSearch(e.target.value)} placeholder="Filter..." className="text-xs h-8 pl-7" />
           </div>
         </div>
-      );
-    case "linkedin_jobs":
-      return (
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label className="text-xs">Search Keywords (one per line)</Label>
-            <Textarea className="text-xs min-h-[80px]" placeholder="software engineer"
-              value={config.search_keywords || ""} onChange={(e) => update("search_keywords", e.target.value)} />
+      </div>
+      <ScrollArea className="h-32 rounded-md border p-2">
+        {filteredRoles.length === 0 ? (
+          <p className="text-xs text-muted-foreground py-4 text-center">{rolesLoading ? "Loading roles..." : "No roles match"}</p>
+        ) : (
+          <div className="space-y-0.5">
+            {filteredRoles.map(role => (
+              <label key={role.id} className="flex items-center gap-2 px-1 py-0.5 rounded hover:bg-muted/50 cursor-pointer">
+                <Checkbox checked={selectedRoleIds.includes(role.id)} onCheckedChange={() => onToggleRole(role.id)} />
+                <span className="text-xs">{role.name}</span>
+                <span className="text-[10px] text-muted-foreground ml-auto">{role.family}</span>
+              </label>
+            ))}
           </div>
-          <div className="grid grid-cols-2 gap-2">
-            <div className="space-y-1">
-              <Label className="text-xs">Location</Label>
-              <Input className="h-8 text-xs" placeholder="India"
-                value={config.location || ""} onChange={(e) => update("location", e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Date Posted</Label>
-              <Select value={config.date_posted || "past month"} onValueChange={(v) => update("date_posted", v)}>
-                <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="past month">Past Month</SelectItem>
-                  <SelectItem value="past week">Past Week</SelectItem>
-                  <SelectItem value="24hr">Past 24 Hours</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+        )}
+      </ScrollArea>
+      {selectedRoles.length > 0 && (
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <Label className="text-xs">Selected ({selectedRoles.length})</Label>
+            <button type="button" onClick={onClearAll} className="text-[10px] text-muted-foreground hover:text-foreground">Clear all</button>
           </div>
-        </div>
-      );
-    case "alumni":
-      return (
-        <div className="space-y-3">
-          <div className="space-y-1">
-            <Label className="text-xs">School URLs / Slugs (one per line)</Label>
-            <Textarea className="text-xs min-h-[80px]" placeholder="iit-bombay"
-              value={config.university_slug || ""} onChange={(e) => update("university_slug", e.target.value)} />
+          <div className="flex flex-wrap gap-1">
+            {selectedRoles.map(r => (
+              <Badge key={r.id} variant="secondary" className="text-[10px] pr-1">
+                {r.name}
+                <button onClick={() => onToggleRole(r.id)} className="ml-1 hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
+              </Badge>
+            ))}
           </div>
         </div>
-      );
-    case "jd_enrichment":
-    case "people_enrichment":
-    case "company_enrichment":
-      return (
-        <div className="space-y-1">
-          <Label className="text-xs">Batch Size</Label>
-          <Input type="number" className="h-8 text-xs" placeholder="50" min={1}
-            value={config.batch_size || 50} onChange={(e) => update("batch_size", parseInt(e.target.value) || 50)} />
+      )}
+      {allSynonyms.length > 0 && (
+        <div>
+          <Label className="text-xs mb-1 block">Synonym Preview ({allSynonyms.length} terms)</Label>
+          <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto rounded-md border p-1.5 bg-muted/30">
+            {allSynonyms.map((s, i) => (
+              <span key={i} className="px-1.5 py-0.5 rounded bg-background border text-[10px] text-muted-foreground">{s}</span>
+            ))}
+          </div>
         </div>
-      );
-    default:
-      return null;
-  }
+      )}
+    </div>
+  );
 }
+
+// ── Schedule Dialog ──────────────────────────────────────────────────────────
 
 function ScheduleDialog({ open, onOpenChange, schedule }: {
   open: boolean;
@@ -179,13 +182,144 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
   const { toast } = useToast();
   const isEdit = !!schedule;
 
+  // Schedule-level fields
   const [name, setName] = useState(schedule?.name || "");
   const [pipelineType, setPipelineType] = useState(schedule?.pipeline_type || "google_jobs");
-  const [config, setConfig] = useState<any>(schedule?.config || {});
   const [frequency, setFrequency] = useState(schedule?.frequency || "daily");
   const [cronExpression, setCronExpression] = useState(schedule?.cron_expression || "");
   const [maxRuns, setMaxRuns] = useState(schedule?.max_runs?.toString() || "");
   const [creditLimit, setCreditLimit] = useState(schedule?.credit_limit?.toString() || "");
+
+  // Job roles (shared between LinkedIn & Google)
+  const { data: allRoles = [], isLoading: rolesLoading } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
+    queryFn: async () => {
+      const res = await authFetch("/api/masters/job-roles");
+      if (!res.ok) throw new Error(`Failed to fetch job roles: ${res.status}`);
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>(() => {
+    const ids = schedule?.config?.job_role_ids;
+    return Array.isArray(ids) ? ids : [];
+  });
+  const toggleRole = (id: string) => setSelectedRoleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  // ── LinkedIn state ──
+  const [liKeywords, setLiKeywords] = useState(schedule?.config?.search_keywords || "");
+  const [liLocation, setLiLocation] = useState(schedule?.config?.location || "India");
+  const [liExpLevel, setLiExpLevel] = useState<string[]>(() => {
+    const v = schedule?.config?.experience_level;
+    return v ? v.split(",") : [];
+  });
+  const [liWorkType, setLiWorkType] = useState<string[]>(() => {
+    const v = schedule?.config?.work_type;
+    return v ? v.split(",") : ["1"];
+  });
+  const [liWorkLoc, setLiWorkLoc] = useState<string[]>(() => {
+    const v = schedule?.config?.work_location;
+    return v ? v.split(",") : [];
+  });
+  const [liIndustries, setLiIndustries] = useState<string[]>(() => {
+    const v = schedule?.config?.industry_ids;
+    return v ? v.split(",") : [];
+  });
+  const [liCompanyInput, setLiCompanyInput] = useState("");
+  const [liCompanies, setLiCompanies] = useState<string[]>(() => {
+    const v = schedule?.config?.company_names;
+    return v ? v.split(",").map((s: string) => s.trim()).filter(Boolean) : [];
+  });
+  const [liTimePosted, setLiTimePosted] = useState(() => {
+    const dp = schedule?.config?.date_posted;
+    if (!dp) return "r86400";
+    const map: Record<string, string> = { "1h": "r3600", "24h": "r86400", "week": "r604800", "month": "r2592000", "any": "" };
+    return map[dp] ?? "r86400";
+  });
+  const [liSortBy, setLiSortBy] = useState(schedule?.config?.sort_by || "DD");
+  const [liFetchDesc, setLiFetchDesc] = useState(schedule?.config?.fetch_description !== false);
+  const [liEasyApply, setLiEasyApply] = useState(!!schedule?.config?.easy_apply_only);
+  const [liLimit, setLiLimit] = useState(schedule?.config?.limit || 100);
+  const [liCustomLimit, setLiCustomLimit] = useState("");
+
+  const addLiCompany = () => {
+    const n = liCompanyInput.trim();
+    if (n && !liCompanies.includes(n)) setLiCompanies([...liCompanies, n]);
+    setLiCompanyInput("");
+  };
+
+  // ── Google state ──
+  const [gQuery, setGQuery] = useState(schedule?.config?.query || "");
+  const [gCountry, setGCountry] = useState(schedule?.config?.country || "IN");
+  const [gEmpTypes, setGEmpTypes] = useState<string[]>(() => {
+    const v = schedule?.config?.employment_types;
+    return v ? v.split(",") : ["FULLTIME"];
+  });
+  const [gJobReqs, setGJobReqs] = useState(schedule?.config?.job_requirements || "");
+  const [gEmployer, setGEmployer] = useState(schedule?.config?.employer_name || "");
+  const [gRemoteOnly, setGRemoteOnly] = useState(!!schedule?.config?.remote_only);
+  const [gDatePosted, setGDatePosted] = useState(schedule?.config?.date_posted || "week");
+  const [gNumPages, setGNumPages] = useState((schedule?.config?.num_pages || 5).toString());
+  const [gExcludePublishers, setGExcludePublishers] = useState(schedule?.config?.exclude_job_publishers || "");
+
+  // ── Simple config state for other pipeline types ──
+  const [simpleConfig, setSimpleConfig] = useState<any>(schedule?.config || {});
+  const updateSimple = (key: string, value: any) => setSimpleConfig((prev: any) => ({ ...prev, [key]: value }));
+
+  // Reset all pipeline config when type changes
+  const handlePipelineTypeChange = (newType: string) => {
+    if (newType === pipelineType) return;
+    setPipelineType(newType);
+    setSelectedRoleIds([]);
+    setLiKeywords(""); setLiLocation("India"); setLiExpLevel([]); setLiWorkType(["1"]); setLiWorkLoc([]);
+    setLiIndustries([]); setLiCompanies([]); setLiTimePosted("r86400"); setLiSortBy("DD");
+    setLiFetchDesc(true); setLiEasyApply(false); setLiLimit(100); setLiCustomLimit("");
+    setGQuery(""); setGCountry("IN"); setGEmpTypes(["FULLTIME"]); setGJobReqs(""); setGEmployer("");
+    setGRemoteOnly(false); setGDatePosted("week"); setGNumPages("5"); setGExcludePublishers("");
+    setSimpleConfig({});
+  };
+
+  // Build config matching pipeline run handler format
+  const buildConfig = (): any => {
+    if (pipelineType === "linkedin_jobs") {
+      return {
+        search_keywords: liKeywords || undefined,
+        job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
+        location: liLocation,
+        date_posted: liTimePosted === "r86400" ? "24h" : liTimePosted === "r604800" ? "week" : liTimePosted === "r2592000" ? "month" : liTimePosted === "r3600" ? "1h" : "any",
+        limit: liLimit,
+        experience_level: liExpLevel.length > 0 ? liExpLevel.join(",") : undefined,
+        work_type: liWorkType.length > 0 ? liWorkType.join(",") : undefined,
+        work_location: liWorkLoc.length > 0 ? liWorkLoc.join(",") : undefined,
+        industry_ids: liIndustries.length > 0 ? liIndustries.join(",") : undefined,
+        company_names: liCompanies.length > 0 ? liCompanies.join(",") : undefined,
+        fetch_description: liFetchDesc,
+        easy_apply_only: liEasyApply || undefined,
+        sort_by: liSortBy,
+      };
+    }
+    if (pipelineType === "google_jobs") {
+      const selectedRoles = allRoles.filter(r => selectedRoleIds.includes(r.id));
+      let queries: string[] = [];
+      if (selectedRoleIds.length > 0) {
+        queries = selectedRoles.map(r => r.synonyms.map(s => `"${s}"`).join(" OR "));
+      }
+      if (gQuery.trim()) queries.push(gQuery.trim());
+      return {
+        queries: queries.length > 0 ? queries : undefined,
+        job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
+        country: gCountry,
+        date_posted: gDatePosted,
+        employment_types: gEmpTypes.join(",") || undefined,
+        remote_only: gRemoteOnly || undefined,
+        job_requirements: gJobReqs && gJobReqs !== "any" ? gJobReqs : undefined,
+        employer_name: gEmployer || undefined,
+        exclude_job_publishers: gExcludePublishers || undefined,
+        num_pages: parseInt(gNumPages) || 5,
+      };
+    }
+    return simpleConfig;
+  };
 
   const cronPreview = frequency === "custom" && cronExpression ? (() => {
     try { return cronstrue.toString(cronExpression); } catch { return "Invalid cron expression"; }
@@ -196,7 +330,7 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
       const body = {
         name,
         pipeline_type: pipelineType,
-        config,
+        config: buildConfig(),
         frequency,
         cron_expression: frequency === "custom" ? cronExpression : undefined,
         max_runs: maxRuns ? parseInt(maxRuns) : null,
@@ -222,7 +356,7 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>{isEdit ? "Edit Schedule" : "New Schedule"}</DialogTitle>
           <DialogDescription>
@@ -230,6 +364,7 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
           </DialogDescription>
         </DialogHeader>
         <div className="space-y-4 py-2">
+          {/* Schedule-level fields */}
           <div className="space-y-1">
             <Label className="text-xs">Name</Label>
             <Input className="h-8 text-xs" placeholder="e.g. Daily Dubai Finance Jobs"
@@ -237,7 +372,7 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
           </div>
           <div className="space-y-1">
             <Label className="text-xs">Pipeline Type</Label>
-            <Select value={pipelineType} onValueChange={(v) => { setPipelineType(v); setConfig({}); }}>
+            <Select value={pipelineType} onValueChange={handlePipelineTypeChange}>
               <SelectTrigger className="h-8 text-xs"><SelectValue /></SelectTrigger>
               <SelectContent>
                 {PIPELINE_TYPES.map(p => (
@@ -246,10 +381,252 @@ function ScheduleDialog({ open, onOpenChange, schedule }: {
               </SelectContent>
             </Select>
           </div>
-          <div className="space-y-1">
-            <Label className="text-xs font-medium">Pipeline Configuration</Label>
-            <PipelineConfigFields pipelineType={pipelineType} config={config} onChange={setConfig} />
-          </div>
+
+          <Separator />
+
+          {/* ── LinkedIn Jobs config ── */}
+          {pipelineType === "linkedin_jobs" && (
+            <div className="space-y-4">
+              <JobRolesSection
+                allRoles={allRoles} rolesLoading={rolesLoading}
+                selectedRoleIds={selectedRoleIds} onToggleRole={toggleRole}
+                onClearAll={() => setSelectedRoleIds([])}
+              />
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Search</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Keywords {selectedRoleIds.length === 0 ? "*" : "(optional)"}</Label>
+                    <Input value={liKeywords} onChange={e => setLiKeywords(e.target.value)} placeholder="e.g. Data Analyst" className="text-xs h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Country</Label>
+                    <Select value={liLocation} onValueChange={setLiLocation}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue placeholder="Select country" /></SelectTrigger>
+                      <SelectContent>
+                        {COUNTRIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-3">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filters</p>
+                <div>
+                  <Label className="text-xs mb-1 block">Experience Level</Label>
+                  <ChipSelect options={EXP_LEVELS} selected={liExpLevel} onChange={setLiExpLevel} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Work Type</Label>
+                  <ChipSelect options={WORK_TYPES} selected={liWorkType} onChange={setLiWorkType} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Work Location</Label>
+                  <ChipSelect options={WORK_LOCATIONS} selected={liWorkLoc} onChange={setLiWorkLoc} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Industry</Label>
+                  <ChipSelect options={INDUSTRIES} selected={liIndustries} onChange={setLiIndustries} />
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Company Filter</p>
+                <div className="flex gap-2">
+                  <Input value={liCompanyInput} onChange={e => setLiCompanyInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addLiCompany())}
+                    placeholder="Type company name + Enter" className="text-xs h-8 flex-1" />
+                  <Button type="button" variant="outline" size="sm" onClick={addLiCompany} className="h-8 px-3 text-xs">Add</Button>
+                </div>
+                {liCompanies.length > 0 && (
+                  <div className="flex flex-wrap gap-1">
+                    {liCompanies.map(c => (
+                      <Badge key={c} variant="secondary" className="text-[10px] pr-1">
+                        {c}
+                        <button onClick={() => setLiCompanies(liCompanies.filter(x => x !== c))} className="ml-1 hover:text-destructive">
+                          <X className="h-2.5 w-2.5" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Time & Sort</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Time Posted</Label>
+                    <Select value={liTimePosted} onValueChange={setLiTimePosted}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {TIME_OPTIONS.map(o => <SelectItem key={o.value || "any"} value={o.value || "any"}>{o.label}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Sort By</Label>
+                    <Select value={liSortBy} onValueChange={setLiSortBy}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="DD">Most Recent</SelectItem>
+                        <SelectItem value="R">Relevance</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-3">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Options</p>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-xs">Fetch job descriptions</Label>
+                    <p className="text-[10px] text-muted-foreground">Required for JD analysis and skill extraction</p>
+                  </div>
+                  <Switch checked={liFetchDesc} onCheckedChange={setLiFetchDesc} />
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-xs">Easy Apply only</Label>
+                    <p className="text-[10px] text-muted-foreground">Restrict to LinkedIn one-click apply jobs</p>
+                  </div>
+                  <Switch checked={liEasyApply} onCheckedChange={setLiEasyApply} />
+                </div>
+                <div>
+                  <Label className="text-xs mb-1 block">Job Limit</Label>
+                  <div className="flex gap-1.5 items-center">
+                    {LIMIT_PRESETS.map(n => (
+                      <button key={n} type="button" onClick={() => { setLiLimit(n); setLiCustomLimit(""); }}
+                        className={`px-2.5 py-1 rounded text-xs font-medium border transition-colors ${
+                          liLimit === n && !liCustomLimit ? "bg-primary text-primary-foreground border-primary" : "bg-background text-muted-foreground border-border hover:border-primary/50"
+                        }`}>{n}</button>
+                    ))}
+                    <Input type="number" value={liCustomLimit} onChange={e => { setLiCustomLimit(e.target.value); if (e.target.value) setLiLimit(parseInt(e.target.value) || 100); }}
+                      placeholder="Custom" className="w-20 h-7 text-xs" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Google Jobs config ── */}
+          {pipelineType === "google_jobs" && (
+            <div className="space-y-4">
+              <JobRolesSection
+                allRoles={allRoles} rolesLoading={rolesLoading}
+                selectedRoleIds={selectedRoleIds} onToggleRole={toggleRole}
+                onClearAll={() => setSelectedRoleIds([])}
+              />
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Search</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Query {selectedRoleIds.length === 0 ? "*" : "(optional)"}</Label>
+                    <Input value={gQuery} onChange={e => setGQuery(e.target.value)} placeholder="e.g. Data Analyst" className="text-xs h-8 mt-1" />
+                  </div>
+                  <div>
+                    <Label className="text-xs">Country</Label>
+                    <Select value={gCountry} onValueChange={setGCountry}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {COUNTRIES.map(c => {
+                          const code = COUNTRY_CODE_MAP[c] || c.substring(0, 2).toUpperCase();
+                          return <SelectItem key={code} value={code}>{c}</SelectItem>;
+                        })}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-3">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filters</p>
+                <div>
+                  <Label className="text-xs mb-1 block">Employment Type</Label>
+                  <ChipSelect options={GOOGLE_EMP_TYPES} selected={gEmpTypes} onChange={setGEmpTypes} />
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Experience</Label>
+                    <Select value={gJobReqs || "any"} onValueChange={v => setGJobReqs(v === "any" ? "" : v)}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue placeholder="Any" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="any">Any</SelectItem>
+                        <SelectItem value="under_3_years_experience">Under 3 years</SelectItem>
+                        <SelectItem value="more_than_3_years_experience">3+ years</SelectItem>
+                        <SelectItem value="no_experience">No experience</SelectItem>
+                        <SelectItem value="no_degree">No degree required</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Employer</Label>
+                    <Input value={gEmployer} onChange={e => setGEmployer(e.target.value)} placeholder="e.g. Amazon" className="text-xs h-8 mt-1" />
+                  </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <Label className="text-xs">Remote jobs only</Label>
+                    <p className="text-[10px] text-muted-foreground">Show only remote/work-from-home positions</p>
+                  </div>
+                  <Switch checked={gRemoteOnly} onCheckedChange={setGRemoteOnly} />
+                </div>
+              </div>
+              <Separator />
+              <div className="space-y-2">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Time & Options</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="text-xs">Date Posted</Label>
+                    <Select value={gDatePosted} onValueChange={setGDatePosted}>
+                      <SelectTrigger className="h-8 text-xs mt-1"><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="today">Today</SelectItem>
+                        <SelectItem value="3days">Past 3 Days</SelectItem>
+                        <SelectItem value="week">Past Week</SelectItem>
+                        <SelectItem value="month">Past Month</SelectItem>
+                        <SelectItem value="all">All Time</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label className="text-xs">Pages per Query</Label>
+                    <Input type="number" value={gNumPages} onChange={e => setGNumPages(e.target.value)} min={1} max={10} className="text-xs h-8 mt-1" />
+                    <p className="text-[10px] text-muted-foreground mt-0.5">~10 jobs/page</p>
+                  </div>
+                </div>
+                <div>
+                  <Label className="text-xs">Exclude Publishers</Label>
+                  <Input value={gExcludePublishers} onChange={e => setGExcludePublishers(e.target.value)} placeholder="e.g. BeBee, Jooble" className="text-xs h-8 mt-1" />
+                  <p className="text-[10px] text-muted-foreground mt-0.5">Comma-separated list of job boards to exclude</p>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ── Simple config for other pipeline types ── */}
+          {pipelineType === "alumni" && (
+            <div className="space-y-1">
+              <Label className="text-xs">School URLs / Slugs (one per line)</Label>
+              <Input className="h-8 text-xs" placeholder="iit-bombay"
+                value={simpleConfig.university_slug || ""} onChange={(e) => updateSimple("university_slug", e.target.value)} />
+            </div>
+          )}
+          {(pipelineType === "jd_enrichment" || pipelineType === "people_enrichment" || pipelineType === "company_enrichment") && (
+            <div className="space-y-1">
+              <Label className="text-xs">Batch Size</Label>
+              <Input type="number" className="h-8 text-xs" placeholder="50" min={1}
+                value={simpleConfig.batch_size || 50} onChange={(e) => updateSimple("batch_size", parseInt(e.target.value) || 50)} />
+            </div>
+          )}
+
+          <Separator />
+
+          {/* Schedule-level fields */}
           <div className="space-y-1">
             <Label className="text-xs">Frequency</Label>
             <Select value={frequency} onValueChange={setFrequency}>
