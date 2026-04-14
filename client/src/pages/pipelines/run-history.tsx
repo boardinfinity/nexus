@@ -42,16 +42,30 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
     onError: (e: any) => toast({ title: "Poll failed", description: e.message, variant: "destructive" }),
   });
 
+  // Cancel a stuck/running pipeline
+  const cancelMutation = useMutation({
+    mutationFn: async (runId: string) => {
+      const res = await authFetch(`/api/pipelines/${runId}/cancel`, { method: "POST" });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+      toast({ title: "Pipeline cancelled" });
+    },
+    onError: (e: any) => toast({ title: "Cancel failed", description: e.message, variant: "destructive" }),
+  });
+
   const statusIcon = (s: string) => {
     if (s === "completed") return <CheckCircle2 className="h-3.5 w-3.5 text-green-600" />;
-    if (s === "failed") return <XCircle className="h-3.5 w-3.5 text-red-600" />;
+    if (s === "failed" || s === "cancelled") return <XCircle className="h-3.5 w-3.5 text-red-600" />;
     if (s === "running") return <Loader2 className="h-3.5 w-3.5 text-blue-600 animate-spin" />;
     return <Clock className="h-3.5 w-3.5 text-gray-400" />;
   };
 
   const statusColor = (s: string) =>
     s === "completed" ? "bg-green-50 text-green-700 border-green-200" :
-    s === "failed" ? "bg-red-50 text-red-700 border-red-200" :
+    s === "failed" || s === "cancelled" ? "bg-red-50 text-red-700 border-red-200" :
     s === "running" ? "bg-blue-50 text-blue-700 border-blue-200" : "bg-gray-50 text-gray-700 border-gray-200";
 
   const pipelineLabel = (type: string) => {
@@ -162,16 +176,28 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                     </div>
                     <div className="flex items-center gap-1.5">
                       {isRunning && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-6 text-[10px] px-2"
-                          disabled={pollMutation.isPending}
-                          onClick={() => pollMutation.mutate(run.id)}
-                        >
-                          {pollMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
-                          Check Status
-                        </Button>
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px] px-2"
+                            disabled={pollMutation.isPending}
+                            onClick={() => pollMutation.mutate(run.id)}
+                          >
+                            {pollMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
+                            Check Status
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-6 text-[10px] px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            disabled={cancelMutation.isPending}
+                            onClick={() => cancelMutation.mutate(run.id)}
+                          >
+                            <XCircle className="h-3 w-3 mr-1" />
+                            Cancel
+                          </Button>
+                        </>
                       )}
                       {run.status === "completed" && (run.processed_items || 0) > 0 && (
                         <Link
