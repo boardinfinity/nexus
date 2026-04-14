@@ -699,7 +699,6 @@ async function executeGoogleJobs(runId: string, config: any) {
   // Build individual search queries from role synonyms or free text
   let queries: string[] = [];
   
-  // If role IDs provided, expand each synonym as a separate query for better coverage
   const jobRoleIds = config.job_role_ids as string[] | undefined;
   if (jobRoleIds && jobRoleIds.length > 0) {
     const { data: roles } = await supabase
@@ -707,7 +706,6 @@ async function executeGoogleJobs(runId: string, config: any) {
       .select("id, name, synonyms")
       .in("id", jobRoleIds);
     if (roles && roles.length > 0) {
-      // Each synonym becomes its own query (actor returns ~10 per query)
       for (const role of roles) {
         const synonyms = (role.synonyms as string[]) || [role.name];
         queries.push(...synonyms.map(s => `"${s}"`));
@@ -715,19 +713,22 @@ async function executeGoogleJobs(runId: string, config: any) {
     }
   }
   
-  // Add free-text queries
   if (Array.isArray(config.queries) && config.queries.length > 0) {
     queries.push(...config.queries.filter((q: string) => q.trim()));
-  } else if (!queries.length) {
-    queries = [config.query || "software engineer"];
+  }
+  if (!queries.length) queries = [config.query || "software engineer"];
+
+  // Cap at 20 queries to stay within Vercel 300s timeout (~12s per query)
+  const MAX_QUERIES = 20;
+  if (queries.length > MAX_QUERIES) {
+    queries = queries.slice(0, MAX_QUERIES);
   }
 
   const country = (config.country || "in").toLowerCase();
   const datePosted = config.date_posted && config.date_posted !== "all" ? config.date_posted : "month";
 
-  // Store resolved config
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _provider: "apify", _actor: "orgupdate/google-jobs-scraper" },
+    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _capped: queries.length >= MAX_QUERIES, _provider: "apify", _actor: "orgupdate/google-jobs-scraper" },
   }).eq("id", runId);
 
   let allProcessed = 0;
@@ -735,104 +736,118 @@ async function executeGoogleJobs(runId: string, config: any) {
   let allSkipped = 0;
   let allTotal = 0;
 
-  // Run queries in sequence (to avoid overwhelming Apify)
-  for (const query of queries) {
+  // Launch ALL queries as Apify runs in parallel (fire-and-forget), then collect results
+  const apifyRuns: { query: string; runId?: string; datasetId?: string }[] = [];
+  
+  // Fire all runs in parallel (non-blocking)
+  const launchPromises = queries.map(async (query) => {
     try {
       const actorInput: Record<string, any> = {
         countryName: country,
         includeKeyword: query,
         datePosted,
-        pagesToFetch: 3,
+        pagesToFetch: 2,
       };
       if (config.employment_types) actorInput.jobType = config.employment_types;
 
       const startRes = await fetch(
-        `https://api.apify.com/v2/acts/orgupdate~google-jobs-scraper/runs?token=${APIFY_API_KEY}&waitForFinish=120`,
+        `https://api.apify.com/v2/acts/orgupdate~google-jobs-scraper/runs?token=${APIFY_API_KEY}`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
       );
-
-      if (!startRes.ok) continue; // Skip failed queries, don't abort entire run
-
-      const apifyRun = await startRes.json();
-      const dsId = apifyRun.data?.defaultDatasetId;
-      const apifyRunId = apifyRun.data?.id;
-      let runStatus = apifyRun.data?.status;
-
-      // Poll if not done
-      if (runStatus !== "SUCCEEDED" && runStatus !== "FAILED") {
-        for (let attempts = 0; attempts < 12; attempts++) {
-          await new Promise(r => setTimeout(r, 10000));
-          const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${apifyRunId}?token=${APIFY_API_KEY}`);
-          const pollData = await pollRes.json();
-          runStatus = pollData.data?.status;
-          if (runStatus === "SUCCEEDED" || runStatus === "FAILED" || runStatus === "ABORTED") break;
-        }
+      if (startRes.ok) {
+        const d = await startRes.json();
+        return { query, runId: d.data?.id, datasetId: d.data?.defaultDatasetId };
       }
+    } catch {}
+    return { query };
+  });
 
-      if (dsId && runStatus === "SUCCEEDED") {
-        const itemsRes = await fetch(`https://api.apify.com/v2/datasets/${dsId}/items?token=${APIFY_API_KEY}`);
-        const items = await itemsRes.json();
+  const launched = await Promise.all(launchPromises);
+  apifyRuns.push(...launched.filter(r => r.runId));
 
-        if (Array.isArray(items)) {
-          allTotal += items.length;
-          await supabase.from("pipeline_runs").update({ total_items: allTotal }).eq("id", runId);
-
-          for (const item of items) {
-            try {
-              // Build external ID from title + company for dedup (orgupdate has no jobId)
-              const titleClean = (item.job_title || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-              const companyClean = (item.company_name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-              const externalId = `gj-${titleClean}-${companyClean}`.substring(0, 200);
-
-              const { data: existing } = await supabase.from("jobs").select("id")
-                .eq("external_id", externalId).eq("source", "google_jobs").maybeSingle();
-              if (existing) { allSkipped++; continue; }
-
-              let companyId = null;
-              if (item.company_name) {
-                companyId = await upsertCompanyByName(item.company_name, null, null);
-              }
-
-              const desc = item.description || null;
-              const titleNorm = normalizeText(item.job_title || "");
-              const companyNorm = normalizeText(item.company_name || "");
-
-              // Parse location
-              const locParts = (item.location || "").split(",").map((s: string) => s.trim());
-
-              await supabase.from("jobs").insert({
-                external_id: externalId,
-                source: "google_jobs",
-                title: item.job_title || "Unknown",
-                title_normalized: titleNorm || null,
-                company_name_normalized: companyNorm || null,
-                description: desc,
-                company_id: companyId,
-                company_name: item.company_name || null,
-                location_raw: item.location || null,
-                location_city: locParts[0] || null,
-                location_state: locParts[1] || null,
-                location_country: country.toUpperCase(),
-                salary_text: item.salary !== "N/A" ? item.salary : null,
-                posted_at: null, // orgupdate returns relative dates like "5 days ago"
-                application_url: item.URL || null,
-                source_url: item.URL || null,
-                job_publisher: item.posted_via || null,
-                enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
-                raw_data: { ...item, search_query: query },
-              });
-              allProcessed++;
-            } catch (e) { allFailed++; }
-          }
+  // Wait for all runs to complete (poll in batches)
+  const MAX_WAIT = 240000; // 4 minutes max wait
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < MAX_WAIT) {
+    // Check which runs are done
+    let allDone = true;
+    for (const run of apifyRuns) {
+      if (!run.runId || (run as any)._done) continue;
+      try {
+        const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${run.runId}?token=${APIFY_API_KEY}`);
+        const pollData = await pollRes.json();
+        const status = pollData.data?.status;
+        if (status === "SUCCEEDED" || status === "FAILED" || status === "ABORTED") {
+          (run as any)._done = true;
+          (run as any)._status = status;
+        } else {
+          allDone = false;
         }
-      }
-
-      // Brief pause between queries to avoid rate limiting
-      await new Promise(r => setTimeout(r, 2000));
-    } catch (e: any) {
-      console.error(`Google Jobs query "${query}" failed:`, e.message);
+      } catch { allDone = false; }
     }
+    if (allDone) break;
+    await new Promise(r => setTimeout(r, 5000));
   }
+
+  // Collect results from all completed runs
+  for (const run of apifyRuns) {
+    if (!(run as any)._done || (run as any)._status !== "SUCCEEDED" || !run.datasetId) continue;
+    try {
+      const itemsRes = await fetch(`https://api.apify.com/v2/datasets/${run.datasetId}/items?token=${APIFY_API_KEY}`);
+      const items = await itemsRes.json();
+
+      if (Array.isArray(items)) {
+        allTotal += items.length;
+
+        for (const item of items) {
+          try {
+            const titleClean = (item.job_title || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+            const companyClean = (item.company_name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+            const externalId = `gj-${titleClean}-${companyClean}`.substring(0, 200);
+
+            const { data: existing } = await supabase.from("jobs").select("id")
+              .eq("external_id", externalId).eq("source", "google_jobs").maybeSingle();
+            if (existing) { allSkipped++; continue; }
+
+            let companyId = null;
+            if (item.company_name) {
+              companyId = await upsertCompanyByName(item.company_name, null, null);
+            }
+
+            const desc = item.description || null;
+            const titleNorm = normalizeText(item.job_title || "");
+            const companyNorm = normalizeText(item.company_name || "");
+            const locParts = (item.location || "").split(",").map((s: string) => s.trim());
+
+            await supabase.from("jobs").insert({
+              external_id: externalId,
+              source: "google_jobs",
+              title: item.job_title || "Unknown",
+              title_normalized: titleNorm || null,
+              company_name_normalized: companyNorm || null,
+              description: desc,
+              company_id: companyId,
+              company_name: item.company_name || null,
+              location_raw: item.location || null,
+              location_city: locParts[0] || null,
+              location_state: locParts[1] || null,
+              location_country: country.toUpperCase(),
+              salary_text: item.salary !== "N/A" ? item.salary : null,
+              application_url: item.URL || null,
+              source_url: item.URL || null,
+              job_publisher: item.posted_via || null,
+              enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
+              raw_data: { ...item, search_query: run.query },
+            });
+            allProcessed++;
+          } catch (e) { allFailed++; }
+        }
+      }
+    } catch {}
+  }
+
+  await supabase.from("pipeline_runs").update({ total_items: allTotal }).eq("id", runId);
 
   await supabase.from("enrichment_logs").insert({
     entity_type: "job", entity_id: runId, provider: "apify",
