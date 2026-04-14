@@ -15,13 +15,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { RunHistory } from "./run-history";
 
-const authFetch = async (url: string, opts: RequestInit = {}) => {
-  const { data: { session } } = await (window as any).__supabase?.auth?.getSession?.() || { data: { session: null } };
-  const headers: any = { ...opts.headers };
-  if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
-  if (!headers["Content-Type"] && opts.body && typeof opts.body === "string") headers["Content-Type"] = "application/json";
-  return fetch(url, { ...opts, headers });
-};
+import { authFetch } from "@/lib/queryClient";
 
 // ── Preset data ──────────────────────────────────────────────────────────────
 
