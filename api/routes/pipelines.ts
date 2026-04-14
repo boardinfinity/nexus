@@ -499,11 +499,10 @@ export async function executeCooccurrence(runId: string, _config: any) {
 
 // ==================== PIPELINE EXECUTION ====================
 
-export export async function executePipeline(runId: string, pipelineType: string, config: any) {
+export async function executePipeline(runId: string, pipelineType: string, config: any) {
   try {
-    if (pipelineType === "linkedin_jobs" || pipelineType === "alumni") {
-      // These are handled by the run/poll endpoints, not here
-      return;
+    if (pipelineType === "linkedin_jobs") {
+      await executeLinkedInJobs(runId, config);
     } else if (pipelineType === "google_jobs") {
       await executeGoogleJobs(runId, config);
     } else if (pipelineType === "company_enrichment") {
@@ -691,6 +690,95 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
     skipped_items: skipped,
     completed_at: new Date().toISOString(),
   }).eq("id", runId);
+}
+
+async function executeLinkedInJobs(runId: string, config: any) {
+  if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
+
+  const timePostedMap: Record<string, string> = {
+    "past_24h": "r86400", "24hr": "r86400",
+    "past_week": "r604800", "past week": "r604800",
+    "past_month": "r2592000", "past month": "r2592000",
+  };
+
+  const commonInput: Record<string, any> = {
+    location: config?.location || "India",
+    maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
+  };
+  if (config?.date_posted && timePostedMap[config.date_posted]) commonInput.timePosted = timePostedMap[config.date_posted];
+  if (config?.experience_level) commonInput.experienceLevel = config.experience_level.split(",").filter(Boolean);
+  if (config?.work_type) commonInput.workType = config.work_type.split(",").filter(Boolean);
+  if (config?.work_location) commonInput.workLocation = config.work_location.split(",").filter(Boolean);
+  if (config?.industry_ids) commonInput.industryIds = config.industry_ids.split(",").filter(Boolean);
+  if (config?.company_names) commonInput.companyNames = config.company_names.split(",").filter(Boolean);
+  if (config?.fetch_description !== undefined) commonInput.fetchDescription = !!config.fetch_description;
+  if (config?.easy_apply_only) commonInput.easyApplyOnly = true;
+  if (config?.sort_by) commonInput.sortBy = config.sort_by;
+
+  // Build keyword queries: one per role or fallback to keywords
+  const jobRoleIds = config?.job_role_ids as string[] | undefined;
+  let runs: { keywords: string; roleId?: string; roleName?: string }[] = [];
+
+  if (jobRoleIds && jobRoleIds.length > 0) {
+    const { data: roles } = await supabase.from("job_roles").select("id, name, synonyms").in("id", jobRoleIds);
+    if (roles && roles.length > 0) {
+      runs = roles.map(r => ({
+        keywords: ((r.synonyms as string[]) || []).map(s => `"${s}"`).join(" OR "),
+        roleId: r.id, roleName: r.name,
+      }));
+    }
+  }
+  if (runs.length === 0) {
+    runs = [{ keywords: config?.search_keywords || config?.keywords || "software engineer" }];
+  }
+
+  await supabase.from("pipeline_runs").update({
+    config: { ...config, _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })), _provider: "apify" },
+  }).eq("id", runId);
+
+  // Launch all Apify runs in parallel
+  const apifyRuns: { runId?: string; datasetId?: string; keywords: string }[] = [];
+  const launchPromises = runs.map(async (run) => {
+    try {
+      const res = await fetch(
+        `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...commonInput, keywords: run.keywords }) }
+      );
+      if (res.ok) {
+        const d = await res.json();
+        return { runId: d.data?.id, datasetId: d.data?.defaultDatasetId, keywords: run.keywords };
+      }
+    } catch {}
+    return { keywords: run.keywords };
+  });
+  apifyRuns.push(...(await Promise.all(launchPromises)));
+
+  // Poll until all runs complete (max 4 minutes)
+  const MAX_WAIT = 240000;
+  const startTime = Date.now();
+  while (Date.now() - startTime < MAX_WAIT) {
+    let allDone = true;
+    for (const r of apifyRuns) {
+      if (!r.runId || (r as any)._done) continue;
+      try {
+        const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${r.runId}?token=${APIFY_API_KEY}`);
+        const d = await pollRes.json();
+        const st = d.data?.status;
+        if (st === "SUCCEEDED" || st === "FAILED" || st === "ABORTED") {
+          (r as any)._done = true; (r as any)._status = st;
+        } else { allDone = false; }
+      } catch { allDone = false; }
+    }
+    if (allDone) break;
+    await new Promise(r => setTimeout(r, 5000));
+  }
+
+  // Process results from all succeeded runs
+  for (const r of apifyRuns) {
+    if ((r as any)._status === "SUCCEEDED" && r.datasetId) {
+      await processLinkedInResults(runId, r.datasetId, config);
+    }
+  }
 }
 
 async function executeGoogleJobs(runId: string, config: any) {
