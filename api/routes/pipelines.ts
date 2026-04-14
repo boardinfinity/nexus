@@ -149,15 +149,37 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     // Alumni pipeline: Apify LinkedIn profile search by university
     if (pipeline_type === "alumni") {
       if (!APIFY_API_KEY) return res.status(400).json({ error: "Apify API key not configured" });
+
+      // Look up college LinkedIn slugs from master list
+      let schoolUrls: string[] = [];
+      if (config?.college_ids && Array.isArray(config.college_ids) && config.college_ids.length > 0) {
+        const { data: colleges } = await supabase
+          .from("colleges")
+          .select("id, name, short_name, linkedin_slug")
+          .in("id", config.college_ids);
+        schoolUrls = (colleges || []).map((c: any) => c.linkedin_slug).filter(Boolean);
+        config._colleges = colleges; // store for traceability
+      } else if (config?.university_slug) {
+        schoolUrls = config.university_slug.split(",").map((s: string) => s.trim());
+      }
+      if (schoolUrls.length === 0) {
+        return res.status(400).json({ error: "No valid school URLs found. Select colleges or provide university slugs." });
+      }
+
       const actorInput: Record<string, any> = {
-        schoolUrls: (config?.university_slug || "iit-bombay").split(",").map((s: string) => s.trim()),
-        profileScraperMode: "Full",
+        schoolUrls,
+        profileScraperMode: config?.scraper_mode || "Full",
         startPage: 1,
         takePages: parseInt(config?.pages) || 5,
+        maxItems: parseInt(config?.max_profiles) || 0,
       };
-      if (config?.keywords) actorInput.searchQuery = config.keywords;
-      if (config?.location) actorInput.locations = [config.location];
-      if (config?.job_title) actorInput.currentJobTitles = [config.job_title];
+      if (config?.search_query) actorInput.searchQuery = config.search_query;
+      if (config?.current_job_titles?.length) actorInput.currentJobTitles = config.current_job_titles;
+      if (config?.past_job_titles?.length) actorInput.pastJobTitles = config.past_job_titles;
+      if (config?.locations?.length) actorInput.locations = config.locations;
+      if (config?.years_of_experience?.length) actorInput.yearsOfExperience = config.years_of_experience;
+      if (config?.seniority_ids?.length) actorInput.seniorityLevelIds = config.seniority_ids;
+      if (config?.company_urls?.length) actorInput.companyUrls = config.company_urls;
 
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,

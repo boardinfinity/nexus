@@ -139,23 +139,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
           if (schedule.pipeline_type === "alumni" && APIFY_API_KEY) {
             const cfg = schedule.config as any;
-            const actorInput: Record<string, any> = {
-              schoolUrls: (cfg?.university_slug || "iit-bombay").split(",").map((s: string) => s.trim()),
-              profileScraperMode: "Full",
-              startPage: 1,
-              takePages: parseInt(cfg?.pages) || 5,
-            };
-            if (cfg?.keywords) actorInput.searchQuery = cfg.keywords;
-            if (cfg?.location) actorInput.locations = [cfg.location];
-            if (cfg?.job_title) actorInput.currentJobTitles = [cfg.job_title];
-            const startRes = await fetch(
-              `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,
-              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
-            );
-            if (startRes.ok) {
-              const apifyData = await startRes.json();
-              providerRunId = apifyData.data?.id;
-              providerDatasetId = apifyData.data?.defaultDatasetId;
+
+            // Look up college LinkedIn slugs from master list
+            let schoolUrls: string[] = [];
+            if (cfg?.college_ids?.length) {
+              const { data: colleges } = await supabase
+                .from("colleges")
+                .select("id, name, short_name, linkedin_slug")
+                .in("id", cfg.college_ids);
+              schoolUrls = (colleges || []).map((c: any) => c.linkedin_slug).filter(Boolean);
+            } else if (cfg?.university_slug) {
+              schoolUrls = cfg.university_slug.split(",").map((s: string) => s.trim());
+            }
+
+            if (schoolUrls.length > 0) {
+              const actorInput: Record<string, any> = {
+                schoolUrls,
+                profileScraperMode: cfg?.scraper_mode || "Full",
+                startPage: 1,
+                takePages: parseInt(cfg?.pages) || 5,
+                maxItems: parseInt(cfg?.max_profiles) || 0,
+              };
+              if (cfg?.search_query) actorInput.searchQuery = cfg.search_query;
+              if (cfg?.current_job_titles?.length) actorInput.currentJobTitles = cfg.current_job_titles;
+              if (cfg?.past_job_titles?.length) actorInput.pastJobTitles = cfg.past_job_titles;
+              if (cfg?.locations?.length) actorInput.locations = cfg.locations;
+              if (cfg?.years_of_experience?.length) actorInput.yearsOfExperience = cfg.years_of_experience;
+              if (cfg?.seniority_ids?.length) actorInput.seniorityLevelIds = cfg.seniority_ids;
+              if (cfg?.company_urls?.length) actorInput.companyUrls = cfg.company_urls;
+
+              const startRes = await fetch(
+                `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,
+                { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+              );
+              if (startRes.ok) {
+                const apifyData = await startRes.json();
+                providerRunId = apifyData.data?.id;
+                providerDatasetId = apifyData.data?.defaultDatasetId;
+              }
             }
           }
 
