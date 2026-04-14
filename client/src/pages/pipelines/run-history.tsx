@@ -2,7 +2,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Loader2, RefreshCw, CheckCircle2, XCircle, Clock, Play, Ban } from "lucide-react";
+import { Loader2, RefreshCw, CheckCircle2, XCircle, Clock, Play, ExternalLink } from "lucide-react";
+import { Link } from "wouter";
 import { authFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 
@@ -159,18 +160,29 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                         <span className="text-red-600 truncate max-w-[200px]" title={run.error_message}>{run.error_message}</span>
                       )}
                     </div>
-                    {isRunning && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="h-6 text-[10px] px-2"
-                        disabled={pollMutation.isPending}
-                        onClick={() => pollMutation.mutate(run.id)}
-                      >
-                        {pollMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
-                        Check Status
-                      </Button>
-                    )}
+                    <div className="flex items-center gap-1.5">
+                      {isRunning && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-6 text-[10px] px-2"
+                          disabled={pollMutation.isPending}
+                          onClick={() => pollMutation.mutate(run.id)}
+                        >
+                          {pollMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
+                          Check Status
+                        </Button>
+                      )}
+                      {run.status === "completed" && (run.processed_items || 0) > 0 && (
+                        <Link
+                          href={`/jobs?source=${run.pipeline_type === "linkedin_jobs" ? "linkedin" : run.pipeline_type === "google_jobs" ? "google_jobs" : ""}&added=${encodeURIComponent(run.started_at)}`}
+                        >
+                          <Button variant="outline" size="sm" className="h-6 text-[10px] px-2">
+                            <ExternalLink className="h-3 w-3 mr-1" /> View Jobs
+                          </Button>
+                        </Link>
+                      )}
+                    </div>
                   </div>
                 </div>
               );

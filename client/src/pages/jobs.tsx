@@ -23,14 +23,31 @@ interface JobSkill {
 }
 
 export default function Jobs() {
-  const [search, setSearch] = useState("");
-  const [source, setSource] = useState("all");
-  const [status, setStatus] = useState("all");
+  // Read URL params for deep-linking from pipeline runs
+  const urlParams = new URLSearchParams(window.location.search);
+  const [search, setSearch] = useState(urlParams.get("search") || "");
+  const [source, setSource] = useState(urlParams.get("source") || "all");
+  const [status, setStatus] = useState(urlParams.get("status") || "all");
   const [seniority, setSeniority] = useState("all");
+  const [addedDate, setAddedDate] = useState(urlParams.get("added") || "all");
   const [page, setPage] = useState(1);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  // Compute added_after based on selection
+  const getAddedAfter = () => {
+    if (addedDate === "all") return undefined;
+    const now = new Date();
+    if (addedDate === "1h") return new Date(now.getTime() - 60 * 60 * 1000).toISOString();
+    if (addedDate === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); return d.toISOString(); }
+    if (addedDate === "24h") return new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
+    if (addedDate === "7d") return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    if (addedDate === "30d") return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
+    // ISO date string passed directly (from pipeline run link)
+    if (addedDate.includes("T") || addedDate.includes("-")) return addedDate;
+    return undefined;
+  };
 
   const params = new URLSearchParams();
   params.set("page", String(page));
@@ -39,6 +56,8 @@ export default function Jobs() {
   if (source !== "all") params.set("source", source);
   if (status !== "all") params.set("enrichment_status", status);
   if (seniority !== "all") params.set("seniority_level", seniority);
+  const addedAfter = getAddedAfter();
+  if (addedAfter) params.set("added_after", addedAfter);
 
   const { data, isLoading } = useQuery<{ data: Job[]; total: number }>({
     queryKey: ["/api/jobs", params.toString()],
@@ -177,6 +196,19 @@ export default function Jobs() {
             <SelectItem value="executive">Executive</SelectItem>
           </SelectContent>
         </Select>
+        <Select value={addedDate} onValueChange={(v) => { setAddedDate(v); setPage(1); }}>
+          <SelectTrigger className="w-[140px] h-9 text-xs">
+            <SelectValue placeholder="Added Date" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Time</SelectItem>
+            <SelectItem value="1h">Last Hour</SelectItem>
+            <SelectItem value="today">Today</SelectItem>
+            <SelectItem value="24h">Last 24 Hours</SelectItem>
+            <SelectItem value="7d">Last 7 Days</SelectItem>
+            <SelectItem value="30d">Last 30 Days</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       <div className="overflow-x-auto">
@@ -190,6 +222,7 @@ export default function Jobs() {
             }},
             { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} /> },
             { header: "Posted", accessor: (r: Job) => r.posted_at ? new Date(r.posted_at).toLocaleDateString() : "—" },
+            { header: "Added", accessor: (r: Job) => r.created_at ? new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—" },
             { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[11px]">{r.seniority_level}</Badge> : "—" },
             { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} /> },
             { header: "Status", accessor: (r: Job) => {

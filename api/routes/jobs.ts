@@ -6,7 +6,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
   if (!requireReader(auth, "jobs", res)) return;
 
   if (path.match(/^\/jobs\/?$/) && req.method === "GET") {
-    const { search, source, enrichment_status, seniority_level, employment_type, location_country, has_description, page = "1", limit = "50" } = req.query as Record<string, string>;
+    const { search, source, enrichment_status, seniority_level, employment_type, location_country, has_description, added_after, added_before, page = "1", limit = "50" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
     let query = supabase
@@ -20,6 +20,8 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
     if (seniority_level) query = query.eq("seniority_level", seniority_level);
     if (employment_type) query = query.eq("employment_type", employment_type);
     if (location_country) query = query.ilike("location_country", `%${location_country}%`);
+    if (added_after) query = query.gte("created_at", added_after);
+    if (added_before) query = query.lte("created_at", added_before);
 
     const { data, error, count } = await query
       .order("created_at", { ascending: false })
