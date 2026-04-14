@@ -19,11 +19,12 @@ import { authFetch } from "@/lib/queryClient";
 
 // ── Preset data ──────────────────────────────────────────────────────────────
 
-const LOCATIONS = [
-  { group: "India — Metros", items: ["Mumbai", "Delhi-NCR", "Bangalore", "Hyderabad", "Chennai", "Pune", "Kolkata", "Ahmedabad"] },
-  { group: "India — Tier 2", items: ["Jaipur", "Lucknow", "Chandigarh", "Kochi", "Indore", "Nagpur", "Coimbatore", "Gurgaon", "Noida"] },
-  { group: "International", items: ["Dubai, UAE", "Singapore", "London, UK", "New York, US", "Remote"] },
-  { group: "Broad", items: ["India", "United Arab Emirates", "United States", "United Kingdom"] },
+const COUNTRIES = [
+  "India", "United Arab Emirates", "United States", "United Kingdom",
+  "Singapore", "Australia", "Canada", "Germany", "Netherlands",
+  "Saudi Arabia", "Qatar", "Oman", "Bahrain", "Kuwait",
+  "Malaysia", "Hong Kong", "Japan", "South Korea",
+  "France", "Switzerland", "Ireland", "Sweden",
 ];
 
 const EXP_LEVELS = [
@@ -136,7 +137,7 @@ function LinkedInForm() {
   // Search
   const [keywords, setKeywords] = useState("");
   const [location, setLocation] = useState("India");
-  const [customLoc, setCustomLoc] = useState("");
+
 
   // Filters
   const [expLevel, setExpLevel] = useState<string[]>([]);
@@ -169,13 +170,12 @@ function LinkedInForm() {
     setCompanyInput("");
   };
 
-  const effectiveLocation = location === "__custom" ? customLoc : location;
-  const autoScheduleName = `${frequency === "daily" ? "Daily" : frequency === "weekly" ? "Weekly" : "Recurring"} ${keywords} in ${effectiveLocation}`;
+  const autoScheduleName = `${frequency === "daily" ? "Daily" : frequency === "weekly" ? "Weekly" : "Recurring"} ${keywords} in ${location}`;
 
   const buildConfig = () => ({
     search_keywords: keywords || undefined,
     job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
-    location: effectiveLocation,
+    location,
     date_posted: timePosted === "r86400" ? "24h" : timePosted === "r604800" ? "week" : timePosted === "r2592000" ? "month" : timePosted === "r3600" ? "1h" : "any",
     limit,
     experience_level: expLevel.length > 0 ? expLevel.join(",") : undefined,
@@ -314,22 +314,13 @@ function LinkedInForm() {
               <Input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="e.g. Data Analyst" className="text-sm h-9 mt-1" />
             </div>
             <div>
-              <Label className="text-xs">Location</Label>
-              <Select value={location} onValueChange={v => { setLocation(v); if (v !== "__custom") setCustomLoc(""); }}>
-                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue placeholder="Select location" /></SelectTrigger>
+              <Label className="text-xs">Country</Label>
+              <Select value={location} onValueChange={setLocation}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue placeholder="Select country" /></SelectTrigger>
                 <SelectContent>
-                  {LOCATIONS.map(g => (
-                    <div key={g.group}>
-                      <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground uppercase">{g.group}</div>
-                      {g.items.map(item => <SelectItem key={item} value={item}>{item}</SelectItem>)}
-                    </div>
-                  ))}
-                  <SelectItem value="__custom">Custom location...</SelectItem>
+                  {COUNTRIES.map(c => <SelectItem key={c} value={c}>{c}</SelectItem>)}
                 </SelectContent>
               </Select>
-              {location === "__custom" && (
-                <Input value={customLoc} onChange={e => setCustomLoc(e.target.value)} placeholder="Type location" className="text-sm h-8 mt-1.5" />
-              )}
             </div>
           </div>
         </div>
@@ -556,8 +547,25 @@ function GoogleJobsForm() {
                 <SelectItem value="IN">India</SelectItem>
                 <SelectItem value="AE">UAE</SelectItem>
                 <SelectItem value="US">United States</SelectItem>
-                <SelectItem value="UK">United Kingdom</SelectItem>
+                <SelectItem value="GB">United Kingdom</SelectItem>
                 <SelectItem value="SG">Singapore</SelectItem>
+                <SelectItem value="AU">Australia</SelectItem>
+                <SelectItem value="CA">Canada</SelectItem>
+                <SelectItem value="DE">Germany</SelectItem>
+                <SelectItem value="NL">Netherlands</SelectItem>
+                <SelectItem value="SA">Saudi Arabia</SelectItem>
+                <SelectItem value="QA">Qatar</SelectItem>
+                <SelectItem value="OM">Oman</SelectItem>
+                <SelectItem value="BH">Bahrain</SelectItem>
+                <SelectItem value="KW">Kuwait</SelectItem>
+                <SelectItem value="MY">Malaysia</SelectItem>
+                <SelectItem value="HK">Hong Kong</SelectItem>
+                <SelectItem value="JP">Japan</SelectItem>
+                <SelectItem value="KR">South Korea</SelectItem>
+                <SelectItem value="FR">France</SelectItem>
+                <SelectItem value="CH">Switzerland</SelectItem>
+                <SelectItem value="IE">Ireland</SelectItem>
+                <SelectItem value="SE">Sweden</SelectItem>
               </SelectContent>
             </Select>
           </div>
