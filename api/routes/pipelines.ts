@@ -48,64 +48,65 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         "past_month": "r2592000", "past month": "r2592000",
       };
 
-      // Build keywords: if job_role_ids provided, expand to synonym OR queries
-      let keywords = config?.search_keywords || config?.keywords || "software engineer";
+      // Build common Apify filters from config
+      const commonInput: Record<string, any> = {
+        location: config?.location || "India",
+        maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
+      };
+      if (config?.date_posted && timePostedMap[config.date_posted]) {
+        commonInput.timePosted = timePostedMap[config.date_posted];
+      }
+      if (config?.experience_level) {
+        commonInput.experienceLevel = config.experience_level.split(",").filter(Boolean);
+      }
+      if (config?.work_type) {
+        commonInput.workType = config.work_type.split(",").filter(Boolean);
+      }
+      if (config?.work_location) {
+        commonInput.workLocation = config.work_location.split(",").filter(Boolean);
+      }
+      if (config?.industry_ids) {
+        commonInput.industryIds = config.industry_ids.split(",").filter(Boolean);
+      }
+      if (config?.company_names) {
+        commonInput.companyNames = config.company_names.split(",").filter(Boolean);
+      }
+      if (config?.fetch_description !== undefined) {
+        commonInput.fetchDescription = !!config.fetch_description;
+      }
+      if (config?.easy_apply_only) {
+        commonInput.easyApplyOnly = true;
+      }
+      if (config?.sort_by) {
+        commonInput.sortBy = config.sort_by;
+      }
+
+      // Build keyword queries: one Apify run per role, or single run for free-text
       const jobRoleIds = config?.job_role_ids as string[] | undefined;
-      let jobRoleMeta: { id: string; name: string }[] = [];
+      let runs: { keywords: string; roleId?: string; roleName?: string }[] = [];
+
       if (jobRoleIds && jobRoleIds.length > 0) {
         const { data: roles } = await supabase
           .from("job_roles")
           .select("id, name, synonyms")
           .in("id", jobRoleIds);
         if (roles && roles.length > 0) {
-          // Combine all synonyms with OR for a single run
-          const allSynonyms = roles.flatMap(r => (r.synonyms as string[]) || []);
-          keywords = allSynonyms.map(s => `"${s}"`).join(" OR ");
-          jobRoleMeta = roles.map(r => ({ id: r.id, name: r.name }));
+          // One run per role — each role's synonyms combined with OR (~200 chars, well within 1000 limit)
+          runs = roles.map(r => ({
+            keywords: ((r.synonyms as string[]) || []).map(s => `"${s}"`).join(" OR "),
+            roleId: r.id,
+            roleName: r.name,
+          }));
         }
       }
+      // Fallback: free-text keywords as single run
+      if (runs.length === 0) {
+        runs = [{ keywords: config?.search_keywords || config?.keywords || "software engineer" }];
+      }
 
-      const actorInput: Record<string, any> = {
-        keywords,
-        location: config?.location || "India",
-        maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
-      };
-      // Time filter
-      if (config?.date_posted && timePostedMap[config.date_posted]) {
-        actorInput.timePosted = timePostedMap[config.date_posted];
-      }
-      // Experience level (array of strings: "1"-"6")
-      if (config?.experience_level) {
-        actorInput.experienceLevel = config.experience_level.split(",").filter(Boolean);
-      }
-      // Work type (array of strings: "1"-"6")
-      if (config?.work_type) {
-        actorInput.workType = config.work_type.split(",").filter(Boolean);
-      }
-      // Work location (array: "1" on-site, "2" remote, "3" hybrid)
-      if (config?.work_location) {
-        actorInput.workLocation = config.work_location.split(",").filter(Boolean);
-      }
-      // Industry IDs (array of strings)
-      if (config?.industry_ids) {
-        actorInput.industryIds = config.industry_ids.split(",").filter(Boolean);
-      }
-      // Company names (array)
-      if (config?.company_names) {
-        actorInput.companyNames = config.company_names.split(",").filter(Boolean);
-      }
-      // Fetch full job descriptions
-      if (config?.fetch_description !== undefined) {
-        actorInput.fetchDescription = !!config.fetch_description;
-      }
-      // Easy apply filter
-      if (config?.easy_apply_only) {
-        actorInput.easyApplyOnly = true;
-      }
-      // Sort: "R" relevance or "DD" date
-      if (config?.sort_by) {
-        actorInput.sortBy = config.sort_by;
-      }
+      // Launch first run (primary — tracked in pipeline_runs)
+      const firstRun = runs[0];
+      const actorInput = { ...commonInput, keywords: firstRun.keywords };
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
@@ -117,9 +118,31 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       const apifyData = await startRes.json();
       providerRunId = apifyData.data?.id;
       providerDatasetId = apifyData.data?.defaultDatasetId;
-      // Store role metadata in config for later tagging
-      if (jobRoleMeta.length > 0) {
-        config._job_roles = jobRoleMeta;
+
+      // Launch additional runs for remaining roles (fire-and-forget, tracked in config)
+      const additionalRuns: { roleId?: string; roleName?: string; runId?: string; datasetId?: string }[] = [];
+      if (runs.length > 1) {
+        for (const run of runs.slice(1)) {
+          try {
+            const res2 = await fetch(
+              `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
+              { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...commonInput, keywords: run.keywords }) }
+            );
+            if (res2.ok) {
+              const d = await res2.json();
+              additionalRuns.push({ roleId: run.roleId, roleName: run.roleName, runId: d.data?.id, datasetId: d.data?.defaultDatasetId });
+            }
+          } catch (e) { /* continue with other roles */ }
+        }
+      }
+
+      // Store all role metadata in config for later result processing
+      config._job_roles = runs.map((r, i) => ({
+        id: r.roleId, name: r.roleName,
+        ...(i === 0 ? { runId: providerRunId, datasetId: providerDatasetId } : additionalRuns[i - 1] || {}),
+      }));
+      if (additionalRuns.length > 0) {
+        config._additional_runs = additionalRuns;
       }
     }
 
