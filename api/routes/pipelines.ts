@@ -724,7 +724,16 @@ async function executeGoogleJobs(runId: string, config: any) {
     queries = queries.slice(0, MAX_QUERIES);
   }
 
-  const country = (config.country || "in").toLowerCase();
+  const countryCode = (config.country || "in").toUpperCase();
+  const COUNTRY_NAMES: Record<string, string> = {
+    IN: "india", AE: "united arab emirates", US: "usa", GB: "united kingdom",
+    SG: "singapore", AU: "australia", CA: "canada", DE: "germany",
+    NL: "netherlands", SA: "saudi arabia", QA: "qatar", OM: "oman",
+    BH: "bahrain", KW: "kuwait", MY: "malaysia", HK: "hong kong",
+    JP: "japan", KR: "south korea", FR: "france", CH: "switzerland",
+    IE: "ireland", SE: "sweden",
+  };
+  const countryName = COUNTRY_NAMES[countryCode] || countryCode.toLowerCase();
   const datePosted = config.date_posted && config.date_posted !== "all" ? config.date_posted : "month";
 
   await supabase.from("pipeline_runs").update({
@@ -743,7 +752,7 @@ async function executeGoogleJobs(runId: string, config: any) {
   const launchPromises = queries.map(async (query) => {
     try {
       const actorInput: Record<string, any> = {
-        countryName: country,
+        countryName: countryName,
         includeKeyword: query,
         datePosted,
         pagesToFetch: 2,
@@ -832,7 +841,7 @@ async function executeGoogleJobs(runId: string, config: any) {
               location_raw: item.location || null,
               location_city: locParts[0] || null,
               location_state: locParts[1] || null,
-              location_country: country.toUpperCase(),
+              location_country: countryCode,
               salary_text: item.salary !== "N/A" ? item.salary : null,
               application_url: item.URL || null,
               source_url: item.URL || null,
