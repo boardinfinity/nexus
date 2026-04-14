@@ -214,17 +214,16 @@ export default function Jobs() {
       <div className="overflow-x-auto">
         <DataTable
           columns={[
-            { header: "Title", accessor: "title" as keyof Job, className: "max-w-[250px] truncate font-medium" },
-            { header: "Company", accessor: "company_name" as keyof Job },
+            { header: "Title", accessor: "title" as keyof Job, className: "max-w-[220px] truncate font-medium" },
+            { header: "Company", accessor: (r: Job) => <span className="max-w-[120px] truncate block" title={r.company_name || ""}>{r.company_name || "—"}</span>, className: "max-w-[120px]" },
             { header: "Location", accessor: (r: Job) => {
               const loc = r.location_raw || (r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country) || "—";
-              return <span className="max-w-[150px] truncate block" title={loc}>{loc}</span>;
-            }},
-            { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} /> },
-            { header: "Posted", accessor: (r: Job) => r.posted_at ? new Date(r.posted_at).toLocaleDateString() : "—" },
-            { header: "Added", accessor: (r: Job) => r.created_at ? new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—" },
-            { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[11px]">{r.seniority_level}</Badge> : "—" },
-            { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} /> },
+              return <span className="max-w-[130px] truncate block" title={loc}>{loc}</span>;
+            }, className: "max-w-[130px]" },
+            { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} />, className: "w-[70px]" },
+            { header: "Added", accessor: (r: Job) => r.created_at ? <span className="whitespace-nowrap">{new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}<br/><span className="text-muted-foreground">{new Date(r.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span></span> : "—", className: "w-[75px]" },
+            { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[10px] whitespace-nowrap">{r.seniority_level}</Badge> : "—", className: "w-[85px]" },
+            { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} />, className: "w-[80px]" },
             { header: "Status", accessor: (r: Job) => {
               if (!r.job_status) return <span className="text-xs text-muted-foreground">—</span>;
               const colors: Record<string, string> = {
@@ -233,7 +232,7 @@ export default function Jobs() {
                 unknown: "text-gray-400",
               };
               return (
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-1 whitespace-nowrap">
                   <Circle className={`h-2 w-2 fill-current ${colors[r.job_status] || "text-gray-400"}`} />
                   <span className={`text-xs capitalize ${colors[r.job_status] || "text-gray-400"}`}>{r.job_status}</span>
                 </div>

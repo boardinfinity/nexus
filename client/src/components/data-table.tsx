@@ -40,7 +40,7 @@ export function DataTable<T extends { id?: string }>({
 
   return (
     <div className="rounded-md border">
-      <Table>
+      <Table className="text-xs">
         <TableHeader>
           <TableRow>
             {columns.map((col, i) => (
