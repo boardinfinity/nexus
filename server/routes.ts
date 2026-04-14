@@ -1,6 +1,7 @@
 import type { Express, Request, Response } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
+import { supabase } from "./supabase";
 import { runLinkedInJobsScraper } from "./providers/apify";
 import { searchGoogleJobs } from "./providers/rapidapi";
 import { log } from "./index";
@@ -337,6 +338,59 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== TAXONOMY ====================
+  app.get("/api/taxonomy/job-roles", async (_req: Request, res: Response) => {
+    try {
+      const { data, error } = await supabase
+        .from("job_roles")
+        .select("id, name, family, synonyms")
+        .order("family")
+        .order("name");
+
+      if (error) throw error;
+
+      const grouped: Record<string, typeof data> = {};
+      for (const role of data) {
+        if (!grouped[role.family]) grouped[role.family] = [];
+        grouped[role.family].push(role);
+      }
+
+      res.json({ families: grouped, total: data.length });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to get job roles";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  // ==================== ADMIN ====================
+  app.post("/api/admin/apply-migration-027", async (_req: Request, res: Response) => {
+    try {
+      const { JOB_ROLES } = await import("../scripts/apply-migration-027-data");
+
+      const batchSize = 20;
+      let inserted = 0;
+
+      for (let i = 0; i < JOB_ROLES.length; i += batchSize) {
+        const batch = JOB_ROLES.slice(i, i + batchSize);
+        const { error } = await supabase
+          .from("job_roles")
+          .upsert(batch, { onConflict: "name", ignoreDuplicates: true });
+
+        if (error) throw error;
+        inserted += batch.length;
+      }
+
+      const { count } = await supabase
+        .from("job_roles")
+        .select("*", { count: "exact", head: true });
+
+      res.json({ success: true, inserted, total: count });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to apply migration 027";
+      res.status(500).json({ message: msg });
+    }
+  });
+
   // ==================== PIPELINE STATS ====================
   app.get("/api/pipeline-stats", async (req: Request, res: Response) => {
     try {
@@ -397,6 +451,7 @@ async function executePipeline(
               employment_type: mapEmploymentType(raw.contractType as string | undefined),
               seniority_level: mapSeniorityLevel(raw.experienceLevel as string | undefined),
               enrichment_status: "pending",
+              job_role_id: (raw.job_role_id || null) as string | null,
               raw_data: raw,
             });
           } else {

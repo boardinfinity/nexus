@@ -8,8 +8,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
-import { Play, Loader2, CalendarClock, Link2, Globe, X } from "lucide-react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Checkbox } from "@/components/ui/checkbox";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Play, Loader2, CalendarClock, Link2, Globe, X, Search } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { RunHistory } from "./run-history";
 
@@ -91,14 +93,58 @@ function ChipSelect({ options, selected, onChange }: {
   );
 }
 
+// ── Job Role type ───────────────────────────────────────────────────────────
+
+interface JobRole {
+  id: string;
+  name: string;
+  family: string;
+  synonyms: string[];
+}
+
+const JOB_FAMILIES = ["Management", "Technology", "Core Engineering", "Others"] as const;
+
 // ── Main LinkedIn form ───────────────────────────────────────────────────────
 
 function LinkedInForm() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
+  // Job Roles taxonomy
+  const { data: taxonomyData } = useQuery<{ families: Record<string, JobRole[]>; total: number }>({
+    queryKey: ["/api/taxonomy/job-roles"],
+    queryFn: async () => {
+      const res = await authFetch("/api/taxonomy/job-roles");
+      if (!res.ok) throw new Error("Failed to fetch job roles");
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+  const [selectedFamily, setSelectedFamily] = useState<string>("all");
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
+  const [roleSearch, setRoleSearch] = useState("");
+
+  const allRoles: JobRole[] = taxonomyData
+    ? Object.values(taxonomyData.families).flat()
+    : [];
+
+  const filteredRoles = allRoles.filter(r => {
+    if (selectedFamily !== "all" && r.family !== selectedFamily) return false;
+    if (roleSearch && !r.name.toLowerCase().includes(roleSearch.toLowerCase())) return false;
+    return true;
+  });
+
+  const selectedRoles = allRoles.filter(r => selectedRoleIds.includes(r.id));
+  const allSynonyms = selectedRoles.flatMap(r => r.synonyms);
+
+  const toggleRole = (id: string) => {
+    setSelectedRoleIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  };
+
   // Search
-  const [keywords, setKeywords] = useState("Software Engineer");
+  const [keywords, setKeywords] = useState("");
   const [location, setLocation] = useState("India");
   const [customLoc, setCustomLoc] = useState("");
 
@@ -137,7 +183,8 @@ function LinkedInForm() {
   const autoScheduleName = `${frequency === "daily" ? "Daily" : frequency === "weekly" ? "Weekly" : "Recurring"} ${keywords} in ${effectiveLocation}`;
 
   const buildConfig = () => ({
-    search_keywords: keywords,
+    search_keywords: keywords || undefined,
+    job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
     location: effectiveLocation,
     date_posted: timePosted === "r86400" ? "24h" : timePosted === "r604800" ? "week" : timePosted === "r2592000" ? "month" : timePosted === "r3600" ? "1h" : "any",
     limit,
@@ -194,12 +241,86 @@ function LinkedInForm() {
       </CardHeader>
       <CardContent className="space-y-5">
 
-        {/* ── SEARCH ───────────────────────────────────────── */}
+        {/* ── JOB ROLES ─────────────────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Job Roles</p>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Job Family</Label>
+                <Select value={selectedFamily} onValueChange={setSelectedFamily}>
+                  <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Families</SelectItem>
+                    {JOB_FAMILIES.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Search Roles</Label>
+                <div className="relative mt-1">
+                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <Input value={roleSearch} onChange={e => setRoleSearch(e.target.value)} placeholder="Filter roles..." className="text-sm h-9 pl-8" />
+                </div>
+              </div>
+            </div>
+            <ScrollArea className="h-40 rounded-md border p-2">
+              {filteredRoles.length === 0 ? (
+                <p className="text-xs text-muted-foreground py-4 text-center">
+                  {taxonomyData ? "No roles match your filter" : "Loading roles..."}
+                </p>
+              ) : (
+                <div className="space-y-1">
+                  {filteredRoles.map(role => (
+                    <label key={role.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer">
+                      <Checkbox
+                        checked={selectedRoleIds.includes(role.id)}
+                        onCheckedChange={() => toggleRole(role.id)}
+                      />
+                      <span className="text-xs">{role.name}</span>
+                      <span className="text-[10px] text-muted-foreground ml-auto">{role.family}</span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </ScrollArea>
+            {selectedRoles.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <Label className="text-xs">Selected ({selectedRoles.length})</Label>
+                  <button type="button" onClick={() => setSelectedRoleIds([])} className="text-[10px] text-muted-foreground hover:text-foreground">Clear all</button>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {selectedRoles.map(r => (
+                    <Badge key={r.id} variant="secondary" className="text-[10px] pr-1">
+                      {r.name}
+                      <button onClick={() => toggleRole(r.id)} className="ml-1 hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
+                    </Badge>
+                  ))}
+                </div>
+              </div>
+            )}
+            {allSynonyms.length > 0 && (
+              <div>
+                <Label className="text-xs mb-1 block">Synonym Preview ({allSynonyms.length} search terms)</Label>
+                <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto rounded-md border p-2 bg-muted/30">
+                  {allSynonyms.map((s, i) => (
+                    <span key={i} className="px-1.5 py-0.5 rounded bg-background border text-[10px] text-muted-foreground">{s}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── SEARCH (keywords fallback) ─────────────────────── */}
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search</p>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <Label className="text-xs">Keywords *</Label>
+              <Label className="text-xs">Keywords {selectedRoleIds.length === 0 ? "*" : "(optional override)"}</Label>
               <Input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="e.g. Data Analyst" className="text-sm h-9 mt-1" />
             </div>
             <div>
@@ -371,7 +492,7 @@ function LinkedInForm() {
 
         {/* ── ACTIONS ──────────────────────────────────────── */}
         <div className="flex gap-3 pt-1">
-          <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || !keywords.trim()} className="flex-1 h-10">
+          <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || (!keywords.trim() && selectedRoleIds.length === 0)} className="flex-1 h-10">
             {runNow.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
             Run Now
           </Button>
