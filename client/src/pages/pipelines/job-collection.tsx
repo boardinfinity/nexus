@@ -104,12 +104,12 @@ function LinkedInForm() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // Job Roles taxonomy
-  const { data: taxonomyData } = useQuery<{ families: Record<string, JobRole[]>; total: number }>({
-    queryKey: ["/api/taxonomy/job-roles"],
+  // Job Roles — uses the same working endpoint as Masters page
+  const { data: allRoles = [], isLoading: rolesLoading, error: rolesError } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
     queryFn: async () => {
-      const res = await authFetch("/api/taxonomy/job-roles");
-      if (!res.ok) throw new Error("Failed to fetch job roles");
+      const res = await authFetch("/api/masters/job-roles");
+      if (!res.ok) throw new Error(`Failed to fetch job roles: ${res.status}`);
       return res.json();
     },
     staleTime: 5 * 60 * 1000,
@@ -117,10 +117,6 @@ function LinkedInForm() {
   const [selectedFamily, setSelectedFamily] = useState<string>("all");
   const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
   const [roleSearch, setRoleSearch] = useState("");
-
-  const allRoles: JobRole[] = taxonomyData
-    ? Object.values(taxonomyData.families).flat()
-    : [];
 
   const filteredRoles = allRoles.filter(r => {
     if (selectedFamily !== "all" && r.family !== selectedFamily) return false;
@@ -261,7 +257,7 @@ function LinkedInForm() {
             <ScrollArea className="h-40 rounded-md border p-2">
               {filteredRoles.length === 0 ? (
                 <p className="text-xs text-muted-foreground py-4 text-center">
-                  {taxonomyData ? "No roles match your filter" : "Loading roles..."}
+                  {rolesError ? `Error: ${(rolesError as Error).message}` : rolesLoading ? "Loading roles..." : "No roles match your filter"}
                 </p>
               ) : (
                 <div className="space-y-1">
