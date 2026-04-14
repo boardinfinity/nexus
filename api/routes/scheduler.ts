@@ -62,9 +62,13 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
 
     if (error || !run) throw new Error(error?.message || "Failed to create run");
 
-    // Delegate to executePipeline for ALL pipeline types — it handles
-    // role expansion, all Apify params, Google Jobs, LinkedIn, etc.
-    await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch(console.error);
+    // Execute pipeline synchronously — Vercel needs the function to stay alive
+    await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch((err) => {
+      console.error(`Schedule ${schedule.name} failed:`, err.message);
+      supabase.from("pipeline_runs").update({
+        status: "failed", error_message: err.message, completed_at: new Date().toISOString(),
+      }).eq("id", run.id);
+    });
 
     return { success: true, run_id: run.id };
   } catch (err: any) {
@@ -137,15 +141,20 @@ export async function handleSchedulerRoutes(
 
     if (schedErr) return res.status(500).json({ error: schedErr.message });
 
+    // Process max 3 schedules per tick to stay within Vercel 300s timeout.
+    // Remaining schedules stay due and will be picked up on the next tick.
+    const MAX_PER_TICK = 3;
+    const toProcess = (dueSchedules || []).slice(0, MAX_PER_TICK);
+
     const results: any[] = [];
-    for (const schedule of dueSchedules || []) {
+    for (const schedule of toProcess) {
       const result = await triggerSchedule(schedule);
 
-      // Update schedule: advance next_run_at, update stats
+      // Advance next_run_at immediately so it's not re-triggered next tick
       const nextRunAt = calculateNextRun(schedule.frequency, schedule.cron_expression);
       await supabase.from("pipeline_schedules").update({
         last_run_at: new Date().toISOString(),
-        last_run_status: result.success ? "completed" : "failed",
+        last_run_status: result.success ? "triggered" : "failed",
         total_runs: (schedule.total_runs || 0) + 1,
         next_run_at: nextRunAt,
       }).eq("id", schedule.id);
@@ -156,8 +165,20 @@ export async function handleSchedulerRoutes(
     // Auto-chain jd_enrichment if needed
     await checkAndChainEnrichment().catch(console.error);
 
+    // If there are more due schedules, self-trigger another tick after a delay
+    const remaining = (dueSchedules || []).length - toProcess.length;
+    if (remaining > 0) {
+      // Trigger another tick via fetch (fire-and-forget)
+      const selfUrl = `https://${req.headers.host}/api/scheduler/tick`;
+      fetch(selfUrl, {
+        method: "POST",
+        headers: { "x-cron-secret": process.env.CRON_SECRET || "", "Content-Type": "application/json" },
+      }).catch(() => {});
+    }
+
     return res.json({
       triggered: results.length,
+      remaining,
       timestamp: new Date().toISOString(),
       schedules: results,
     });
