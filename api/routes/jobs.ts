@@ -11,7 +11,7 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
 
     let query = supabase
       .from("jobs")
-      .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, posted_at, enrichment_status, job_status, status_checked_at, source_url, created_at", { count: "exact" });
+      .select("id, external_id, title, company_name, location_raw, location_city, location_country, source, seniority_level, employment_type, salary_min, salary_max, salary_currency, salary_text, posted_at, enrichment_status, job_status, status_checked_at, source_url, is_remote, job_publisher, apply_platforms, created_at", { count: "exact" });
 
     if (search) query = query.or(`title.ilike.%${search}%,company_name.ilike.%${search}%`);
     if (has_description === "true") query = query.not("description", "is", null);

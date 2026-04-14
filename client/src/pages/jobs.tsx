@@ -220,7 +220,12 @@ export default function Jobs() {
               const loc = r.location_raw || (r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country) || "—";
               return <span className="max-w-[130px] truncate block" title={loc}>{loc}</span>;
             }, className: "max-w-[130px]" },
-            { header: "Source", accessor: (r: Job) => <StatusBadge status={r.source} />, className: "w-[70px]" },
+            { header: "Source", accessor: (r: Job) => (
+              <div className="flex flex-col gap-0.5">
+                <StatusBadge status={r.source} />
+                {r.job_publisher && <span className="text-[9px] text-muted-foreground truncate max-w-[80px]" title={r.job_publisher}>{r.job_publisher}</span>}
+              </div>
+            ), className: "w-[85px]" },
             { header: "Added", accessor: (r: Job) => r.created_at ? <span className="whitespace-nowrap">{new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}<br/><span className="text-muted-foreground">{new Date(r.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span></span> : "—", className: "w-[75px]" },
             { header: "Seniority", accessor: (r: Job) => r.seniority_level ? <Badge variant="outline" className="text-[10px] whitespace-nowrap">{r.seniority_level}</Badge> : "—", className: "w-[85px]" },
             { header: "Enrichment", accessor: (r: Job) => <StatusBadge status={r.enrichment_status} />, className: "w-[80px]" },
@@ -312,12 +317,32 @@ export default function Jobs() {
                     <span className="text-muted-foreground">Enrichment</span>
                     <StatusBadge status={jobDetail?.enrichment_status || selectedJob?.enrichment_status || ""} />
                   </div>
-                  {jobDetail?.salary_min && (
+                  {jobDetail?.is_remote && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Remote</span>
+                      <Badge variant="outline" className="text-[10px] bg-blue-50 text-blue-700 border-blue-200">Remote</Badge>
+                    </div>
+                  )}
+                  {jobDetail?.job_publisher && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Publisher</span>
+                      <span>{jobDetail.job_publisher}</span>
+                    </div>
+                  )}
+                  {jobDetail?.apply_platforms && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Available On</span>
+                      <span className="text-right text-xs max-w-[200px]">{jobDetail.apply_platforms}</span>
+                    </div>
+                  )}
+                  {(jobDetail?.salary_text || jobDetail?.salary_min) && (
                     <div className="flex justify-between">
                       <span className="text-muted-foreground">Salary</span>
                       <span>
-                        {jobDetail.salary_currency} {jobDetail.salary_min?.toLocaleString()}
-                        {jobDetail.salary_max ? ` - ${jobDetail.salary_max.toLocaleString()}` : ""}
+                        {jobDetail.salary_text || (
+                          <>{jobDetail.salary_currency} {jobDetail.salary_min?.toLocaleString()}
+                          {jobDetail.salary_max ? ` - ${jobDetail.salary_max.toLocaleString()}` : ""}
+                          {jobDetail.salary_unit ? ` / ${jobDetail.salary_unit}` : ""}</>)}
                       </span>
                     </div>
                   )}
@@ -329,8 +354,60 @@ export default function Jobs() {
                       </a>
                     </div>
                   )}
+                  {jobDetail?.application_url && jobDetail.application_url !== jobDetail.source_url && (
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Apply</span>
+                      <a href={jobDetail.application_url} target="_blank" rel="noreferrer" className="text-primary truncate max-w-[200px]">
+                        Apply Link
+                      </a>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
+
+              {/* Qualifications */}
+              {jobDetail?.qualifications && jobDetail.qualifications.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase">Qualifications</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="text-sm space-y-1 list-disc list-inside">
+                      {jobDetail.qualifications.map((q: string, i: number) => <li key={i}>{q}</li>)}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Responsibilities */}
+              {jobDetail?.responsibilities && jobDetail.responsibilities.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase">Responsibilities</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ul className="text-sm space-y-1 list-disc list-inside">
+                      {jobDetail.responsibilities.map((r: string, i: number) => <li key={i}>{r}</li>)}
+                    </ul>
+                  </CardContent>
+                </Card>
+              )}
+
+              {/* Benefits */}
+              {jobDetail?.benefits && jobDetail.benefits.length > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase">Benefits</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-1.5">
+                      {jobDetail.benefits.map((b: string, i: number) => (
+                        <Badge key={i} variant="secondary" className="text-xs">{b}</Badge>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              )}
 
               {/* Job Description */}
               <Card>
