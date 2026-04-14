@@ -70,8 +70,41 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         location: config?.location || "India",
         maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
       };
+      // Time filter
       if (config?.date_posted && timePostedMap[config.date_posted]) {
         actorInput.timePosted = timePostedMap[config.date_posted];
+      }
+      // Experience level (array of strings: "1"-"6")
+      if (config?.experience_level) {
+        actorInput.experienceLevel = config.experience_level.split(",").filter(Boolean);
+      }
+      // Work type (array of strings: "1"-"6")
+      if (config?.work_type) {
+        actorInput.workType = config.work_type.split(",").filter(Boolean);
+      }
+      // Work location (array: "1" on-site, "2" remote, "3" hybrid)
+      if (config?.work_location) {
+        actorInput.workLocation = config.work_location.split(",").filter(Boolean);
+      }
+      // Industry IDs (array of strings)
+      if (config?.industry_ids) {
+        actorInput.industryIds = config.industry_ids.split(",").filter(Boolean);
+      }
+      // Company names (array)
+      if (config?.company_names) {
+        actorInput.companyNames = config.company_names.split(",").filter(Boolean);
+      }
+      // Fetch full job descriptions
+      if (config?.fetch_description !== undefined) {
+        actorInput.fetchDescription = !!config.fetch_description;
+      }
+      // Easy apply filter
+      if (config?.easy_apply_only) {
+        actorInput.easyApplyOnly = true;
+      }
+      // Sort: "R" relevance or "DD" date
+      if (config?.sort_by) {
+        actorInput.sortBy = config.sort_by;
       }
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,

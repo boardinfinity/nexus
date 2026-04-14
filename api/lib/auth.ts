@@ -21,7 +21,7 @@ export interface AuthResult {
 export const ALL_SECTIONS = [
   "dashboard", "jobs", "companies", "people", "upload", "pipelines",
   "schedules", "taxonomy", "jd_analyzer", "data_quality", "surveys",
-  "colleges", "reports", "placeintel", "settings", "users",
+  "colleges", "reports", "placeintel", "masters", "settings", "users",
 ] as const;
 
 export const ROLE_DEFAULTS: Record<string, Record<string, string>> = {

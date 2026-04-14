@@ -233,7 +233,8 @@ function LinkedInForm() {
 
         {/* ── JOB ROLES ─────────────────────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Job Roles</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Job Roles</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Select roles to search — synonyms are auto-expanded into LinkedIn search queries</p>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
               <div>
@@ -307,7 +308,8 @@ function LinkedInForm() {
 
         {/* ── SEARCH (keywords fallback) ─────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Search</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Free-text keywords override — used if no roles selected, or combined with roles</p>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs">Keywords {selectedRoleIds.length === 0 ? "*" : "(optional override)"}</Label>
@@ -329,7 +331,8 @@ function LinkedInForm() {
 
         {/* ── FILTERS ──────────────────────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Filters</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Filters</p>
+          <p className="text-[10px] text-muted-foreground mb-2">LinkedIn native filters — applied server-side to narrow search results</p>
           <div className="space-y-3">
             <div>
               <Label className="text-xs mb-1.5 block">Experience Level</Label>
@@ -354,7 +357,8 @@ function LinkedInForm() {
 
         {/* ── COMPANY ──────────────────────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Company Filter</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Company Filter</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Restrict results to specific companies — LinkedIn resolves names to company IDs</p>
           <div className="flex gap-2">
             <Input value={companyInput} onChange={e => setCompanyInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addCompany())}
@@ -379,7 +383,8 @@ function LinkedInForm() {
 
         {/* ── TIME & SORT ──────────────────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Time & Sort</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Time & Sort</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Control recency and ordering of results</p>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <Label className="text-xs">Time Posted</Label>
@@ -407,24 +412,26 @@ function LinkedInForm() {
 
         {/* ── OPTIONS ──────────────────────────────────────── */}
         <div>
-          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Options</p>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Options</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Controls for description fetching, job limits, and apply type</p>
           <div className="space-y-3">
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-xs">Fetch job descriptions</Label>
-                <p className="text-[10px] text-muted-foreground">+$0.001/job — recommended for JD analysis</p>
+                <p className="text-[10px] text-muted-foreground">Fetches full JD text per job — required for skill extraction and JD analysis</p>
               </div>
               <Switch checked={fetchDesc} onCheckedChange={setFetchDesc} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <Label className="text-xs">Easy Apply only</Label>
-                <p className="text-[10px] text-muted-foreground">LinkedIn Easy Apply positions only</p>
+                <p className="text-[10px] text-muted-foreground">Restrict to jobs with LinkedIn's one-click apply — usually a smaller subset</p>
               </div>
               <Switch checked={easyApply} onCheckedChange={setEasyApply} />
             </div>
             <div>
-              <Label className="text-xs mb-1.5 block">Job Limit</Label>
+              <Label className="text-xs mb-0.5 block">Job Limit</Label>
+              <p className="text-[10px] text-muted-foreground mb-1.5">Max jobs to collect per run — LinkedIn returns ~10 jobs/page</p>
               <div className="flex gap-1.5 items-center">
                 {LIMIT_PRESETS.map(n => (
                   <button key={n} type="button" onClick={() => { setLimit(n); setCustomLimit(""); }}
