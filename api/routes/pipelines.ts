@@ -708,7 +708,7 @@ async function executeGoogleJobs(runId: string, config: any) {
     if (roles && roles.length > 0) {
       for (const role of roles) {
         const synonyms = (role.synonyms as string[]) || [role.name];
-        queries.push(...synonyms.map(s => `"${s}"`));
+        queries.push(...synonyms);
       }
     }
   }
@@ -718,49 +718,41 @@ async function executeGoogleJobs(runId: string, config: any) {
   }
   if (!queries.length) queries = [config.query || "software engineer"];
 
-  // Cap at 20 queries to stay within Vercel 300s timeout (~12s per query)
+  // Cap at 20 queries to stay within Vercel 300s timeout
   const MAX_QUERIES = 20;
-  if (queries.length > MAX_QUERIES) {
-    queries = queries.slice(0, MAX_QUERIES);
-  }
+  if (queries.length > MAX_QUERIES) queries = queries.slice(0, MAX_QUERIES);
 
-  const countryCode = (config.country || "in").toUpperCase();
-  const COUNTRY_NAMES: Record<string, string> = {
-    IN: "india", AE: "united arab emirates", US: "usa", GB: "united kingdom",
-    SG: "singapore", AU: "australia", CA: "canada", DE: "germany",
-    NL: "netherlands", SA: "saudi arabia", QA: "qatar", OM: "oman",
-    BH: "bahrain", KW: "kuwait", MY: "malaysia", HK: "hong kong",
-    JP: "japan", KR: "south korea", FR: "france", CH: "switzerland",
-    IE: "ireland", SE: "sweden",
+  // Country mapping for igview-owner actor (uses ISO codes)
+  const countryCode = (config.country || "in").toLowerCase();
+  const COUNTRY_FULL: Record<string, string> = {
+    in: "India", ae: "United Arab Emirates", us: "United States", gb: "United Kingdom",
+    sg: "Singapore", au: "Australia", ca: "Canada", de: "Germany",
+    nl: "Netherlands", sa: "Saudi Arabia", qa: "Qatar", om: "Oman",
+    bh: "Bahrain", kw: "Kuwait", my: "Malaysia", hk: "Hong Kong",
+    jp: "Japan", kr: "South Korea", fr: "France", ch: "Switzerland",
+    ie: "Ireland", se: "Sweden",
   };
-  const countryName = COUNTRY_NAMES[countryCode] || countryCode.toLowerCase();
+  const locationName = COUNTRY_FULL[countryCode] || config.country || "India";
   const datePosted = config.date_posted && config.date_posted !== "all" ? config.date_posted : "month";
 
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _capped: queries.length >= MAX_QUERIES, _provider: "apify", _actor: "orgupdate/google-jobs-scraper" },
+    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _provider: "apify", _actor: "igview-owner/google-jobs-scraper" },
   }).eq("id", runId);
 
-  let allProcessed = 0;
-  let allFailed = 0;
-  let allSkipped = 0;
-  let allTotal = 0;
+  let allProcessed = 0, allFailed = 0, allSkipped = 0, allTotal = 0;
 
-  // Launch ALL queries as Apify runs in parallel (fire-and-forget), then collect results
-  const apifyRuns: { query: string; runId?: string; datasetId?: string }[] = [];
-  
-  // Fire all runs in parallel (non-blocking)
+  // Fire ALL queries to Apify in parallel
   const launchPromises = queries.map(async (query) => {
     try {
       const actorInput: Record<string, any> = {
-        countryName: countryName,
-        includeKeyword: query,
-        datePosted,
-        pagesToFetch: 2,
+        query,
+        location: locationName,
+        country: countryCode,
+        maxResults: 10,
       };
-      if (config.employment_types) actorInput.jobType = config.employment_types;
 
       const startRes = await fetch(
-        `https://api.apify.com/v2/acts/orgupdate~google-jobs-scraper/runs?token=${APIFY_API_KEY}`,
+        `https://api.apify.com/v2/acts/igview-owner~google-jobs-scraper/runs?token=${APIFY_API_KEY}`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
       );
       if (startRes.ok) {
@@ -771,18 +763,16 @@ async function executeGoogleJobs(runId: string, config: any) {
     return { query };
   });
 
-  const launched = await Promise.all(launchPromises);
-  apifyRuns.push(...launched.filter(r => r.runId));
+  const apifyRuns = (await Promise.all(launchPromises)).filter(r => r.runId);
 
-  // Wait for all runs to complete (poll in batches)
-  const MAX_WAIT = 240000; // 4 minutes max wait
+  // Poll all runs until done (max 4 minutes)
+  const MAX_WAIT = 240000;
   const startTime = Date.now();
   
   while (Date.now() - startTime < MAX_WAIT) {
-    // Check which runs are done
     let allDone = true;
     for (const run of apifyRuns) {
-      if (!run.runId || (run as any)._done) continue;
+      if ((run as any)._done) continue;
       try {
         const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${run.runId}?token=${APIFY_API_KEY}`);
         const pollData = await pollRes.json();
@@ -790,9 +780,7 @@ async function executeGoogleJobs(runId: string, config: any) {
         if (status === "SUCCEEDED" || status === "FAILED" || status === "ABORTED") {
           (run as any)._done = true;
           (run as any)._status = status;
-        } else {
-          allDone = false;
-        }
+        } else { allDone = false; }
       } catch { allDone = false; }
     }
     if (allDone) break;
@@ -811,41 +799,49 @@ async function executeGoogleJobs(runId: string, config: any) {
 
         for (const item of items) {
           try {
-            const titleClean = (item.job_title || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-            const companyClean = (item.company_name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
-            const externalId = `gj-${titleClean}-${companyClean}`.substring(0, 200);
+            const externalId = item.jobId || `gj-${(item.jobTitle||"").replace(/[^a-z0-9]/gi,"").substring(0,60)}-${(item.employerName||"").replace(/[^a-z0-9]/gi,"").substring(0,40)}`;
 
             const { data: existing } = await supabase.from("jobs").select("id")
               .eq("external_id", externalId).eq("source", "google_jobs").maybeSingle();
             if (existing) { allSkipped++; continue; }
 
             let companyId = null;
-            if (item.company_name) {
-              companyId = await upsertCompanyByName(item.company_name, null, null);
+            if (item.employerName) {
+              companyId = await upsertCompanyByName(item.employerName, item.employerWebsite, item.employerLogo);
             }
 
-            const desc = item.description || null;
-            const titleNorm = normalizeText(item.job_title || "");
-            const companyNorm = normalizeText(item.company_name || "");
-            const locParts = (item.location || "").split(",").map((s: string) => s.trim());
+            const desc = item.jobDescription || null;
+            const titleNorm = normalizeText(item.jobTitle || "");
+            const companyNorm = normalizeText(item.employerName || "");
 
             await supabase.from("jobs").insert({
               external_id: externalId,
               source: "google_jobs",
-              title: item.job_title || "Unknown",
+              title: item.jobTitle || "Unknown",
               title_normalized: titleNorm || null,
               company_name_normalized: companyNorm || null,
               description: desc,
               company_id: companyId,
-              company_name: item.company_name || null,
-              location_raw: item.location || null,
-              location_city: locParts[0] || null,
-              location_state: locParts[1] || null,
-              location_country: countryCode,
-              salary_text: item.salary !== "N/A" ? item.salary : null,
-              application_url: item.URL || null,
-              source_url: item.URL || null,
-              job_publisher: item.posted_via || null,
+              company_name: item.employerName || null,
+              location_raw: item.jobLocation || [item.jobCity, item.jobState, item.jobCountry].filter(Boolean).join(", "),
+              location_city: item.jobCity || null,
+              location_state: item.jobState || null,
+              location_country: (item.jobCountry || countryCode).toUpperCase(),
+              employment_type: mapEmploymentTypeExtended(item.employmentType),
+              seniority_level: item.jobOnetJobZone ? mapOnetJobZone(item.jobOnetJobZone) : null,
+              salary_min: item.minSalary || null,
+              salary_max: item.maxSalary || null,
+              salary_unit: item.salaryPeriod || null,
+              salary_text: item.salary || null,
+              posted_at: item.jobPostedAtDatetime || null,
+              application_url: item.jobApplyLink || null,
+              source_url: item.jobGoogleLink || null,
+              is_remote: item.isRemote || null,
+              job_publisher: item.jobPublisher || null,
+              apply_platforms: item.applyPlatforms || null,
+              qualifications: item.qualifications || null,
+              responsibilities: item.responsibilities || null,
+              benefits: item.benefitsList || item.benefits || null,
               enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
               raw_data: { ...item, search_query: run.query },
             });
