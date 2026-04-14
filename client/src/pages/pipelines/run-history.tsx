@@ -11,7 +11,7 @@ interface RunHistoryProps {
 
 export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }: RunHistoryProps) {
   const { data, isLoading } = useQuery<any>({
-    queryKey: ["/api/pipelines/runs", pipelineTypes?.join(",")],
+    queryKey: ["/api/pipelines"],
   });
 
   const runs = (data?.data || data || [])

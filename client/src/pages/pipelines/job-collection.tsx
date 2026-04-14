@@ -196,7 +196,7 @@ function LinkedInForm() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    onSuccess: () => { toast({ title: "LinkedIn scraper started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines/runs"] }); },
+    onSuccess: () => { toast({ title: "LinkedIn scraper started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines"] }); },
     onError: (e: any) => toast({ title: "Failed to start", description: e.message, variant: "destructive" }),
   });
 
@@ -526,7 +526,7 @@ function GoogleJobsForm() {
       if (!res.ok) throw new Error(await res.text());
       return res.json();
     },
-    onSuccess: () => { toast({ title: "Google Jobs search started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines/runs"] }); },
+    onSuccess: () => { toast({ title: "Google Jobs search started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines"] }); },
     onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
