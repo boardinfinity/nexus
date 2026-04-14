@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
@@ -313,13 +313,14 @@ function RoleDialog({
   const [family, setFamily] = useState(initial?.family || "");
   const [synonymsText, setSynonymsText] = useState(initial?.synonyms?.join("\n") || "");
 
-  // Reset form when dialog opens with new initial values
+  // Sync state whenever initial data changes (e.g. switching between edit targets)
+  useEffect(() => {
+    setName(initial?.name || "");
+    setFamily(initial?.family || "");
+    setSynonymsText(initial?.synonyms?.join("\n") || "");
+  }, [initial?.name, initial?.family, initial?.synonyms]);
+
   const handleOpenChange = (open: boolean) => {
-    if (open) {
-      setName(initial?.name || "");
-      setFamily(initial?.family || "");
-      setSynonymsText(initial?.synonyms?.join("\n") || "");
-    }
     onOpenChange(open);
   };
 
