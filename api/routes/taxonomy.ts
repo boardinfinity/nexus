@@ -139,6 +139,22 @@ export async function handleTaxonomyRoutes(
 ): Promise<VercelResponse | undefined> {
   if (!requireReader(auth, "taxonomy", res)) return;
 
+  // ── GET /taxonomy/job-roles — returns all roles grouped by family ──
+  if (path === "/taxonomy/job-roles" && req.method === "GET") {
+    const { data, error } = await supabase
+      .from("job_roles")
+      .select("id, name, family, synonyms")
+      .order("family")
+      .order("name");
+    if (error) return res.status(500).json({ error: error.message });
+    const grouped: Record<string, typeof data> = {};
+    for (const role of data || []) {
+      if (!grouped[role.family]) grouped[role.family] = [];
+      grouped[role.family].push(role);
+    }
+    return res.json({ families: grouped, total: (data || []).length });
+  }
+
   if (path === "/taxonomy" && req.method === "GET") {
     const { category, source, search, page = "1", limit = "50", sort = "name", order = "asc" } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);

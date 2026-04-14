@@ -47,8 +47,26 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         "past_week": "r604800", "past week": "r604800",
         "past_month": "r2592000", "past month": "r2592000",
       };
+
+      // Build keywords: if job_role_ids provided, expand to synonym OR queries
+      let keywords = config?.search_keywords || config?.keywords || "software engineer";
+      const jobRoleIds = config?.job_role_ids as string[] | undefined;
+      let jobRoleMeta: { id: string; name: string }[] = [];
+      if (jobRoleIds && jobRoleIds.length > 0) {
+        const { data: roles } = await supabase
+          .from("job_roles")
+          .select("id, name, synonyms")
+          .in("id", jobRoleIds);
+        if (roles && roles.length > 0) {
+          // Combine all synonyms with OR for a single run
+          const allSynonyms = roles.flatMap(r => (r.synonyms as string[]) || []);
+          keywords = allSynonyms.map(s => `"${s}"`).join(" OR ");
+          jobRoleMeta = roles.map(r => ({ id: r.id, name: r.name }));
+        }
+      }
+
       const actorInput: Record<string, any> = {
-        keywords: config?.search_keywords || config?.keywords || "software engineer",
+        keywords,
         location: config?.location || "India",
         maxPages: Math.ceil((parseInt(config?.limit) || 100) / 10),
       };
@@ -66,6 +84,10 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       const apifyData = await startRes.json();
       providerRunId = apifyData.data?.id;
       providerDatasetId = apifyData.data?.defaultDatasetId;
+      // Store role metadata in config for later tagging
+      if (jobRoleMeta.length > 0) {
+        config._job_roles = jobRoleMeta;
+      }
     }
 
     // Alumni pipeline: Apify LinkedIn profile search by university

@@ -23,6 +23,7 @@ import { handleScheduleRoutes, calculateNextRun } from "./routes/schedules";
 import { handleReportRoutes } from "./routes/reports";
 import { handleCollegeRoutes } from "./routes/colleges";
 import { handleBucketTestRoutes } from "./routes/bucket-test";
+import { handleMastersRoutes } from "./routes/masters";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -252,6 +253,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleReportRoutes(path, req, res, auth);
     } else if (path.startsWith("/college") || path.startsWith("/colleges")) {
       result = await handleCollegeRoutes(path, req, res, auth);
+    } else if (path.startsWith("/masters")) {
+      result = await handleMastersRoutes(path, req, res, auth);
     } else if (path.startsWith("/admin/bucket-test")) {
       result = await handleBucketTestRoutes(path, req, res, auth);
     } else if (path === "/admin/test-claude") {
