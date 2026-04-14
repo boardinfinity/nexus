@@ -157,10 +157,16 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
           .from("colleges")
           .select("id, name, short_name, linkedin_slug")
           .in("id", config.college_ids);
-        schoolUrls = (colleges || []).map((c: any) => c.linkedin_slug).filter(Boolean);
+        schoolUrls = (colleges || [])
+          .map((c: any) => c.linkedin_slug)
+          .filter(Boolean)
+          .map((slug: string) => slug.startsWith("http") ? slug : `https://www.linkedin.com/school/${slug}/`);
         config._colleges = colleges; // store for traceability
       } else if (config?.university_slug) {
-        schoolUrls = config.university_slug.split(",").map((s: string) => s.trim());
+        schoolUrls = config.university_slug.split(",").map((s: string) => {
+          const slug = s.trim();
+          return slug.startsWith("http") ? slug : `https://www.linkedin.com/school/${slug}/`;
+        });
       }
       if (schoolUrls.length === 0) {
         return res.status(400).json({ error: "No valid school URLs found. Select colleges or provide university slugs." });
@@ -176,6 +182,12 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       if (config?.search_query) actorInput.searchQuery = config.search_query;
       if (config?.current_job_titles?.length) actorInput.currentJobTitles = config.current_job_titles;
       if (config?.past_job_titles?.length) actorInput.pastJobTitles = config.past_job_titles;
+
+      // The actor requires at least one text filter alongside schoolUrls.
+      // If none provided, default to a broad search.
+      if (!actorInput.searchQuery && !actorInput.currentJobTitles && !actorInput.pastJobTitles) {
+        actorInput.searchQuery = "alumni";
+      }
       if (config?.locations?.length) actorInput.locations = config.locations;
       if (config?.years_of_experience?.length) actorInput.yearsOfExperience = config.years_of_experience;
       if (config?.seniority_ids?.length) actorInput.seniorityLevelIds = config.seniority_ids;
