@@ -506,22 +506,62 @@ function LinkedInForm() {
 function GoogleJobsForm() {
   const qc = useQueryClient();
   const { toast } = useToast();
-  const [query, setQuery] = useState("Data Analyst in Mumbai");
+
+  // Job Roles (same taxonomy as LinkedIn)
+  const { data: gRoles = [], isLoading: gRolesLoading } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const [gSelectedFamily, setGSelectedFamily] = useState<string>("all");
+  const [gSelectedRoleIds, setGSelectedRoleIds] = useState<string[]>([]);
+  const [gRoleSearch, setGRoleSearch] = useState("");
+
+  const gFilteredRoles = gRoles.filter(r => {
+    if (gSelectedFamily !== "all" && r.family !== gSelectedFamily) return false;
+    if (gRoleSearch && !r.name.toLowerCase().includes(gRoleSearch.toLowerCase())) return false;
+    return true;
+  });
+  const gSelectedRoles = gRoles.filter(r => gSelectedRoleIds.includes(r.id));
+  const gAllSynonyms = gSelectedRoles.flatMap(r => r.synonyms);
+  const gToggleRole = (id: string) => setGSelectedRoleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  // Search & Filters
+  const [query, setQuery] = useState("");
   const [country, setCountry] = useState("IN");
   const [datePosted, setDatePosted] = useState("week");
   const [empTypes, setEmpTypes] = useState<string[]>(["FULLTIME"]);
   const [remoteOnly, setRemoteOnly] = useState(false);
   const [jobReqs, setJobReqs] = useState("");
   const [employer, setEmployer] = useState("");
+  const [excludePublishers, setExcludePublishers] = useState("");
   const [numPages, setNumPages] = useState("5");
+
+  const buildGoogleConfig = () => {
+    // Build queries: one per role (synonym expansion) or free text
+    let queries: string[] = [];
+    if (gSelectedRoleIds.length > 0) {
+      queries = gSelectedRoles.map(r => r.synonyms.map(s => `"${s}"`).join(" OR "));
+    }
+    if (query.trim()) queries.push(query.trim());
+    if (queries.length === 0) queries = ["software engineer"];
+    return {
+      queries,
+      job_role_ids: gSelectedRoleIds.length > 0 ? gSelectedRoleIds : undefined,
+      country,
+      date_posted: datePosted,
+      employment_types: empTypes.join(",") || undefined,
+      remote_only: remoteOnly || undefined,
+      job_requirements: jobReqs && jobReqs !== "any" ? jobReqs : undefined,
+      employer_name: employer || undefined,
+      exclude_job_publishers: excludePublishers || undefined,
+      num_pages: parseInt(numPages) || 5,
+    };
+  };
 
   const run = useMutation({
     mutationFn: async () => {
       const res = await authFetch("/api/pipelines/run", {
-        method: "POST", body: JSON.stringify({
-          pipeline_type: "google_jobs",
-          config: { queries: [query], country, date_posted: datePosted, employment_types: empTypes.join(",") || undefined, remote_only: remoteOnly || undefined, job_requirements: jobReqs || undefined, employer_name: employer || undefined, num_pages: parseInt(numPages) || 5 },
-        }),
+        method: "POST", body: JSON.stringify({ pipeline_type: "google_jobs", config: buildGoogleConfig() }),
       });
       if (!res.ok) throw new Error(await res.text());
       return res.json();
@@ -541,89 +581,176 @@ function GoogleJobsForm() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+
+        {/* ── JOB ROLES ─── */}
         <div>
-          <Label className="text-xs">Search Query *</Label>
-          <Input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. Data Analyst in Mumbai" className="text-sm h-9 mt-1" />
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Job Roles</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Select roles — synonyms become search queries across Google for Jobs aggregated boards</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Job Family</Label>
+              <Select value={gSelectedFamily} onValueChange={setGSelectedFamily}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Families</SelectItem>
+                  {JOB_FAMILIES.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Search Roles</Label>
+              <div className="relative mt-1">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input value={gRoleSearch} onChange={e => setGRoleSearch(e.target.value)} placeholder="Filter roles..." className="text-sm h-9 pl-8" />
+              </div>
+            </div>
+          </div>
+          <ScrollArea className="h-36 rounded-md border p-2 mt-2">
+            {gFilteredRoles.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">{gRolesLoading ? "Loading roles..." : "No roles match"}</p>
+            ) : (
+              <div className="space-y-1">
+                {gFilteredRoles.map(role => (
+                  <label key={role.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer">
+                    <Checkbox checked={gSelectedRoleIds.includes(role.id)} onCheckedChange={() => gToggleRole(role.id)} />
+                    <span className="text-xs">{role.name}</span>
+                    <span className="text-[10px] text-muted-foreground ml-auto">{role.family}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+          {gSelectedRoles.length > 0 && (
+            <div className="mt-2">
+              <div className="flex items-center justify-between mb-1">
+                <Label className="text-xs">Selected ({gSelectedRoles.length})</Label>
+                <button type="button" onClick={() => setGSelectedRoleIds([])} className="text-[10px] text-muted-foreground hover:text-foreground">Clear</button>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {gSelectedRoles.map(r => (
+                  <Badge key={r.id} variant="secondary" className="text-[10px] pr-1">
+                    {r.name}
+                    <button onClick={() => gToggleRole(r.id)} className="ml-1 hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
+                  </Badge>
+                ))}
+              </div>
+            </div>
+          )}
+          {gAllSynonyms.length > 0 && (
+            <div className="mt-2">
+              <Label className="text-xs mb-1 block">Search terms ({gAllSynonyms.length})</Label>
+              <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto rounded-md border p-2 bg-muted/30">
+                {gAllSynonyms.map((s, i) => <span key={i} className="px-1.5 py-0.5 rounded bg-background border text-[10px] text-muted-foreground">{s}</span>)}
+              </div>
+            </div>
+          )}
         </div>
-        <div className="grid grid-cols-3 gap-3">
-          <div>
-            <Label className="text-xs">Country</Label>
-            <Select value={country} onValueChange={setCountry}>
-              <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="IN">India</SelectItem>
-                <SelectItem value="AE">UAE</SelectItem>
-                <SelectItem value="US">United States</SelectItem>
-                <SelectItem value="GB">United Kingdom</SelectItem>
-                <SelectItem value="SG">Singapore</SelectItem>
-                <SelectItem value="AU">Australia</SelectItem>
-                <SelectItem value="CA">Canada</SelectItem>
-                <SelectItem value="DE">Germany</SelectItem>
-                <SelectItem value="NL">Netherlands</SelectItem>
-                <SelectItem value="SA">Saudi Arabia</SelectItem>
-                <SelectItem value="QA">Qatar</SelectItem>
-                <SelectItem value="OM">Oman</SelectItem>
-                <SelectItem value="BH">Bahrain</SelectItem>
-                <SelectItem value="KW">Kuwait</SelectItem>
-                <SelectItem value="MY">Malaysia</SelectItem>
-                <SelectItem value="HK">Hong Kong</SelectItem>
-                <SelectItem value="JP">Japan</SelectItem>
-                <SelectItem value="KR">South Korea</SelectItem>
-                <SelectItem value="FR">France</SelectItem>
-                <SelectItem value="CH">Switzerland</SelectItem>
-                <SelectItem value="IE">Ireland</SelectItem>
-                <SelectItem value="SE">Sweden</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs">Date Posted</Label>
-            <Select value={datePosted} onValueChange={setDatePosted}>
-              <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="today">Today</SelectItem>
-                <SelectItem value="3days">Past 3 Days</SelectItem>
-                <SelectItem value="week">Past Week</SelectItem>
-                <SelectItem value="month">Past Month</SelectItem>
-                <SelectItem value="all">All Time</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs">Pages</Label>
-            <Input type="number" value={numPages} onChange={e => setNumPages(e.target.value)} className="text-sm h-9 mt-1" />
-          </div>
-        </div>
+
+        <Separator />
+
+        {/* ── SEARCH ─── */}
         <div>
-          <Label className="text-xs mb-1.5 block">Employment Type</Label>
-          <ChipSelect options={[
-            { value: "FULLTIME", label: "Full-time" }, { value: "PARTTIME", label: "Part-time" },
-            { value: "CONTRACTOR", label: "Contract" }, { value: "INTERN", label: "Intern" },
-          ]} selected={empTypes} onChange={setEmpTypes} />
-        </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <Label className="text-xs">Experience</Label>
-            <Select value={jobReqs} onValueChange={setJobReqs}>
-              <SelectTrigger className="h-9 text-sm mt-1"><SelectValue placeholder="Any" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="any">Any</SelectItem>
-                <SelectItem value="under_3_years">Under 3 years</SelectItem>
-                <SelectItem value="more_than_3_years">3+ years</SelectItem>
-                <SelectItem value="no_experience">No experience</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs">Employer</Label>
-            <Input value={employer} onChange={e => setEmployer(e.target.value)} placeholder="e.g. Amazon" className="text-sm h-9 mt-1" />
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Search</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Free-text query — used if no roles selected, or added alongside role queries</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Query {gSelectedRoleIds.length === 0 ? "*" : "(optional)"}</Label>
+              <Input value={query} onChange={e => setQuery(e.target.value)} placeholder="e.g. Data Analyst" className="text-sm h-9 mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Country</Label>
+              <Select value={country} onValueChange={setCountry}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {COUNTRIES.map(c => {
+                    const codeMap: Record<string, string> = { "India": "IN", "United Arab Emirates": "AE", "United States": "US", "United Kingdom": "GB", "Singapore": "SG", "Australia": "AU", "Canada": "CA", "Germany": "DE", "Netherlands": "NL", "Saudi Arabia": "SA", "Qatar": "QA", "Oman": "OM", "Bahrain": "BH", "Kuwait": "KW", "Malaysia": "MY", "Hong Kong": "HK", "Japan": "JP", "South Korea": "KR", "France": "FR", "Switzerland": "CH", "Ireland": "IE", "Sweden": "SE" };
+                    const code = codeMap[c] || c.substring(0, 2).toUpperCase();
+                    return <SelectItem key={code} value={code}>{c}</SelectItem>;
+                  })}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </div>
-        <div className="flex items-center justify-between">
-          <Label className="text-xs">Remote jobs only</Label>
-          <Switch checked={remoteOnly} onCheckedChange={setRemoteOnly} />
+
+        <Separator />
+
+        {/* ── FILTERS ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Filters</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Google Jobs native filters — applied via JSearch API</p>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs mb-1.5 block">Employment Type</Label>
+              <ChipSelect options={[
+                { value: "FULLTIME", label: "Full-time" }, { value: "PARTTIME", label: "Part-time" },
+                { value: "CONTRACTOR", label: "Contract" }, { value: "INTERN", label: "Intern" },
+              ]} selected={empTypes} onChange={setEmpTypes} />
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Experience</Label>
+                <Select value={jobReqs} onValueChange={setJobReqs}>
+                  <SelectTrigger className="h-9 text-sm mt-1"><SelectValue placeholder="Any" /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="any">Any</SelectItem>
+                    <SelectItem value="under_3_years_experience">Under 3 years</SelectItem>
+                    <SelectItem value="more_than_3_years_experience">3+ years</SelectItem>
+                    <SelectItem value="no_experience">No experience</SelectItem>
+                    <SelectItem value="no_degree">No degree required</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Employer</Label>
+                <Input value={employer} onChange={e => setEmployer(e.target.value)} placeholder="e.g. Amazon" className="text-sm h-9 mt-1" />
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-xs">Remote jobs only</Label>
+                <p className="text-[10px] text-muted-foreground">Show only remote/work-from-home positions</p>
+              </div>
+              <Switch checked={remoteOnly} onCheckedChange={setRemoteOnly} />
+            </div>
+          </div>
         </div>
-        <Button onClick={() => run.mutate()} disabled={run.isPending || !query.trim()} className="w-full h-10">
+
+        <Separator />
+
+        {/* ── TIME & OPTIONS ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Time & Options</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Control recency and result volume</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Date Posted</Label>
+              <Select value={datePosted} onValueChange={setDatePosted}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="today">Today</SelectItem>
+                  <SelectItem value="3days">Past 3 Days</SelectItem>
+                  <SelectItem value="week">Past Week</SelectItem>
+                  <SelectItem value="month">Past Month</SelectItem>
+                  <SelectItem value="all">All Time</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Pages per Query</Label>
+              <Input type="number" value={numPages} onChange={e => setNumPages(e.target.value)} min={1} max={10} className="text-sm h-9 mt-1" />
+              <p className="text-[10px] text-muted-foreground mt-0.5">~10 jobs/page • max 10 pages</p>
+            </div>
+          </div>
+          <div className="mt-3">
+            <Label className="text-xs">Exclude Publishers</Label>
+            <Input value={excludePublishers} onChange={e => setExcludePublishers(e.target.value)} placeholder="e.g. BeBee, Jooble" className="text-sm h-9 mt-1" />
+            <p className="text-[10px] text-muted-foreground mt-0.5">Comma-separated list of job boards to exclude from results</p>
+          </div>
+        </div>
+
+        {/* ── ACTION ─── */}
+        <Button onClick={() => run.mutate()} disabled={run.isPending || (!query.trim() && gSelectedRoleIds.length === 0)} className="w-full h-10">
           {run.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
           Run Google Jobs Search
         </Button>

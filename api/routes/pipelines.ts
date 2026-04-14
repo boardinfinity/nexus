@@ -732,6 +732,10 @@ async function executeGoogleJobs(runId: string, config: any) {
       if (employmentTypes.length > 0) {
         url.searchParams.set("employment_types", employmentTypes.join(","));
       }
+      if (config.remote_only) url.searchParams.set("remote_jobs_only", "true");
+      if (config.job_requirements) url.searchParams.set("job_requirements", config.job_requirements);
+      if (config.employer_name) url.searchParams.set("employer", config.employer_name);
+      if (config.exclude_job_publishers) url.searchParams.set("exclude_job_publishers", config.exclude_job_publishers);
 
       const response = await fetch(url.toString(), {
         headers: {
