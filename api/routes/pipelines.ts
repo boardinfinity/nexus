@@ -696,21 +696,38 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
 async function executeGoogleJobs(runId: string, config: any) {
   if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
 
-  // Build queries from role taxonomy or free text
+  // Build individual search queries from role synonyms or free text
   let queries: string[] = [];
-  if (Array.isArray(config.queries) && config.queries.length > 0) {
-    queries = config.queries.filter((q: string) => q.trim());
-  } else if (typeof config.queries === "string" && config.queries.trim()) {
-    queries = config.queries.split("\n").map((q: string) => q.trim()).filter(Boolean);
+  
+  // If role IDs provided, expand each synonym as a separate query for better coverage
+  const jobRoleIds = config.job_role_ids as string[] | undefined;
+  if (jobRoleIds && jobRoleIds.length > 0) {
+    const { data: roles } = await supabase
+      .from("job_roles")
+      .select("id, name, synonyms")
+      .in("id", jobRoleIds);
+    if (roles && roles.length > 0) {
+      // Each synonym becomes its own query (actor returns ~10 per query)
+      for (const role of roles) {
+        const synonyms = (role.synonyms as string[]) || [role.name];
+        queries.push(...synonyms.map(s => `"${s}"`));
+      }
+    }
   }
-  if (queries.length === 0) queries = [config.query || "software engineer"];
+  
+  // Add free-text queries
+  if (Array.isArray(config.queries) && config.queries.length > 0) {
+    queries.push(...config.queries.filter((q: string) => q.trim()));
+  } else if (!queries.length) {
+    queries = [config.query || "software engineer"];
+  }
 
-  const maxResults = Math.min(Math.max(parseInt(config.num_pages) || 5, 1) * 10, 200);
   const country = (config.country || "in").toLowerCase();
+  const datePosted = config.date_posted && config.date_posted !== "all" ? config.date_posted : "month";
 
   // Store resolved config
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _resolved_queries: queries, _max_results: maxResults, _provider: "apify" },
+    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _provider: "apify", _actor: "orgupdate/google-jobs-scraper" },
   }).eq("id", runId);
 
   let allProcessed = 0;
@@ -718,35 +735,32 @@ async function executeGoogleJobs(runId: string, config: any) {
   let allSkipped = 0;
   let allTotal = 0;
 
+  // Run queries in sequence (to avoid overwhelming Apify)
   for (const query of queries) {
     try {
       const actorInput: Record<string, any> = {
-        query,
-        maxResults,
-        country,
+        countryName: country,
+        includeKeyword: query,
+        datePosted,
+        pagesToFetch: 3,
       };
-      if (config.employment_types) actorInput.employmentType = config.employment_types;
-      if (config.date_posted && config.date_posted !== "all") actorInput.datePosted = config.date_posted;
+      if (config.employment_types) actorInput.jobType = config.employment_types;
 
-      // Launch Apify actor and wait for results (up to 5 min)
       const startRes = await fetch(
-        `https://api.apify.com/v2/acts/igview-owner~google-jobs-scraper/runs?token=${APIFY_API_KEY}&waitForFinish=300`,
+        `https://api.apify.com/v2/acts/orgupdate~google-jobs-scraper/runs?token=${APIFY_API_KEY}&waitForFinish=120`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
       );
 
-      if (!startRes.ok) {
-        const errText = await startRes.text();
-        throw new Error(`Apify start failed: ${errText}`);
-      }
+      if (!startRes.ok) continue; // Skip failed queries, don't abort entire run
 
       const apifyRun = await startRes.json();
       const dsId = apifyRun.data?.defaultDatasetId;
       const apifyRunId = apifyRun.data?.id;
       let runStatus = apifyRun.data?.status;
 
-      // Poll until done if not already finished
+      // Poll if not done
       if (runStatus !== "SUCCEEDED" && runStatus !== "FAILED") {
-        for (let attempts = 0; attempts < 30; attempts++) {
+        for (let attempts = 0; attempts < 12; attempts++) {
           await new Promise(r => setTimeout(r, 10000));
           const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${apifyRunId}?token=${APIFY_API_KEY}`);
           const pollData = await pollRes.json();
@@ -755,7 +769,6 @@ async function executeGoogleJobs(runId: string, config: any) {
         }
       }
 
-      // Fetch results from dataset
       if (dsId && runStatus === "SUCCEEDED") {
         const itemsRes = await fetch(`https://api.apify.com/v2/datasets/${dsId}/items?token=${APIFY_API_KEY}`);
         const items = await itemsRes.json();
@@ -766,49 +779,45 @@ async function executeGoogleJobs(runId: string, config: any) {
 
           for (const item of items) {
             try {
-              const externalId = item.jobId || `gj-${Date.now()}-${allProcessed}`;
+              // Build external ID from title + company for dedup (orgupdate has no jobId)
+              const titleClean = (item.job_title || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+              const companyClean = (item.company_name || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+              const externalId = `gj-${titleClean}-${companyClean}`.substring(0, 200);
+
               const { data: existing } = await supabase.from("jobs").select("id")
-                .eq("external_id", String(externalId)).eq("source", "google_jobs").maybeSingle();
+                .eq("external_id", externalId).eq("source", "google_jobs").maybeSingle();
               if (existing) { allSkipped++; continue; }
 
               let companyId = null;
-              if (item.employerName) {
-                companyId = await upsertCompanyByName(item.employerName, item.employerWebsite, item.employerLogo);
+              if (item.company_name) {
+                companyId = await upsertCompanyByName(item.company_name, null, null);
               }
 
-              const desc = item.jobDescription || null;
-              const titleNorm = normalizeText(item.jobTitle || "");
-              const companyNorm = normalizeText(item.employerName || "");
+              const desc = item.description || null;
+              const titleNorm = normalizeText(item.job_title || "");
+              const companyNorm = normalizeText(item.company_name || "");
+
+              // Parse location
+              const locParts = (item.location || "").split(",").map((s: string) => s.trim());
 
               await supabase.from("jobs").insert({
-                external_id: String(externalId),
+                external_id: externalId,
                 source: "google_jobs",
-                title: item.jobTitle || "Unknown",
+                title: item.job_title || "Unknown",
                 title_normalized: titleNorm || null,
                 company_name_normalized: companyNorm || null,
                 description: desc,
                 company_id: companyId,
-                company_name: item.employerName || null,
-                location_raw: item.jobLocation || [item.jobCity, item.jobState, item.jobCountry].filter(Boolean).join(", "),
-                location_city: item.jobCity || null,
-                location_state: item.jobState || null,
-                location_country: item.jobCountry || null,
-                employment_type: mapEmploymentTypeExtended(item.employmentType),
-                seniority_level: item.jobOnetJobZone ? mapOnetJobZone(item.jobOnetJobZone) : null,
-                salary_min: item.minSalary || null,
-                salary_max: item.maxSalary || null,
-                salary_currency: null,
-                salary_unit: item.salaryPeriod || null,
-                salary_text: item.salary || null,
-                posted_at: item.jobPostedAtDatetime || null,
-                application_url: item.jobApplyLink || null,
-                source_url: item.jobGoogleLink || null,
-                is_remote: item.isRemote || null,
-                job_publisher: item.jobPublisher || null,
-                apply_platforms: item.applyPlatforms || null,
-                qualifications: item.qualifications || null,
-                responsibilities: item.responsibilities || null,
-                benefits: item.benefitsList || item.benefits || null,
+                company_name: item.company_name || null,
+                location_raw: item.location || null,
+                location_city: locParts[0] || null,
+                location_state: locParts[1] || null,
+                location_country: country.toUpperCase(),
+                salary_text: item.salary !== "N/A" ? item.salary : null,
+                posted_at: null, // orgupdate returns relative dates like "5 days ago"
+                application_url: item.URL || null,
+                source_url: item.URL || null,
+                job_publisher: item.posted_via || null,
                 enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
                 raw_data: { ...item, search_query: query },
               });
@@ -817,9 +826,11 @@ async function executeGoogleJobs(runId: string, config: any) {
           }
         }
       }
+
+      // Brief pause between queries to avoid rate limiting
+      await new Promise(r => setTimeout(r, 2000));
     } catch (e: any) {
       console.error(`Google Jobs query "${query}" failed:`, e.message);
-      allFailed++;
     }
   }
 
