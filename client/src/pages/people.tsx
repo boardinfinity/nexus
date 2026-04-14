@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Search, Info, ChevronDown } from "lucide-react";
+import { Search, Info, ChevronDown, ExternalLink } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { Person } from "@shared/schema";
 import { authFetch } from "@/lib/queryClient";
@@ -22,6 +22,8 @@ function monthToNum(m: any): number {
 export default function People() {
   const [search, setSearch] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
+  const [seniorityFilter, setSeniorityFilter] = useState("all");
+  const [functionFilter, setFunctionFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Person | null>(null);
 
@@ -31,6 +33,8 @@ export default function People() {
   if (search) params.set("search", search);
   if (roleFilter === "recruiter") params.set("is_recruiter", "true");
   if (roleFilter === "hiring_manager") params.set("is_hiring_manager", "true");
+  if (seniorityFilter !== "all") params.set("seniority", seniorityFilter);
+  if (functionFilter !== "all") params.set("function", functionFilter);
 
   const { data, isLoading } = useQuery<{ data: Person[]; total: number }>({
     queryKey: ["/api/people", params.toString()],
@@ -98,13 +102,45 @@ export default function People() {
           />
         </div>
         <Select value={roleFilter} onValueChange={(v) => { setRoleFilter(v); setPage(1); }}>
-          <SelectTrigger className="w-[160px] h-9 text-xs" data-testid="filter-role">
+          <SelectTrigger className="w-[140px] h-9 text-xs" data-testid="filter-role">
             <SelectValue placeholder="Role" />
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Roles</SelectItem>
             <SelectItem value="recruiter">Recruiters</SelectItem>
             <SelectItem value="hiring_manager">Hiring Managers</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={seniorityFilter} onValueChange={(v) => { setSeniorityFilter(v); setPage(1); }}>
+          <SelectTrigger className="w-[130px] h-9 text-xs">
+            <SelectValue placeholder="Seniority" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Levels</SelectItem>
+            <SelectItem value="intern">Intern</SelectItem>
+            <SelectItem value="entry">Entry</SelectItem>
+            <SelectItem value="associate">Associate</SelectItem>
+            <SelectItem value="mid_senior">Mid-Senior</SelectItem>
+            <SelectItem value="director">Director</SelectItem>
+            <SelectItem value="vp">VP</SelectItem>
+            <SelectItem value="c_suite">C-Suite</SelectItem>
+          </SelectContent>
+        </Select>
+        <Select value={functionFilter} onValueChange={(v) => { setFunctionFilter(v); setPage(1); }}>
+          <SelectTrigger className="w-[130px] h-9 text-xs">
+            <SelectValue placeholder="Function" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Functions</SelectItem>
+            <SelectItem value="engineering">Engineering</SelectItem>
+            <SelectItem value="sales">Sales</SelectItem>
+            <SelectItem value="marketing">Marketing</SelectItem>
+            <SelectItem value="hr">HR</SelectItem>
+            <SelectItem value="finance">Finance</SelectItem>
+            <SelectItem value="operations">Operations</SelectItem>
+            <SelectItem value="product">Product</SelectItem>
+            <SelectItem value="consulting">Consulting</SelectItem>
+            <SelectItem value="data">Data</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -129,24 +165,20 @@ export default function People() {
               </div>
             ),
           },
-          { header: "Title", accessor: "current_title" as keyof Person, className: "max-w-[200px] truncate" },
+          { header: "Title", accessor: (r: Person) => <span className="max-w-[180px] truncate block" title={r.current_title || ""}>{r.current_title || "—"}</span>, className: "max-w-[180px]" },
           { header: "Company", accessor: (r: Person) => {
             const company = (r as any).company;
-            return company?.name || r.current_company_id || "—";
-          }},
-          { header: "Location", accessor: (r: Person) => r.location_city ? `${r.location_city}, ${r.location_country}` : r.location_country || "—" },
-          { header: "Score", accessor: (r: Person) => (
-            <div className="flex items-center gap-1">
-              <span className={`text-xs font-medium ${r.enrichment_score >= 70 ? "text-green-600" : r.enrichment_score >= 40 ? "text-yellow-600" : "text-red-500"}`}>
-                {r.enrichment_score}
-              </span>
-            </div>
-          )},
-          { header: "Transitions", accessor: (r: Person) => {
-            const transitions = r.career_transitions as any[] | undefined;
-            return transitions?.length ? <span className="text-xs">{transitions.length}</span> : <span className="text-xs text-muted-foreground">—</span>;
-          }},
-          { header: "Status", accessor: (r: Person) => <StatusBadge status={r.enrichment_status} /> },
+            return <span className="max-w-[130px] truncate block" title={company?.name || ""}>{company?.name || "—"}</span>;
+          }, className: "max-w-[130px]" },
+          { header: "Location", accessor: (r: Person) => {
+            const loc = [r.location_city, r.location_country].filter(Boolean).join(", ");
+            return <span className="max-w-[120px] truncate block" title={loc}>{loc || "—"}</span>;
+          }, className: "max-w-[120px]" },
+          { header: "Seniority", accessor: (r: Person) => r.seniority && r.seniority !== "unknown" ? <Badge variant="outline" className="text-[10px] whitespace-nowrap">{r.seniority}</Badge> : <span className="text-muted-foreground">—</span>, className: "w-[80px]" },
+          { header: "Function", accessor: (r: Person) => r.function && r.function !== "other" ? <Badge variant="secondary" className="text-[10px] whitespace-nowrap">{r.function}</Badge> : <span className="text-muted-foreground">—</span>, className: "w-[80px]" },
+          { header: "Added", accessor: (r: Person) => r.created_at ? <span className="whitespace-nowrap text-[10px]">{new Date(r.created_at).toLocaleDateString("en-IN", { day: "numeric", month: "short" })}<br/><span className="text-muted-foreground">{new Date(r.created_at).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit" })}</span></span> : "—", className: "w-[70px]" },
+          { header: "LinkedIn", accessor: (r: Person) => r.linkedin_url ? <a href={r.linkedin_url} target="_blank" rel="noreferrer" className="text-primary"><ExternalLink className="h-3.5 w-3.5" /></a> : <span className="text-muted-foreground">—</span>, className: "w-[50px]" },
+          { header: "Status", accessor: (r: Person) => <StatusBadge status={r.enrichment_status} />, className: "w-[70px]" },
         ]}
         data={data?.data ?? []}
         isLoading={isLoading}
