@@ -31,6 +31,7 @@ const navItems = [
   { title: "Survey Admin", href: "/survey-admin", icon: ClipboardList, section: "surveys" },
   { title: "PlaceIntel", href: "/placeintel-admin", icon: ClipboardCheck, section: "placeintel" },
   { title: "Colleges", href: "/colleges", icon: GraduationCap, section: "colleges" },
+  { title: "Masters", href: "/masters", icon: Database, section: "masters" },
   { title: "Reports", href: "/reports", icon: FileText, section: "reports" },
   { title: "Settings", href: "/settings", icon: Settings, section: "settings" },
 ];

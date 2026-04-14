@@ -391,6 +391,115 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== MASTER DATA MANAGEMENT ====================
+  app.get("/api/masters/summary", async (_req: Request, res: Response) => {
+    try {
+      const [roles, skills, families, industries, functions] = await Promise.all([
+        supabase.from("job_roles").select("*", { count: "exact", head: true }),
+        supabase.from("taxonomy_skills").select("*", { count: "exact", head: true }),
+        supabase.from("job_families").select("*", { count: "exact", head: true }),
+        supabase.from("job_industries").select("*", { count: "exact", head: true }),
+        supabase.from("job_functions").select("*", { count: "exact", head: true }),
+      ]);
+      res.json({
+        job_roles: roles.count ?? 0,
+        skills: skills.count ?? 0,
+        job_families: families.count ?? 0,
+        job_industries: industries.count ?? 0,
+        job_functions: functions.count ?? 0,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to get master data summary";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  app.get("/api/masters/job-roles", async (_req: Request, res: Response) => {
+    try {
+      const { data, error } = await supabase
+        .from("job_roles")
+        .select("id, name, family, synonyms, created_at")
+        .order("family")
+        .order("name");
+
+      if (error) throw error;
+      res.json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to get job roles";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  app.post("/api/masters/job-roles", async (req: Request, res: Response) => {
+    try {
+      const { name, family, synonyms } = req.body;
+      if (!name || !family) {
+        return res.status(400).json({ message: "name and family are required" });
+      }
+      const { data, error } = await supabase
+        .from("job_roles")
+        .insert({ name, family, synonyms: synonyms || [] })
+        .select()
+        .single();
+
+      if (error) throw error;
+      res.json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to create job role";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  app.put("/api/masters/job-roles/:id", async (req: Request, res: Response) => {
+    try {
+      const { name, family, synonyms } = req.body;
+      if (!name || !family) {
+        return res.status(400).json({ message: "name and family are required" });
+      }
+      const { data, error } = await supabase
+        .from("job_roles")
+        .update({ name, family, synonyms: synonyms || [] })
+        .eq("id", req.params.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (!data) return res.status(404).json({ message: "Job role not found" });
+      res.json(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update job role";
+      res.status(500).json({ message: msg });
+    }
+  });
+
+  app.delete("/api/masters/job-roles/:id", async (req: Request, res: Response) => {
+    try {
+      // Check if any jobs reference this role
+      const { count: jobCount } = await supabase
+        .from("jobs")
+        .select("*", { count: "exact", head: true })
+        .eq("job_role_id", req.params.id);
+
+      if (jobCount && jobCount > 0) {
+        return res.status(409).json({
+          message: `Cannot delete: ${jobCount} job(s) reference this role`,
+          job_count: jobCount,
+        });
+      }
+
+      const { error } = await supabase
+        .from("job_roles")
+        .delete()
+        .eq("id", req.params.id);
+
+      if (error) throw error;
+      res.json({ success: true });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete job role";
+      res.status(500).json({ message: msg });
+    }
+  });
+
   // ==================== PIPELINE STATS ====================
   app.get("/api/pipeline-stats", async (req: Request, res: Response) => {
     try {
