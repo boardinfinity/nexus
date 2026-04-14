@@ -1,46 +1,45 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { supabase, APIFY_API_KEY } from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 import { AuthResult, requireReader, requirePermission, verifyAuth } from "../lib/auth";
 import { executePipeline } from "./pipelines";
 
 // ── Compute next run time from frequency or cron expression ─────────────────
 function calculateNextRun(frequency: string, cronExpression?: string): string {
   const now = new Date();
+
+  // Prioritize cron expression — handles comma-separated hours, day-of-week, etc.
+  if (cronExpression && cronExpression.trim()) {
+    const parts = cronExpression.trim().split(/\s+/);
+    if (parts.length >= 5) {
+      const [min, hour, _dom, _mon, dow] = parts;
+
+      const minutes = min === "*" ? [now.getUTCMinutes()] : min.split(",").map(Number);
+      const hours = hour === "*"
+        ? Array.from({ length: 24 }, (_, i) => i)
+        : hour.split(",").map(Number);
+      const dows = dow === "*" ? null : dow.split(",").map(Number);
+
+      // Search up to 8 days ahead for the next matching slot
+      for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
+        const candidate = new Date(now.getTime() + dayOffset * 24 * 60 * 60 * 1000);
+        if (dows && !dows.includes(candidate.getUTCDay())) continue;
+
+        for (const h of hours) {
+          for (const m of minutes) {
+            candidate.setUTCHours(h, m, 0, 0);
+            if (candidate > now) return candidate.toISOString();
+          }
+        }
+      }
+    }
+  }
+
+  // Fallback to frequency string
   if (frequency === "hourly") return new Date(now.getTime() + 60 * 60 * 1000).toISOString();
   if (frequency === "daily") return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
   if (frequency === "weekly") return new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
   if (frequency === "monthly") return new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString();
 
-  // Parse simple cron expressions: minute hour * * *
-  if (cronExpression) {
-    try {
-      const parts = cronExpression.trim().split(/\s+/);
-      if (parts.length >= 2) {
-        const [minute, hour] = parts;
-        const next = new Date(now);
-        next.setUTCSeconds(0, 0);
-        const targetMin = minute === "*" ? now.getUTCMinutes() : parseInt(minute);
-        const targetHour = hour === "*" ? now.getUTCHours() : (hour.startsWith("*/") ? now.getUTCHours() : parseInt(hour));
-        
-        if (hour === "*") {
-          // Every hour at :minute
-          next.setUTCMinutes(targetMin);
-          if (next <= now) next.setUTCHours(next.getUTCHours() + 1);
-        } else if (hour.startsWith("*/")) {
-          // Every N hours
-          const n = parseInt(hour.slice(2));
-          next.setUTCHours(next.getUTCHours() + n);
-        } else {
-          // Specific hour daily
-          next.setUTCHours(targetHour, targetMin);
-          if (next <= now) next.setUTCDate(next.getUTCDate() + 1);
-        }
-        return next.toISOString();
-      }
-    } catch { /* fall through */ }
-  }
-
-  // Default: next day at midnight
   return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
 }
 
@@ -63,28 +62,9 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
 
     if (error || !run) throw new Error(error?.message || "Failed to create run");
 
-    // For async pipelines (LinkedIn, Alumni): start Apify actor inline
-    if (schedule.pipeline_type === "linkedin_jobs" && APIFY_API_KEY) {
-      const cfg = schedule.config || {};
-      const actorInput = {
-        keywords: cfg.search_keywords || cfg.keywords || "software engineer",
-        location: cfg.location || "India",
-        maxPages: Math.ceil((parseInt(cfg.limit) || 100) / 10),
-      };
-      const startRes = await fetch(
-        `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
-      );
-      if (startRes.ok) {
-        const apifyData = await startRes.json();
-        await supabase.from("pipeline_runs").update({
-          config: { ...cfg, _provider_run_id: apifyData.data?.id, _provider_dataset_id: apifyData.data?.defaultDatasetId },
-        }).eq("id", run.id);
-      }
-    } else {
-      // Sync pipelines: execute directly
-      await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch(console.error);
-    }
+    // Delegate to executePipeline for ALL pipeline types — it handles
+    // role expansion, all Apify params, Google Jobs, LinkedIn, etc.
+    await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch(console.error);
 
     return { success: true, run_id: run.id };
   } catch (err: any) {

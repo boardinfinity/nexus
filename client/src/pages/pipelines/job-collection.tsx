@@ -10,7 +10,8 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Play, Loader2, CalendarClock, Link2, Globe, X, Search } from "lucide-react";
+import { Play, Loader2, CalendarClock, Link2, Globe, X, Search, Info, ChevronDown } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { RunHistory } from "./run-history";
@@ -207,7 +208,7 @@ function LinkedInForm() {
           name: scheduleName || autoScheduleName,
           pipeline_type: "linkedin_jobs",
           config: buildConfig(),
-          frequency: frequency === "twice_daily" ? "hourly" : frequency,
+          frequency,
           cron_expression: frequency === "daily" ? "0 0 * * *" : frequency === "twice_daily" ? "0 0,12 * * *" : frequency === "weekly" ? "0 0 * * 1" : "0 * * * *",
           is_active: true,
         }),
@@ -230,6 +231,21 @@ function LinkedInForm() {
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
+
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" /> How to use
+            <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 text-xs text-muted-foreground space-y-1 bg-muted/30 rounded-lg p-3">
+            <p>1. <strong>Select Job Roles</strong> from the taxonomy — each role's synonyms are auto-expanded into precise LinkedIn OR queries</p>
+            <p>2. <strong>Or use Keywords</strong> as free-text fallback (less precise, LinkedIn interprets loosely)</p>
+            <p>3. <strong>Set filters</strong> — experience level, work type, location, industry narrow results server-side</p>
+            <p>4. <strong>Fetch descriptions ON</strong> is required for JD analysis and skill extraction</p>
+            <p>5. <strong>One Apify run per role</strong> — selecting 3 roles = 3 parallel searches for better relevance</p>
+            <p>6. <strong>Schedule</strong> to run daily/weekly for continuous collection</p>
+          </CollapsibleContent>
+        </Collapsible>
 
         {/* ── JOB ROLES ─────────────────────────────────────── */}
         <div>
@@ -525,6 +541,11 @@ function GoogleJobsForm() {
   const gAllSynonyms = gSelectedRoles.flatMap(r => r.synonyms);
   const gToggleRole = (id: string) => setGSelectedRoleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
 
+  // Schedule
+  const [gScheduleMode, setGScheduleMode] = useState(false);
+  const [gFrequency, setGFrequency] = useState("daily");
+  const [gScheduleName, setGScheduleName] = useState("");
+
   // Search & Filters
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState("IN");
@@ -570,6 +591,27 @@ function GoogleJobsForm() {
     onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
 
+  const gAutoScheduleName = `${gFrequency === "daily" ? "Daily" : gFrequency === "weekly" ? "Weekly" : "Recurring"} Google Jobs ${query || "search"} in ${country}`;
+
+  const gSaveSchedule = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/scheduler/schedules", {
+        method: "POST", body: JSON.stringify({
+          name: gScheduleName || gAutoScheduleName,
+          pipeline_type: "google_jobs",
+          config: buildGoogleConfig(),
+          frequency: gFrequency,
+          cron_expression: gFrequency === "daily" ? "0 0 * * *" : gFrequency === "twice_daily" ? "0 0,12 * * *" : gFrequency === "weekly" ? "0 0 * * 1" : "0 * * * *",
+          is_active: true,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => { toast({ title: "Schedule saved", description: "Will run automatically based on frequency" }); },
+    onError: (e: any) => toast({ title: "Failed to save schedule", description: e.message, variant: "destructive" }),
+  });
+
   return (
     <Card>
       <CardHeader className="pb-3">
@@ -581,6 +623,21 @@ function GoogleJobsForm() {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
+
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" /> How to use
+            <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 text-xs text-muted-foreground space-y-1 bg-muted/30 rounded-lg p-3">
+            <p>1. <strong>Select Job Roles</strong> — same taxonomy as LinkedIn, synonyms become Google Jobs search queries</p>
+            <p>2. <strong>Google aggregates 20+ boards</strong> — Indeed, LinkedIn, Glassdoor, Naukri, company pages, etc.</p>
+            <p>3. <strong>Results include publisher</strong> — shows which job board originally listed each job</p>
+            <p>4. <strong>Descriptions included</strong> — full JD text, qualifications, and benefits come automatically</p>
+            <p>5. <strong>Exclude publishers</strong> to skip low-quality boards (e.g. "BeBee, Jooble")</p>
+            <p>6. <strong>~10 jobs per page</strong> — 5 pages = ~50 jobs per query</p>
+          </CollapsibleContent>
+        </Collapsible>
 
         {/* ── JOB ROLES ─── */}
         <div>
@@ -749,11 +806,51 @@ function GoogleJobsForm() {
           </div>
         </div>
 
-        {/* ── ACTION ─── */}
-        <Button onClick={() => run.mutate()} disabled={run.isPending || (!query.trim() && gSelectedRoleIds.length === 0)} className="w-full h-10">
-          {run.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
-          Run Google Jobs Search
-        </Button>
+        <Separator />
+
+        {/* ── SCHEDULE ─── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Schedule</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Save this configuration as a recurring pipeline</p>
+            </div>
+            <Switch checked={gScheduleMode} onCheckedChange={setGScheduleMode} />
+          </div>
+          {gScheduleMode && (
+            <div className="space-y-2 rounded-lg border p-3 bg-muted/30">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Frequency</Label>
+                  <Select value={gFrequency} onValueChange={setGFrequency}>
+                    <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {FREQUENCIES.map(f => <SelectItem key={f.value} value={f.value}>{f.label}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Schedule Name</Label>
+                  <Input value={gScheduleName} onChange={e => setGScheduleName(e.target.value)} placeholder={gAutoScheduleName} className="text-sm h-9 mt-1" />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── ACTIONS ─── */}
+        <div className="flex gap-3 pt-1">
+          <Button onClick={() => run.mutate()} disabled={run.isPending || (!query.trim() && gSelectedRoleIds.length === 0)} className="flex-1 h-10">
+            {run.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+            Run Google Jobs Search
+          </Button>
+          {gScheduleMode && (
+            <Button onClick={() => gSaveSchedule.mutate()} disabled={gSaveSchedule.isPending} variant="outline" className="flex-1 h-10">
+              {gSaveSchedule.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CalendarClock className="h-4 w-4 mr-2" />}
+              Save Schedule
+            </Button>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
