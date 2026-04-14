@@ -575,9 +575,9 @@ function GoogleJobsForm() {
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <CardTitle className="text-base font-semibold flex items-center gap-2">
-            <Globe className="h-5 w-5 text-green-600" /> Google Jobs (JSearch)
+            <Globe className="h-5 w-5 text-green-600" /> Google Jobs
           </CardTitle>
-          <Badge variant="outline" className="text-[10px]">Aggregates 20+ job boards</Badge>
+          <Badge variant="outline" className="text-[10px]">via Apify • Aggregates 20+ job boards</Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-4">

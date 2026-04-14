@@ -694,144 +694,136 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
 }
 
 async function executeGoogleJobs(runId: string, config: any) {
-  if (!RAPIDAPI_KEY) throw new Error("RapidAPI key not configured");
+  if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
 
-  // Support multiple queries (new: array or newline-separated string)
-  let queries: string[];
+  // Build queries from role taxonomy or free text
+  let queries: string[] = [];
   if (Array.isArray(config.queries) && config.queries.length > 0) {
     queries = config.queries.filter((q: string) => q.trim());
   } else if (typeof config.queries === "string" && config.queries.trim()) {
     queries = config.queries.split("\n").map((q: string) => q.trim()).filter(Boolean);
-  } else {
-    queries = [config.query || "software engineer India"];
   }
+  if (queries.length === 0) queries = [config.query || "software engineer"];
 
-  const pagesPerQuery = Math.min(Math.max(parseInt(config.pages_per_query) || parseInt(config.pages) || 3, 1), 10);
-  const country = config.country || undefined;
-  const datePosted = config.date_posted || undefined;
-  const employmentTypes: string[] = Array.isArray(config.employment_type) ? config.employment_type : (config.employment_type ? [config.employment_type] : []);
+  const maxResults = Math.min(Math.max(parseInt(config.num_pages) || 5, 1) * 10, 200);
+  const country = (config.country || "in").toLowerCase();
 
-  let processed = 0;
-  let failed = 0;
-  let skipped = 0;
-  let totalItems = 0;
-
-  // Store full config for reproducibility
+  // Store resolved config
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _resolved_queries: queries, _pages_per_query: pagesPerQuery },
+    config: { ...config, _resolved_queries: queries, _max_results: maxResults, _provider: "apify" },
   }).eq("id", runId);
 
+  let allProcessed = 0;
+  let allFailed = 0;
+  let allSkipped = 0;
+  let allTotal = 0;
+
   for (const query of queries) {
-    for (let page = 1; page <= pagesPerQuery; page++) {
-      const url = new URL("https://jsearch.p.rapidapi.com/search");
-      url.searchParams.set("query", query);
-      url.searchParams.set("page", String(page));
-      url.searchParams.set("num_pages", "1");
-      if (datePosted) url.searchParams.set("date_posted", datePosted);
-      if (country) url.searchParams.set("country", country);
-      if (employmentTypes.length > 0) {
-        url.searchParams.set("employment_types", employmentTypes.join(","));
-      }
-      if (config.remote_only) url.searchParams.set("remote_jobs_only", "true");
-      if (config.job_requirements) url.searchParams.set("job_requirements", config.job_requirements);
-      if (config.employer_name) url.searchParams.set("employer", config.employer_name);
-      if (config.exclude_job_publishers) url.searchParams.set("exclude_job_publishers", config.exclude_job_publishers);
+    try {
+      const actorInput: Record<string, any> = {
+        query,
+        maxResults,
+        country,
+      };
+      if (config.employment_types) actorInput.employmentType = config.employment_types;
+      if (config.date_posted && config.date_posted !== "all") actorInput.datePosted = config.date_posted;
 
-      const response = await fetch(url.toString(), {
-        headers: {
-          "X-RapidAPI-Key": RAPIDAPI_KEY,
-          "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
-        },
-      });
+      // Launch Apify actor and wait for results (up to 5 min)
+      const startRes = await fetch(
+        `https://api.apify.com/v2/acts/igview-owner~google-jobs-scraper/runs?token=${APIFY_API_KEY}&waitForFinish=300`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(actorInput) }
+      );
 
-      if (!response.ok) {
-        const errText = await response.text();
-        throw new Error(`RapidAPI error: ${errText}`);
+      if (!startRes.ok) {
+        const errText = await startRes.text();
+        throw new Error(`Apify start failed: ${errText}`);
       }
 
-      const result = await response.json();
-      const jobs = result.data || [];
-      if (jobs.length === 0) break; // No more results for this query
+      const apifyRun = await startRes.json();
+      const dsId = apifyRun.data?.defaultDatasetId;
+      const apifyRunId = apifyRun.data?.id;
+      let runStatus = apifyRun.data?.status;
 
-      totalItems += jobs.length;
-      await supabase.from("pipeline_runs").update({ total_items: totalItems }).eq("id", runId);
-
-      for (const item of jobs) {
-        try {
-          const externalId = item.job_id || `gj-${Date.now()}-${processed}`;
-
-          const { data: existing } = await supabase
-            .from("jobs")
-            .select("id")
-            .eq("external_id", String(externalId))
-            .eq("source", "google_jobs")
-            .maybeSingle();
-
-          if (existing) {
-            skipped++;
-            continue;
-          }
-
-          let companyId = null;
-          if (item.employer_name) {
-            companyId = await upsertCompanyByName(item.employer_name, item.employer_website, item.employer_logo);
-          }
-
-          const desc = item.job_description || null;
-          const titleNorm = normalizeText(item.job_title || "");
-          const companyNorm = normalizeText(item.employer_name || "");
-
-          await supabase.from("jobs").insert({
-            external_id: String(externalId),
-            source: "google_jobs",
-            title: item.job_title || "Unknown",
-            title_normalized: titleNorm || null,
-            company_name_normalized: companyNorm || null,
-            description: desc,
-            company_id: companyId,
-            company_name: item.employer_name || null,
-            location_raw: item.job_location || [item.job_city, item.job_state, item.job_country].filter(Boolean).join(", "),
-            location_city: item.job_city || null,
-            location_state: item.job_state || null,
-            location_country: item.job_country || null,
-            employment_type: mapEmploymentTypeExtended(item.job_employment_type),
-            salary_min: item.job_min_salary || null,
-            salary_max: item.job_max_salary || null,
-            salary_currency: item.job_salary_currency || null,
-            salary_unit: item.job_salary_period || null,
-            posted_at: item.job_posted_at_datetime_utc || null,
-            application_url: item.job_apply_link || null,
-            source_url: item.job_google_link || null,
-            enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
-            raw_data: { ...item, search_query: query },
-          });
-
-          processed++;
-        } catch (e) {
-          failed++;
+      // Poll until done if not already finished
+      if (runStatus !== "SUCCEEDED" && runStatus !== "FAILED") {
+        for (let attempts = 0; attempts < 30; attempts++) {
+          await new Promise(r => setTimeout(r, 10000));
+          const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${apifyRunId}?token=${APIFY_API_KEY}`);
+          const pollData = await pollRes.json();
+          runStatus = pollData.data?.status;
+          if (runStatus === "SUCCEEDED" || runStatus === "FAILED" || runStatus === "ABORTED") break;
         }
       }
 
-      // Rate limit: 300ms between API calls (was 1000ms)
-      await new Promise(r => setTimeout(r, 300));
+      // Fetch results from dataset
+      if (dsId && runStatus === "SUCCEEDED") {
+        const itemsRes = await fetch(`https://api.apify.com/v2/datasets/${dsId}/items?token=${APIFY_API_KEY}`);
+        const items = await itemsRes.json();
+
+        if (Array.isArray(items)) {
+          allTotal += items.length;
+          await supabase.from("pipeline_runs").update({ total_items: allTotal }).eq("id", runId);
+
+          for (const item of items) {
+            try {
+              const externalId = item.jobId || `gj-${Date.now()}-${allProcessed}`;
+              const { data: existing } = await supabase.from("jobs").select("id")
+                .eq("external_id", String(externalId)).eq("source", "google_jobs").maybeSingle();
+              if (existing) { allSkipped++; continue; }
+
+              let companyId = null;
+              if (item.employerName) {
+                companyId = await upsertCompanyByName(item.employerName, item.employerWebsite, item.employerLogo);
+              }
+
+              const desc = item.jobDescription || null;
+              const titleNorm = normalizeText(item.jobTitle || "");
+              const companyNorm = normalizeText(item.employerName || "");
+
+              await supabase.from("jobs").insert({
+                external_id: String(externalId),
+                source: "google_jobs",
+                title: item.jobTitle || "Unknown",
+                title_normalized: titleNorm || null,
+                company_name_normalized: companyNorm || null,
+                description: desc,
+                company_id: companyId,
+                company_name: item.employerName || null,
+                location_raw: item.jobLocation || [item.jobCity, item.jobState, item.jobCountry].filter(Boolean).join(", "),
+                location_city: item.jobCity || null,
+                location_state: item.jobState || null,
+                location_country: item.jobCountry || null,
+                employment_type: mapEmploymentTypeExtended(item.employmentType),
+                salary_min: item.minSalary || null,
+                salary_max: item.maxSalary || null,
+                salary_currency: null,
+                salary_unit: item.salaryPeriod || null,
+                posted_at: item.jobPostedAtDatetime || null,
+                application_url: item.jobApplyLink || null,
+                source_url: item.jobGoogleLink || null,
+                enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
+                raw_data: { ...item, search_query: query, job_publisher: item.jobPublisher },
+              });
+              allProcessed++;
+            } catch (e) { allFailed++; }
+          }
+        }
+      }
+    } catch (e: any) {
+      console.error(`Google Jobs query "${query}" failed:`, e.message);
+      allFailed++;
     }
   }
 
   await supabase.from("enrichment_logs").insert({
-    entity_type: "job",
-    entity_id: runId,
-    provider: "rapidapi",
-    operation: "google_jobs_search",
-    status: "success",
-    credits_used: totalItems,
+    entity_type: "job", entity_id: runId, provider: "apify",
+    operation: "google_jobs_search", status: "success", credits_used: allTotal,
   });
 
   await supabase.from("pipeline_runs").update({
-    status: "completed",
-    processed_items: processed,
-    failed_items: failed,
-    skipped_items: skipped,
-    completed_at: new Date().toISOString(),
+    status: "completed", completed_at: new Date().toISOString(),
+    total_items: allTotal, processed_items: allProcessed,
+    failed_items: allFailed, skipped_items: allSkipped,
   }).eq("id", runId);
 }
 
