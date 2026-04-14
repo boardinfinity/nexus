@@ -341,6 +341,17 @@ export default function Schedules() {
     onError: (err: Error) => toast({ title: "Error", description: err.message, variant: "destructive" }),
   });
 
+  const runNowMutation = useMutation({
+    mutationFn: async (id: string) => {
+      return await apiRequest("POST", `/api/scheduler/run/${id}`);
+    },
+    onSuccess: (data) => {
+      toast({ title: "Pipeline triggered", description: data.run_id ? "Run started" : "Triggered" });
+      queryClient.invalidateQueries({ queryKey: ["/api/schedules"] });
+    },
+    onError: (err: Error) => toast({ title: "Trigger failed", description: err.message, variant: "destructive" }),
+  });
+
   const handleConfirm = () => {
     if (!confirmAction) return;
     const { type, schedule } = confirmAction;
@@ -464,6 +475,11 @@ export default function Schedules() {
                   </div>
                 </div>
                 <div className="flex gap-1.5 pt-1 border-t">
+                  <Button variant="default" size="sm" className="h-7 text-[11px] flex-1"
+                    disabled={runNowMutation.isPending}
+                    onClick={() => runNowMutation.mutate(s.id)}>
+                    {runNowMutation.isPending ? <Loader2 className="h-3 w-3 mr-1 animate-spin" /> : <Play className="h-3 w-3 mr-1" />} Run Now
+                  </Button>
                   {s.is_active ? (
                     <Button variant="outline" size="sm" className="h-7 text-[11px] flex-1"
                       onClick={() => setConfirmAction({ type: "pause", schedule: s })}>
