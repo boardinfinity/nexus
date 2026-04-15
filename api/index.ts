@@ -71,11 +71,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // ==================== SCHEDULER TICK (cron-secret auth, before main auth) ====================
   if (path === "/scheduler/tick" && (req.method === "POST" || req.method === "GET")) {
-    // Delegate to scheduler.ts which handles auth, batching, and all pipeline types
-    const result = await handleSchedulerRoutes(path, req, res, auth);
+    // Tick has its own auth (x-vercel-cron header or CRON_SECRET)
+    // Pass a minimal auth object since verifyAuth hasn't run yet
+    const cronAuth = await verifyAuth(req).catch(() => ({ nexusUser: null as any })) as any;
+    const result = await handleSchedulerRoutes(path, req, res, cronAuth);
     if (result) return;
     return res.status(404).json({ error: "Not found" });
-    } else if (path.startsWith("/scheduler") && path !== "/scheduler/tick") {
+  }
+
+  // Authenticate all other requests
+  const auth = await verifyAuth(req);
+
+  // Handle access-denied page for non-authenticated users on non-public routes
+  if (!auth.nexusUser && !path.startsWith("/public")) {
+    return res.status(401).json({ error: "Access denied. Contact your administrator to get access." });
+  }
+
+  let result: VercelResponse | undefined;
+
+  try {
+    if (path.startsWith("/scheduler")) {
       result = await handleSchedulerRoutes(path, req, res, auth);
     } else if (path.startsWith("/pipelines") || path.startsWith("/providers") || path.startsWith("/monitoring")) {
       result = await handlePipelineRoutes(path, req, res, auth);
