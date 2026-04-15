@@ -10,13 +10,19 @@
     }
   },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/api/index.ts?path=$1" },
-    { "source": "/((?!api|assets).*)", "destination": "/index.html" }
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/index.ts?path=$1"
+    },
+    {
+      "source": "/((?!api|assets).*)",
+      "destination": "/index.html"
+    }
   ],
   "crons": [
     {
       "path": "/api/scheduler/tick",
-      "schedule": "0 0 * * *"
+      "schedule": "*/30 * * * *"
     }
   ]
 }
