@@ -90,7 +90,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let result: VercelResponse | undefined;
 
   try {
-    if (path.startsWith("/scheduler")) {
+    if (path.startsWith("/dashboard")) {
+      result = await handleDashboardRoutes(path, req, res, auth);
+    } else if (path.startsWith("/jobs")) {
+      result = await handleJobsRoutes(path, req, res, auth);
+    } else if (path.startsWith("/people")) {
+      result = await handlePeopleRoutes(path, req, res, auth);
+    } else if (path.startsWith("/scheduler")) {
       result = await handleSchedulerRoutes(path, req, res, auth);
     } else if (path.startsWith("/pipelines") || path.startsWith("/providers") || path.startsWith("/monitoring")) {
       result = await handlePipelineRoutes(path, req, res, auth);
