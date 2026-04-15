@@ -62,13 +62,17 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
 
     if (error || !run) throw new Error(error?.message || "Failed to create run");
 
-    // Execute pipeline synchronously — Vercel needs the function to stay alive
-    await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch((err) => {
+    // Fire-and-forget: Vercel keeps the function alive for background work
+    // after res.json() is sent, until the function timeout (300s).
+    // We don't await — the pipeline updates its own status when done.
+    executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch((err) => {
       console.error(`Schedule ${schedule.name} failed:`, err.message);
       supabase.from("pipeline_runs").update({
         status: "failed", error_message: err.message, completed_at: new Date().toISOString(),
       }).eq("id", run.id);
     });
+    // Small delay to let the Apify requests launch before returning
+    await new Promise(r => setTimeout(r, 3000));
 
     return { success: true, run_id: run.id };
   } catch (err: any) {
@@ -141,9 +145,9 @@ export async function handleSchedulerRoutes(
 
     if (schedErr) return res.status(500).json({ error: schedErr.message });
 
-    // Process max 3 schedules per tick to stay within Vercel 300s timeout.
-    // Remaining schedules stay due and will be picked up on the next tick.
-    const MAX_PER_TICK = 3;
+    // Process max 8 schedules per tick — execution is fire-and-forget.
+    // Each schedule just creates a run and fires the Apify actor (non-blocking).
+    const MAX_PER_TICK = 8;
     const toProcess = (dueSchedules || []).slice(0, MAX_PER_TICK);
 
     const results: any[] = [];
