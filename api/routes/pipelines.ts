@@ -775,15 +775,22 @@ async function executeLinkedInJobs(runId: string, config: any) {
   const apifyRuns: { runId?: string; datasetId?: string; keywords: string }[] = [];
   const launchPromises = runs.map(async (run) => {
     try {
-      const res = await fetch(
-        `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...commonInput, keywords: run.keywords }) }
-      );
+      const apifyUrl = `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`;
+      const body = JSON.stringify({ ...commonInput, keywords: run.keywords });
+      console.log(`[executeLinkedInJobs] Launching Apify for: ${run.roleName || run.keywords.substring(0, 50)}`);
+      const res = await fetch(apifyUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+      console.log(`[executeLinkedInJobs] Apify response: ${res.status} ${res.statusText}`);
       if (res.ok) {
         const d = await res.json();
+        console.log(`[executeLinkedInJobs] Apify run started: ${d.data?.id}`);
         return { runId: d.data?.id, datasetId: d.data?.defaultDatasetId, keywords: run.keywords };
+      } else {
+        const errText = await res.text();
+        console.error(`[executeLinkedInJobs] Apify error: ${res.status} ${errText.substring(0, 200)}`);
       }
-    } catch {}
+    } catch (err: any) {
+      console.error(`[executeLinkedInJobs] Fetch failed: ${err.message}`);
+    }
     return { keywords: run.keywords };
   });
   apifyRuns.push(...(await Promise.all(launchPromises)));
@@ -809,11 +816,23 @@ async function executeLinkedInJobs(runId: string, config: any) {
   }
 
   // Process results from all succeeded runs
+  let processedCount = 0;
   for (const r of apifyRuns) {
     if ((r as any)._status === "SUCCEEDED" && r.datasetId) {
       await processLinkedInResults(runId, r.datasetId, config);
+      processedCount++;
     }
   }
+
+  // If no Apify runs launched at all, mark as failed with debug info
+  const launchedRuns = apifyRuns.filter(r => r.runId);
+  if (launchedRuns.length === 0) {
+    const debugInfo = `No Apify runs launched. Roles: ${runs.length}, Keywords sample: ${runs[0]?.keywords?.substring(0, 100)}`;
+    console.error(`[executeLinkedInJobs] ${debugInfo}`);
+    throw new Error(debugInfo);
+  }
+
+  console.log(`[executeLinkedInJobs] Done. Launched: ${launchedRuns.length}, Processed: ${processedCount}`);
 }
 
 async function executeGoogleJobs(runId: string, config: any) {
