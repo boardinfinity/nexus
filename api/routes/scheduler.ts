@@ -65,7 +65,7 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
     // Execute pipeline synchronously
     try {
       await executePipeline(run.id, schedule.pipeline_type, schedule.config || {});
-      return { success: true, run_id: run.id, debug: { hasApifyKey: !!APIFY_API_KEY, configKeys: Object.keys(schedule.config || {}), roleIds: (schedule.config?.job_role_ids || []).length } };
+      return { success: true, run_id: run.id, debug: { apifyKeyPrefix: APIFY_API_KEY?.substring(0, 15) || "EMPTY", configKeys: Object.keys(schedule.config || {}), roleIds: (schedule.config?.job_role_ids || []).length } };
     } catch (execErr: any) {
       const errMsg = execErr?.message || String(execErr);
       console.error(`Schedule ${schedule.name} executePipeline failed:`, errMsg);
