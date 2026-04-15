@@ -565,6 +565,7 @@ export async function executePipeline(runId: string, pipelineType: string, confi
       error_message: err.message,
       completed_at: new Date().toISOString(),
     }).eq("id", runId);
+    throw err; // Re-throw so callers (scheduler) see the error
   }
 }
 
