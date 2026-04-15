@@ -62,16 +62,18 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
 
     if (error || !run) throw new Error(error?.message || "Failed to create run");
 
-    // Execute pipeline synchronously — Vercel kills the function after response,
-    // so we must complete execution before returning.
-    await executePipeline(run.id, schedule.pipeline_type, schedule.config || {}).catch((err) => {
-      console.error(`Schedule ${schedule.name} failed:`, err.message);
-      supabase.from("pipeline_runs").update({
-        status: "failed", error_message: err.message, completed_at: new Date().toISOString(),
+    // Execute pipeline synchronously
+    try {
+      await executePipeline(run.id, schedule.pipeline_type, schedule.config || {});
+      return { success: true, run_id: run.id };
+    } catch (execErr: any) {
+      const errMsg = execErr?.message || String(execErr);
+      console.error(`Schedule ${schedule.name} executePipeline failed:`, errMsg);
+      await supabase.from("pipeline_runs").update({
+        status: "failed", error_message: errMsg, completed_at: new Date().toISOString(),
       }).eq("id", run.id);
-    });
-
-    return { success: true, run_id: run.id };
+      return { success: false, run_id: run.id, error: errMsg };
+    }
   } catch (err: any) {
     return { success: false, error: err.message };
   }
