@@ -777,12 +777,9 @@ async function executeLinkedInJobs(runId: string, config: any) {
     try {
       const apifyUrl = `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`;
       const body = JSON.stringify({ ...commonInput, keywords: run.keywords });
-      console.log(`[executeLinkedInJobs] Launching Apify for: ${run.roleName || run.keywords.substring(0, 50)}`);
       const res = await fetch(apifyUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body });
-      console.log(`[executeLinkedInJobs] Apify response: ${res.status} ${res.statusText}`);
       if (res.ok) {
         const d = await res.json();
-        console.log(`[executeLinkedInJobs] Apify run started: ${d.data?.id}`);
         return { runId: d.data?.id, datasetId: d.data?.defaultDatasetId, keywords: run.keywords };
       } else {
         const errText = await res.text();
@@ -832,7 +829,6 @@ async function executeLinkedInJobs(runId: string, config: any) {
     throw new Error(debugInfo);
   }
 
-  console.log(`[executeLinkedInJobs] Done. Launched: ${launchedRuns.length}, Processed: ${processedCount}`);
 }
 
 async function executeGoogleJobs(runId: string, config: any) {

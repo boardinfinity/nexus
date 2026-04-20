@@ -1,5 +1,5 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { supabase, APIFY_API_KEY } from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 import { AuthResult, requireReader, requirePermission, verifyAuth } from "../lib/auth";
 import { executePipeline } from "./pipelines";
 
@@ -65,7 +65,7 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
     // Execute pipeline synchronously
     try {
       await executePipeline(run.id, schedule.pipeline_type, schedule.config || {});
-      return { success: true, run_id: run.id, debug: { apifyKeyPrefix: APIFY_API_KEY?.substring(0, 15) || "EMPTY", configKeys: Object.keys(schedule.config || {}), roleIds: (schedule.config?.job_role_ids || []).length } };
+      return { success: true, run_id: run.id };
     } catch (execErr: any) {
       const errMsg = execErr?.message || String(execErr);
       console.error(`Schedule ${schedule.name} executePipeline failed:`, errMsg);
