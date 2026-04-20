@@ -159,7 +159,10 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                   <div className="flex items-center justify-between">
                     <div className="flex gap-3 text-[10px]">
                       {(run.total_items != null) && (
-                        <span className="text-muted-foreground">Total: <span className="text-foreground font-medium">{run.total_items}</span></span>
+                        <span className="text-muted-foreground">Scraped: <span className="text-foreground font-medium">{run.total_items}</span></span>
+                      )}
+                      {run.config?._validated_count != null && run.config._validated_count !== run.total_items && (
+                        <span className="text-blue-600">Matched: <span className="font-medium">{run.config._validated_count}</span></span>
                       )}
                       {(run.processed_items != null && run.processed_items > 0) && (
                         <span className="text-green-600">Processed: <span className="font-medium">{run.processed_items}</span></span>
