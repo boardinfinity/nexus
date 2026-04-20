@@ -229,6 +229,70 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       }
     }
 
+    // Alumni Bulk Upload: scrape specific LinkedIn profile URLs from CSV
+    if (pipeline_type === "alumni_bulk_upload") {
+      if (!APIFY_API_KEY) return res.status(400).json({ error: "Apify API key not configured" });
+
+      const urls = config?.urls;
+      if (!Array.isArray(urls) || urls.length === 0) {
+        return res.status(400).json({ error: "urls array is required" });
+      }
+
+      // Resolve college info for education validation
+      let universityName = config?.college_name || "Unknown";
+      let collegeConfig: any[] = [];
+      let collegeNames: string[] = [universityName];
+
+      if (config?.college_id) {
+        const { data: college } = await supabase
+          .from("colleges")
+          .select("id, name, short_name, degree_level")
+          .eq("id", config.college_id)
+          .single();
+        if (college) {
+          universityName = college.name;
+          collegeConfig = [college];
+          collegeNames = [college.short_name || college.name];
+        }
+      }
+
+      config.university_name = universityName;
+      config._colleges = collegeConfig;
+      config._college_names = collegeNames;
+      config._validation_enabled = true;
+
+      // Build startUrls — filter to valid LinkedIn profile URLs
+      const startUrls = urls
+        .filter((u: string) => u && u.includes("linkedin.com/in/"))
+        .map((u: string) => ({ url: u.trim() }));
+
+      if (startUrls.length === 0) {
+        return res.status(400).json({ error: "No valid LinkedIn profile URLs found" });
+      }
+
+      config._total_urls = startUrls.length;
+
+      // Start Apify profile scraper with all URLs in one run
+      const startRes = await fetch(
+        `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/runs?token=${APIFY_API_KEY}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            startUrls,
+            proxyConfiguration: { useApifyProxy: true },
+          }),
+        }
+      );
+      if (!startRes.ok) {
+        const errText = await startRes.text();
+        return res.status(500).json({ error: `Apify bulk upload start failed: ${errText}` });
+      }
+      const apifyData = await startRes.json();
+      providerRunId = apifyData.data?.id;
+      providerDatasetId = apifyData.data?.defaultDatasetId;
+    }
+
     // Create pipeline run with provider tracking info
     const { data: run, error } = await supabase
       .from("pipeline_runs")
@@ -282,6 +346,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     const actorMap: Record<string, string> = {
       linkedin_jobs: "practicaltools~linkedin-jobs",
       alumni: "harvestapi~linkedin-profile-search",
+      alumni_bulk_upload: "harvestapi~linkedin-profile-scraper",
     };
     const actorSlug = actorMap[run.pipeline_type];
 
@@ -310,7 +375,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       const dsId = providerDatasetId || pollData.data?.defaultDatasetId;
       if (run.pipeline_type === "linkedin_jobs") {
         await processLinkedInResults(id, dsId, run.config);
-      } else if (run.pipeline_type === "alumni") {
+      } else if (run.pipeline_type === "alumni" || run.pipeline_type === "alumni_bulk_upload") {
         await processAlumniResults(id, dsId, run.config);
       }
       const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();

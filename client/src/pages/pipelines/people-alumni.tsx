@@ -10,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Play, Loader2, CalendarClock, Users, X, Search, Info, ChevronDown } from "lucide-react";
+import { Play, Loader2, CalendarClock, Users, X, Search, Info, ChevronDown, Upload } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
@@ -587,6 +587,226 @@ function AlumniSearchForm() {
   );
 }
 
+// ── Bulk Upload Form ─────────────────────────────────────────────────────────
+
+function BulkUploadForm() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const { data: allColleges = [] } = useQuery<College[]>({
+    queryKey: ["/api/masters/colleges"],
+    queryFn: async () => {
+      const res = await authFetch("/api/masters/colleges");
+      if (!res.ok) throw new Error(`Failed to fetch colleges: ${res.status}`);
+      return res.json();
+    },
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const [selectedCollegeId, setSelectedCollegeId] = useState("");
+  const [urls, setUrls] = useState<string[]>([]);
+  const [fileName, setFileName] = useState("");
+  const [collegeSearch, setCollegeSearch] = useState("");
+  const [showDropdown, setShowDropdown] = useState(false);
+
+  const filteredColleges = allColleges.filter(c =>
+    !collegeSearch || c.name.toLowerCase().includes(collegeSearch.toLowerCase()) ||
+    (c.short_name && c.short_name.toLowerCase().includes(collegeSearch.toLowerCase()))
+  );
+
+  const selectedCollege = allColleges.find(c => c.id === selectedCollegeId);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      const lines = text.split("\n")
+        .map(l => l.trim().replace(/"/g, "").replace(/,$/g, ""))
+        .filter(l => l.includes("linkedin.com/in/"));
+      setUrls(Array.from(new Set(lines))); // Deduplicate
+    };
+    reader.readAsText(file);
+  };
+
+  const runBulkUpload = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/pipelines/run", {
+        method: "POST",
+        body: JSON.stringify({
+          pipeline_type: "alumni_bulk_upload",
+          config: {
+            urls,
+            college_id: selectedCollegeId || undefined,
+            college_name: selectedCollege?.name || "Unknown",
+          },
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Bulk upload started", description: `Processing ${urls.length} LinkedIn profiles` });
+      qc.invalidateQueries({ queryKey: ["/api/pipelines"] });
+    },
+    onError: (e: any) => toast({ title: "Failed to start", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Upload className="h-5 w-5 text-green-600" /> Bulk Upload Profiles
+          </CardTitle>
+          <Badge variant="outline" className="text-[10px]">CSV → Profile Scraper</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" /> How to use
+            <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 text-xs text-muted-foreground space-y-1 bg-muted/30 rounded-lg p-3">
+            <p>1. <strong>Upload a CSV</strong> with LinkedIn profile URLs (one per row)</p>
+            <p>2. <strong>Select the college</strong> these alumni belong to — used for education validation</p>
+            <p>3. <strong>Run</strong> — all URLs are scraped via Apify in one batch</p>
+            <p>4. Profiles where education doesn't match the college are filtered out automatically</p>
+            <p>5. Matching profiles are saved to People + Alumni tables</p>
+          </CollapsibleContent>
+        </Collapsible>
+
+        {/* ── FILE UPLOAD ────────────────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">LinkedIn Profiles</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Upload a CSV exported from Clay, LinkedIn, or any source with profile URLs</p>
+          <div className="mt-1 border-2 border-dashed rounded-lg p-4 text-center hover:border-primary/50 transition-colors">
+            <input type="file" accept=".csv,.txt" onChange={handleFileUpload} className="hidden" id="csv-upload" />
+            <label htmlFor="csv-upload" className="cursor-pointer">
+              {fileName ? (
+                <div>
+                  <p className="text-sm font-medium">{fileName}</p>
+                  <p className="text-xs text-green-600 mt-1">{urls.length} unique LinkedIn URLs found</p>
+                </div>
+              ) : (
+                <div>
+                  <Upload className="h-8 w-8 mx-auto text-muted-foreground mb-2" />
+                  <p className="text-sm text-muted-foreground">Drop CSV file or click to browse</p>
+                  <p className="text-[10px] text-muted-foreground mt-1">Accepts any CSV with linkedin.com/in/ URLs</p>
+                </div>
+              )}
+            </label>
+          </div>
+        </div>
+
+        {/* ── URL PREVIEW ────────────────────────────────────── */}
+        {urls.length > 0 && (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <Label className="text-xs">Preview ({urls.length} URLs)</Label>
+              <button type="button" onClick={() => { setUrls([]); setFileName(""); }}
+                className="text-[10px] text-muted-foreground hover:text-foreground">Clear</button>
+            </div>
+            <ScrollArea className="h-28 rounded-md border p-2">
+              <div className="space-y-0.5">
+                {urls.slice(0, 20).map((url, i) => (
+                  <p key={i} className="text-[10px] text-muted-foreground truncate font-mono">{url}</p>
+                ))}
+                {urls.length > 20 && (
+                  <p className="text-[10px] text-muted-foreground font-medium pt-1">...and {urls.length - 20} more</p>
+                )}
+              </div>
+            </ScrollArea>
+          </div>
+        )}
+
+        <Separator />
+
+        {/* ── COLLEGE SELECTION ──────────────────────────────── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">College</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Select the college these alumni belong to — used for education validation</p>
+
+          {selectedCollege ? (
+            <div className="flex items-center gap-2 p-2 rounded-md border bg-muted/30">
+              <Badge variant="secondary" className="text-xs">
+                {selectedCollege.short_name || selectedCollege.name}
+              </Badge>
+              <span className="text-[10px] text-muted-foreground">
+                {[selectedCollege.degree_level, selectedCollege.tier, selectedCollege.city].filter(Boolean).join(" · ")}
+              </span>
+              <button onClick={() => setSelectedCollegeId("")} className="ml-auto hover:text-destructive">
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          ) : (
+            <div className="relative">
+              <div className="relative">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input
+                  value={collegeSearch}
+                  onChange={e => { setCollegeSearch(e.target.value); setShowDropdown(true); }}
+                  onFocus={() => setShowDropdown(true)}
+                  placeholder="Search colleges..."
+                  className="text-sm h-9 pl-8"
+                />
+              </div>
+              {showDropdown && collegeSearch && (
+                <div className="absolute z-10 w-full mt-1 rounded-md border bg-popover shadow-md">
+                  <ScrollArea className="max-h-40">
+                    {filteredColleges.length === 0 ? (
+                      <p className="text-xs text-muted-foreground p-3 text-center">No colleges found</p>
+                    ) : (
+                      <div className="p-1">
+                        {filteredColleges.slice(0, 20).map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => { setSelectedCollegeId(c.id); setCollegeSearch(""); setShowDropdown(false); }}
+                            className="block w-full text-left px-2 py-1.5 rounded hover:bg-muted/50 text-xs"
+                          >
+                            {c.name}
+                            <span className="text-[10px] text-muted-foreground ml-2">
+                              {[c.degree_level, c.tier, c.city].filter(Boolean).join(" · ")}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </ScrollArea>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* ── RUN BUTTON ─────────────────────────────────────── */}
+        <Button
+          onClick={() => runBulkUpload.mutate()}
+          disabled={runBulkUpload.isPending || urls.length === 0 || !selectedCollegeId}
+          className="w-full h-10"
+        >
+          {runBulkUpload.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+          Upload & Process {urls.length > 0 ? `${urls.length} Profiles` : "Profiles"}
+        </Button>
+
+        {/* ── COST ESTIMATE ──────────────────────────────────── */}
+        {urls.length > 0 && (
+          <div className="rounded-md bg-muted/50 p-2.5 text-[10px] text-muted-foreground">
+            <span className="font-medium">Estimated:</span> {urls.length} profiles via Apify Profile Scraper
+            {" "}= <span className="font-semibold text-foreground">~${(urls.length * 0.004).toFixed(2)}</span>
+            {" "} · Education validation filters non-matching profiles
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Page Layout ──────────────────────────────────────────────────────────────
 
 export default function PeopleAlumni() {
@@ -601,10 +821,13 @@ export default function PeopleAlumni() {
       </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
         <AlumniSearchForm />
-        <PipelineTrigger type="people_enrichment" title="Profile Enrichment" description="Enrich pending people profiles with AI extraction" icon={Users}
-          fields={[{ name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" }]} />
+        <div className="space-y-6">
+          <BulkUploadForm />
+          <PipelineTrigger type="people_enrichment" title="Profile Enrichment" description="Enrich pending people profiles with AI extraction" icon={Users}
+            fields={[{ name: "batch_size", label: "Batch Size", type: "number", placeholder: "50", defaultValue: "50" }]} />
+        </div>
       </div>
-      <RunHistory pipelineTypes={["alumni", "people_enrichment"]} title="People Pipeline Runs" />
+      <RunHistory pipelineTypes={["alumni", "alumni_bulk_upload", "people_enrichment"]} title="People Pipeline Runs" />
     </div>
   );
 }
