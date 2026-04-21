@@ -278,7 +278,7 @@ function AlumniSearchForm() {
     setGradYear(val);
     if (val && val !== "none") {
       const mapped = GRAD_YEAR_TO_YOE[val];
-      if (mapped) setYearsOfExperience(mapped.map(String));
+      if (mapped) setYearsOfExperience(mapped);
     } else {
       setYearsOfExperience([]);
     }
@@ -313,9 +313,9 @@ function AlumniSearchForm() {
     search_query: searchQuery || undefined,
     locations: locations.length > 0 ? locations : undefined,
     graduation_year: gradYear && gradYear !== "none" ? gradYear : undefined,
-    years_of_experience_ids: yearsOfExperience.length > 0 ? yearsOfExperience.map(Number) : undefined,
-    seniority_level_ids: seniority.length > 0 ? seniority.map(Number) : undefined,
-    function_ids: functions.length > 0 ? functions.map(Number) : undefined,
+    years_of_experience_ids: yearsOfExperience.length > 0 ? yearsOfExperience : undefined,
+    seniority_level_ids: seniority.length > 0 ? seniority : undefined,
+    function_ids: functions.length > 0 ? functions : undefined,
     current_companies: currentCompanies.length > 0 ? currentCompanies : undefined,
     past_companies: pastCompanies.length > 0 ? pastCompanies : undefined,
     company_headcount: headcount.length > 0 ? headcount : undefined,

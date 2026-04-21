@@ -198,14 +198,15 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       if (config?.current_job_titles?.length) actorInput.currentJobTitles = config.current_job_titles;
       if (config?.past_job_titles?.length) actorInput.pastJobTitles = config.past_job_titles;
       if (config?.locations?.length) actorInput.locations = config.locations;
-      if (config?.years_of_experience_ids?.length) actorInput.yearsOfExperienceIds = config.years_of_experience_ids;
-      if (config?.seniority_level_ids?.length) actorInput.seniorityLevelIds = config.seniority_level_ids;
-      if (config?.function_ids?.length) actorInput.functionIds = config.function_ids;
+      // Actor expects these as arrays of STRINGS (not numbers) — coerce defensively
+      if (config?.years_of_experience_ids?.length) actorInput.yearsOfExperienceIds = config.years_of_experience_ids.map(String);
+      if (config?.seniority_level_ids?.length) actorInput.seniorityLevelIds = config.seniority_level_ids.map(String);
+      if (config?.function_ids?.length) actorInput.functionIds = config.function_ids.map(String);
       if (config?.current_companies?.length) actorInput.currentCompanies = config.current_companies;
       if (config?.past_companies?.length) actorInput.pastCompanies = config.past_companies;
       if (config?.company_headcount?.length) actorInput.companyHeadcount = config.company_headcount;
       if (config?.recently_changed_jobs) actorInput.recentlyChangedJobs = true;
-      if (config?.industry_ids?.length) actorInput.industryIds = config.industry_ids;
+      if (config?.industry_ids?.length) actorInput.industryIds = config.industry_ids.map(String);
       if (config?.first_names?.length) actorInput.firstNames = config.first_names;
       if (config?.last_names?.length) actorInput.lastNames = config.last_names;
       // Exclusions
