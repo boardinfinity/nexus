@@ -205,6 +205,9 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       if (config?.past_companies?.length) actorInput.pastCompanies = config.past_companies;
       if (config?.company_headcount?.length) actorInput.companyHeadcount = config.company_headcount;
       if (config?.recently_changed_jobs) actorInput.recentlyChangedJobs = true;
+      if (config?.industry_ids?.length) actorInput.industryIds = config.industry_ids;
+      if (config?.first_names?.length) actorInput.firstNames = config.first_names;
+      if (config?.last_names?.length) actorInput.lastNames = config.last_names;
       // Exclusions
       if (config?.exclude_locations?.length) actorInput.excludeLocations = config.exclude_locations;
       if (config?.exclude_current_companies?.length) actorInput.excludeCurrentCompanies = config.exclude_current_companies;

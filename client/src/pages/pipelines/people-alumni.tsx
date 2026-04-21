@@ -212,6 +212,12 @@ function AlumniSearchForm() {
   const [pastCompanies, setPastCompanies] = useState<string[]>([]);
   const [headcount, setHeadcount] = useState<string[]>([]);
   const [recentlyChangedJobs, setRecentlyChangedJobs] = useState(false);
+  const [industryInput, setIndustryInput] = useState("");
+  const [industries, setIndustries] = useState<string[]>([]);
+  const [firstNameInput, setFirstNameInput] = useState("");
+  const [firstNames, setFirstNames] = useState<string[]>([]);
+  const [lastNameInput, setLastNameInput] = useState("");
+  const [lastNames, setLastNames] = useState<string[]>([]);
 
   // ── Exclusions ──
   const [excludeLocationInput, setExcludeLocationInput] = useState("");
@@ -250,6 +256,21 @@ function AlumniSearchForm() {
     const s = excludeSchoolInput.trim();
     if (s && !excludeSchools.includes(s)) setExcludeSchools([...excludeSchools, s]);
     setExcludeSchoolInput("");
+  };
+  const addIndustry = () => {
+    const i = industryInput.trim();
+    if (i && !industries.includes(i)) setIndustries([...industries, i]);
+    setIndustryInput("");
+  };
+  const addFirstName = () => {
+    const n = firstNameInput.trim();
+    if (n && !firstNames.includes(n)) setFirstNames([...firstNames, n]);
+    setFirstNameInput("");
+  };
+  const addLastName = () => {
+    const n = lastNameInput.trim();
+    if (n && !lastNames.includes(n)) setLastNames([...lastNames, n]);
+    setLastNameInput("");
   };
 
   // When grad year changes, auto-set YOE
@@ -299,6 +320,9 @@ function AlumniSearchForm() {
     past_companies: pastCompanies.length > 0 ? pastCompanies : undefined,
     company_headcount: headcount.length > 0 ? headcount : undefined,
     recently_changed_jobs: recentlyChangedJobs || undefined,
+    industry_ids: industries.length > 0 ? industries : undefined,
+    first_names: firstNames.length > 0 ? firstNames : undefined,
+    last_names: lastNames.length > 0 ? lastNames : undefined,
     exclude_locations: excludeLocations.length > 0 ? excludeLocations : undefined,
     exclude_current_companies: excludeCurrentCompanies.length > 0 ? excludeCurrentCompanies : undefined,
     exclude_schools: excludeSchools.length > 0 ? excludeSchools : undefined,
@@ -613,6 +637,78 @@ function AlumniSearchForm() {
             </div>
           </div>
         </div>
+
+        <Separator />
+
+        {/* ── ADVANCED (collapsible): Industry + Names ── */}
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors">
+            <span>Advanced Filters</span>
+            <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3 space-y-3">
+            <div>
+              <Label className="text-xs">Industry IDs</Label>
+              <div className="flex gap-2 mt-1">
+                <Input value={industryInput} onChange={e => setIndustryInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addIndustry())}
+                  placeholder="LinkedIn industry ID (e.g. 4, 43) + Enter" className="text-sm h-9 flex-1" />
+                <Button type="button" variant="outline" size="sm" onClick={addIndustry} className="h-9 px-3 text-xs">Add</Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground mt-1">Common: 4=Software, 6=Internet, 43=Financial Services, 80=Consulting, 69=Higher Ed, 47=Healthcare</p>
+              {industries.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {industries.map(i => (
+                    <Badge key={i} variant="secondary" className="text-xs pr-1">
+                      {i}
+                      <button onClick={() => setIndustries(industries.filter(x => x !== i))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">First Names</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input value={firstNameInput} onChange={e => setFirstNameInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addFirstName())}
+                    placeholder="e.g. Priya + Enter" className="text-sm h-9 flex-1" />
+                  <Button type="button" variant="outline" size="sm" onClick={addFirstName} className="h-9 px-3 text-xs">Add</Button>
+                </div>
+                {firstNames.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {firstNames.map(n => (
+                      <Badge key={n} variant="secondary" className="text-xs pr-1">
+                        {n}
+                        <button onClick={() => setFirstNames(firstNames.filter(x => x !== n))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <div>
+                <Label className="text-xs">Last Names</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input value={lastNameInput} onChange={e => setLastNameInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addLastName())}
+                    placeholder="e.g. Sharma + Enter" className="text-sm h-9 flex-1" />
+                  <Button type="button" variant="outline" size="sm" onClick={addLastName} className="h-9 px-3 text-xs">Add</Button>
+                </div>
+                {lastNames.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {lastNames.map(n => (
+                      <Badge key={n} variant="secondary" className="text-xs pr-1">
+                        {n}
+                        <button onClick={() => setLastNames(lastNames.filter(x => x !== n))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         <Separator />
 
