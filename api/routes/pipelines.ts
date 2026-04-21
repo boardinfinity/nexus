@@ -261,26 +261,26 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       config._college_names = collegeNames;
       config._validation_enabled = true;
 
-      // Build startUrls — filter to valid LinkedIn profile URLs
-      const startUrls = urls
+      // Filter to valid LinkedIn profile URLs
+      const cleanUrls = urls
         .filter((u: string) => u && u.includes("linkedin.com/in/"))
-        .map((u: string) => ({ url: u.trim() }));
+        .map((u: string) => u.trim());
 
-      if (startUrls.length === 0) {
+      if (cleanUrls.length === 0) {
         return res.status(400).json({ error: "No valid LinkedIn profile URLs found" });
       }
 
-      config._total_urls = startUrls.length;
+      config._total_urls = cleanUrls.length;
 
-      // Start Apify profile scraper with all URLs in one run
+      // Start Apify profile scraper — actor expects `queries` array of URL strings
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/runs?token=${APIFY_API_KEY}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            startUrls,
-            proxyConfiguration: { useApifyProxy: true },
+            queries: cleanUrls,
+            profileScraperMode: "Profile details no email ($4 per 1k)",
           }),
         }
       );
