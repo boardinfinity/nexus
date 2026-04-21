@@ -202,19 +202,19 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                           </Button>
                         </>
                       )}
-                      {run.status === "completed" && (run.processed_items || 0) > 0 && (
-                        <Link
-                          href={
-                            run.pipeline_type === "alumni" || run.pipeline_type === "people_enrichment"
-                              ? `/people`
-                              : `/jobs?source=${run.pipeline_type === "linkedin_jobs" ? "linkedin" : run.pipeline_type === "google_jobs" ? "google_jobs" : ""}&added=${encodeURIComponent(run.started_at)}`
-                          }
-                        >
-                          <Button variant="outline" size="sm" className="h-6 text-[10px] px-2">
-                            <ExternalLink className="h-3 w-3 mr-1" /> {run.pipeline_type === "alumni" || run.pipeline_type === "people_enrichment" ? "View People" : "View Jobs"}
-                          </Button>
-                        </Link>
-                      )}
+                      {run.status === "completed" && (run.processed_items || 0) > 0 && (() => {
+                        const isPeopleRun = ["alumni", "alumni_bulk_upload", "people_enrichment"].includes(run.pipeline_type);
+                        const href = isPeopleRun
+                          ? `/people`
+                          : `/jobs?source=${run.pipeline_type === "linkedin_jobs" ? "linkedin" : run.pipeline_type === "google_jobs" ? "google_jobs" : ""}&added=${encodeURIComponent(run.started_at)}`;
+                        return (
+                          <Link href={href}>
+                            <Button variant="outline" size="sm" className="h-6 text-[10px] px-2">
+                              <ExternalLink className="h-3 w-3 mr-1" /> {isPeopleRun ? "View People" : "View Jobs"}
+                            </Button>
+                          </Link>
+                        );
+                      })()}
                     </div>
                   </div>
                 </div>

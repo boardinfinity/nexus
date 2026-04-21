@@ -252,7 +252,8 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         if (college) {
           universityName = college.name;
           collegeConfig = [college];
-          collegeNames = [college.short_name || college.name];
+          // Include BOTH full name AND short name — LinkedIn uses full name, pattern expander needs it
+          collegeNames = Array.from(new Set([college.name, college.short_name].filter(Boolean)));
         }
       }
 
