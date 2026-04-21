@@ -1,77 +1,118 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { authFetch } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Button } from "@/components/ui/button";
-import { useToast } from "@/hooks/use-toast";
-import { Eye, EyeOff, Save, Info, ChevronDown } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Info, ChevronDown, CheckCircle2, XCircle, ExternalLink } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import type { ProviderCredit } from "@shared/schema";
 
-function MaskedKeyField({ label, value, testId }: { label: string; value: string; testId: string }) {
-  const [visible, setVisible] = useState(false);
-  const masked = value ? value.slice(0, 8) + "..." + value.slice(-4) : "Not configured";
+type ProviderInfo = {
+  configured: boolean;
+  key_preview: string | null;
+  usage?: { used?: number; limit?: number; plan?: string };
+};
 
+type ProvidersResponse = {
+  apify: ProviderInfo;
+  openai: ProviderInfo;
+  anthropic: ProviderInfo;
+  resend: ProviderInfo;
+};
+
+function ProviderRow({
+  name,
+  description,
+  usedFor,
+  data,
+  docsUrl,
+}: {
+  name: string;
+  description: string;
+  usedFor: string;
+  data: ProviderInfo | undefined;
+  docsUrl?: string;
+}) {
+  const configured = data?.configured;
   return (
-    <div className="space-y-1">
-      <Label className="text-xs">{label}</Label>
-      <div className="flex items-center gap-2">
-        <Input
-          readOnly
-          className="h-8 text-xs font-mono"
-          value={visible ? value : masked}
-          data-testid={testId}
-        />
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-8 w-8 p-0"
-          onClick={() => setVisible(!visible)}
-          data-testid={`toggle-${testId}`}
-        >
-          {visible ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
-        </Button>
+    <div className="rounded-lg border p-4 space-y-2.5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2">
+            <h3 className="text-sm font-semibold">{name}</h3>
+            {configured ? (
+              <Badge className="h-5 bg-emerald-100 text-emerald-700 hover:bg-emerald-100 text-[10px] border-emerald-200">
+                <CheckCircle2 className="h-2.5 w-2.5 mr-0.5" /> Configured
+              </Badge>
+            ) : (
+              <Badge variant="destructive" className="h-5 text-[10px]">
+                <XCircle className="h-2.5 w-2.5 mr-0.5" /> Missing
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground mt-0.5">{description}</p>
+          <p className="text-[10px] text-muted-foreground mt-1">
+            <span className="font-medium">Used for:</span> {usedFor}
+          </p>
+        </div>
+        {docsUrl && (
+          <a href={docsUrl} target="_blank" rel="noreferrer" className="text-[10px] text-muted-foreground hover:text-foreground flex items-center gap-0.5 shrink-0 mt-1">
+            Docs <ExternalLink className="h-2.5 w-2.5" />
+          </a>
+        )}
+      </div>
+      <div className="font-mono text-[11px] text-muted-foreground bg-muted/30 rounded px-2 py-1">
+        {data?.key_preview || "(not set)"}
+      </div>
+    </div>
+  );
+}
+
+function ApifyUsageCard({ usage }: { usage?: { used?: number; limit?: number; plan?: string } }) {
+  if (!usage || !usage.limit) return null;
+  const used = usage.used ?? 0;
+  const limit = usage.limit;
+  const pct = Math.min(100, Math.round((used / limit) * 100));
+  const color = pct > 90 ? "bg-red-500" : pct > 70 ? "bg-amber-500" : "bg-emerald-500";
+  return (
+    <div className="rounded-lg border p-4 space-y-2.5 bg-gradient-to-br from-blue-50/50 to-background dark:from-blue-950/20">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-semibold">Apify Monthly Usage</h3>
+          <p className="text-[11px] text-muted-foreground">
+            {usage.plan ? `${usage.plan} plan` : "Current billing period"}
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-lg font-bold">${used.toFixed(2)}</p>
+          <p className="text-[10px] text-muted-foreground">of ${limit}</p>
+        </div>
+      </div>
+      <div className="h-2 w-full rounded-full bg-muted/50 overflow-hidden">
+        <div className={`h-full ${color} transition-all`} style={{ width: `${pct}%` }} />
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>{pct}% consumed</span>
+        <span>${(limit - used).toFixed(2)} remaining</span>
       </div>
     </div>
   );
 }
 
 export default function Settings() {
-  const { toast } = useToast();
-  const queryClient = useQueryClient();
-
-  const { data: credits } = useQuery<ProviderCredit[]>({
-    queryKey: ["/api/providers/credits"],
-  });
-
-  const [budgets, setBudgets] = useState<Record<string, string>>({});
-
-  const updateBudget = useMutation({
-    mutationFn: async ({ provider, allocated }: { provider: string; allocated: number }) => {
-      const res = await authFetch("/api/providers/credits", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, credits_allocated: allocated }),
-      });
-      if (!res.ok) throw new Error("Failed to update budget");
+  const { data: providers, isLoading } = useQuery<ProvidersResponse>({
+    queryKey: ["/api/settings/providers"],
+    queryFn: async () => {
+      const res = await authFetch("/api/settings/providers");
+      if (!res.ok) throw new Error("Failed to fetch providers");
       return res.json();
     },
-    onSuccess: () => {
-      toast({ title: "Budget updated" });
-      queryClient.invalidateQueries({ queryKey: ["/api/providers/credits"] });
-    },
-    onError: (err: Error) => {
-      toast({ title: "Failed to update", description: err.message, variant: "destructive" });
-    },
+    refetchInterval: 60000, // refresh usage every minute
   });
 
   return (
     <div className="space-y-6" data-testid="settings-page">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        <p className="text-sm text-muted-foreground">Manage provider keys, schedules, and budgets</p>
+        <p className="text-sm text-muted-foreground">Provider API keys and platform configuration</p>
       </div>
 
       <Collapsible>
@@ -81,21 +122,11 @@ export default function Settings() {
           <ChevronDown className="h-3.5 w-3.5" />
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3">
-          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
-            <p><strong>How this works:</strong></p>
-            <p>• Settings shows the configuration status of external API keys</p>
-            <p>• All API keys are stored as Vercel environment variables (not in the database)</p>
-            <p>• Key previews show the last 6 characters for verification</p>
-            <p className="pt-1"><strong>Required keys:</strong></p>
-            <p>• OpenAI — powers JD Analysis, catalog processing, and skill extraction</p>
-            <p>• Anthropic — powers report processing (Claude model)</p>
-            <p>• Apify — powers LinkedIn job scraping and people enrichment</p>
-            <p>• RapidAPI — company enrichment data</p>
-            <p>• Resend — sends OTP emails for PlaceIntel and Surveys</p>
-            <p className="pt-1"><strong>Limitations:</strong></p>
-            <p>• API keys can only be changed in the Vercel dashboard (Settings → Environment Variables)</p>
-            <p>• After changing a key, trigger a redeployment for it to take effect</p>
-            <p>• Credit usage is tracked per month — visible in the sidebar</p>
+          <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-1.5">
+            <p>• All API keys are stored as Vercel environment variables — never in the database</p>
+            <p>• Key previews show the first 8 and last 6 characters for verification</p>
+            <p>• To change a key: update in <a href="https://vercel.com/board-infinity/nexus/settings/environment-variables" target="_blank" rel="noreferrer" className="underline hover:text-foreground">Vercel dashboard</a>, then redeploy</p>
+            <p>• Apify usage refreshes automatically every minute from the Apify API</p>
           </div>
         </CollapsibleContent>
       </Collapsible>
@@ -104,100 +135,81 @@ export default function Settings() {
         <CardHeader>
           <CardTitle className="text-base">Provider API Keys</CardTitle>
           <CardDescription className="text-xs">
-            API keys are stored server-side. Values shown here are masked for security.
+            External services powering Nexus. Keys are masked for security.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <MaskedKeyField
-            label="Apify API Key"
-            value={process.env.APIFY_API_KEY || "apify_api_kMa...1g4gy8"}
-            testId="key-apify"
-          />
-          <MaskedKeyField
-            label="RapidAPI Key"
-            value={process.env.RAPIDAPI_KEY || "5ce8450...914e"}
-            testId="key-rapidapi"
-          />
-          <MaskedKeyField
-            label="Supabase Service Key"
-            value="eyJhbGci...RgU"
-            testId="key-supabase"
-          />
-        </CardContent>
-      </Card>
+        <CardContent className="space-y-3">
+          {isLoading ? (
+            <p className="text-sm text-muted-foreground">Loading...</p>
+          ) : (
+            <>
+              <ApifyUsageCard usage={providers?.apify.usage} />
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Credit Budget Allocation</CardTitle>
-          <CardDescription className="text-xs">
-            Set monthly credit limits per provider to control spend.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {credits?.map((c) => (
-            <div key={c.provider} className="flex items-end gap-3">
-              <div className="flex-1 space-y-1">
-                <Label className="text-xs capitalize">{c.provider}</Label>
-                <div className="flex items-center gap-2">
-                  <Input
-                    type="number"
-                    className="h-8 text-xs"
-                    placeholder={String(c.credits_allocated)}
-                    value={budgets[c.provider] ?? ""}
-                    onChange={(e) => setBudgets({ ...budgets, [c.provider]: e.target.value })}
-                    data-testid={`budget-${c.provider}`}
-                  />
-                  <span className="text-xs text-muted-foreground whitespace-nowrap">
-                    Used: {c.credits_used?.toLocaleString()}
-                  </span>
-                </div>
-              </div>
-              <Button
-                size="sm"
-                className="h-8"
-                disabled={!budgets[c.provider]}
-                onClick={() =>
-                  updateBudget.mutate({
-                    provider: c.provider,
-                    allocated: Number(budgets[c.provider]),
-                  })
-                }
-                data-testid={`save-budget-${c.provider}`}
-              >
-                <Save className="h-3 w-3 mr-1" />
-                Save
-              </Button>
-            </div>
-          )) ?? (
-            <p className="text-sm text-muted-foreground">No provider credits configured yet.</p>
+              <ProviderRow
+                name="Apify"
+                description="All LinkedIn Jobs, Google Jobs, and LinkedIn profile scraping"
+                usedFor="LinkedIn Jobs scraper, Google Jobs scraper, LinkedIn Profile scraper, LinkedIn Profile search"
+                data={providers?.apify}
+                docsUrl="https://console.apify.com/account/integrations"
+              />
+
+              <ProviderRow
+                name="OpenAI"
+                description="JD classification, skill extraction, catalog normalization"
+                usedFor="JD Analyzer, Skill extraction, Taxonomy mapping (GPT-4.1 / GPT-5.4 / batch API)"
+                data={providers?.openai}
+                docsUrl="https://platform.openai.com/api-keys"
+              />
+
+              <ProviderRow
+                name="Anthropic"
+                description="Report generation and long-form analysis"
+                usedFor="Claude Sonnet 4.6 reports"
+                data={providers?.anthropic}
+                docsUrl="https://console.anthropic.com/settings/keys"
+              />
+
+              <ProviderRow
+                name="Resend"
+                description="Transactional email (OTP verification)"
+                usedFor="Survey OTP emails, PlaceIntel email verification"
+                data={providers?.resend}
+                docsUrl="https://resend.com/api-keys"
+              />
+            </>
           )}
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Pipeline Schedules</CardTitle>
+          <CardTitle className="text-base">Data Sources</CardTitle>
           <CardDescription className="text-xs">
-            Configure automated pipeline execution schedules.
+            Nexus uses Apify as the sole data provider for all web scraping.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          {[
-            { name: "LinkedIn Jobs Scrape", schedule: "Daily at 6:00 AM IST", active: true },
-            { name: "Google Jobs Search", schedule: "Every 6 hours", active: true },
-            { name: "Company Enrichment", schedule: "Daily at 2:00 AM IST", active: false },
-            { name: "JD Enrichment", schedule: "Hourly", active: false },
-          ].map((s) => (
-            <div key={s.name} className="flex items-center justify-between py-2 border-b last:border-0">
-              <div>
-                <p className="text-sm font-medium">{s.name}</p>
-                <p className="text-xs text-muted-foreground">{s.schedule}</p>
-              </div>
-              <span className={`text-xs font-medium ${s.active ? "text-emerald-600" : "text-muted-foreground"}`}>
-                {s.active ? "Active" : "Inactive"}
-              </span>
+        <CardContent>
+          <div className="rounded-lg border bg-muted/30 p-4 space-y-2">
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">LinkedIn Jobs</span>
+              <span className="text-xs text-muted-foreground font-mono">practicaltools/linkedin-jobs</span>
             </div>
-          ))}
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">Google Jobs</span>
+              <span className="text-xs text-muted-foreground font-mono">igview-owner/google-jobs-scraper</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">LinkedIn Profile Search</span>
+              <span className="text-xs text-muted-foreground font-mono">harvestapi/linkedin-profile-search</span>
+            </div>
+            <div className="flex items-center justify-between text-sm">
+              <span className="font-medium">LinkedIn Profile Scraper</span>
+              <span className="text-xs text-muted-foreground font-mono">harvestapi/linkedin-profile-scraper</span>
+            </div>
+          </div>
+          <p className="text-[11px] text-muted-foreground mt-3">
+            Schedule configuration: see <a href="/#/schedules" className="underline hover:text-foreground">Schedules</a> page
+          </p>
         </CardContent>
       </Card>
     </div>

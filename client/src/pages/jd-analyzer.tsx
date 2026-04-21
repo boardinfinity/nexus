@@ -63,7 +63,7 @@ const qualityColors: Record<string, string> = {
 };
 
 export default function JDAnalyzer() {
-  const [mode, setMode] = useState<"paste" | "select">("paste");
+  const [mode, setMode] = useState<"paste" | "select" | "upload">("paste");
   const [text, setText] = useState("");
   const [selectedJobId, setSelectedJobId] = useState("");
   const [selectedJobLabel, setSelectedJobLabel] = useState("");
@@ -277,7 +277,7 @@ export default function JDAnalyzer() {
           <CardContent className="space-y-4">
             <div className="space-y-2">
               <Label className="text-xs">Source</Label>
-              <Select value={mode} onValueChange={(v) => setMode(v as "paste" | "select")}>
+              <Select value={mode} onValueChange={(v) => setMode(v as "paste" | "select" | "upload")}>
                 <SelectTrigger data-testid="jd-mode">
                   <SelectValue />
                 </SelectTrigger>
@@ -631,60 +631,6 @@ export default function JDAnalyzer() {
                 <p className="text-sm text-muted-foreground text-center py-4">No skills extracted</p>
               )}
 
-              {/* 4. Salary Insights Card */}
-              <Card>
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-sm font-medium flex items-center gap-2">
-                    <IndianRupee className="h-4 w-4 text-green-600" /> AmbitionBox Salary Data
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {salaryStatus === "idle" && (
-                    <div className="flex flex-col gap-2">
-                      <p className="text-xs text-muted-foreground">Get estimated salary data for this role from JSearch.</p>
-                      <Button variant="outline" size="sm" onClick={handleGetSalary} className="w-fit border-green-600 text-green-700 hover:bg-green-50">
-                        <IndianRupee className="h-3 w-3 mr-1" /> Get AmbitionBox Salary Data
-                      </Button>
-                    </div>
-                  )}
-                  {salaryStatus === "fetching" && (
-                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                      <Loader2 className="h-4 w-4 animate-spin" /> Fetching salary data...
-                    </div>
-                  )}
-                  {salaryStatus === "done" && salaryData && (
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between">
-                        <p className="text-xs text-muted-foreground">{salaryData.matches?.length} result{salaryData.matches?.length !== 1 ? "s" : ""} for "{salaryData.role}"</p>
-                        <Badge variant="outline" className="text-xs">JSearch</Badge>
-                      </div>
-                      <div className="space-y-1.5">
-                        {salaryData.matches?.map((m: any, i: number) => {
-                          const fmt = (v: number | null) => v != null ? `${m.salary_currency === "USD" ? "$" : "₹"}${Math.round(v).toLocaleString()}` : "—";
-                          return (
-                            <div key={i} className="rounded-md border p-2.5 text-xs">
-                              <div className="font-medium mb-1">{m.role}{m.location ? ` · ${m.location}` : ""}</div>
-                              <div className="flex gap-4 text-muted-foreground">
-                                <span>Min: <span className="text-foreground">{fmt(m.min_salary)}</span></span>
-                                <span>Median: <span className="text-green-700 font-semibold">{fmt(m.median_salary)}</span></span>
-                                <span>Max: <span className="text-foreground">{fmt(m.max_salary)}</span></span>
-                                <span className="ml-auto">{m.salary_period === "YEAR" ? "/yr" : "/mo"}</span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <p className="text-[10px] text-muted-foreground">Source: JSearch aggregated data · Figures are estimates</p>
-                    </div>
-                  )}
-                  {salaryStatus === "failed" && (
-                    <div className="rounded-lg bg-red-50 border border-red-200 p-3 flex items-center justify-between">
-                      <p className="text-sm text-red-700">{salaryError || "Failed to fetch salary data"}</p>
-                      <Button variant="ghost" size="sm" onClick={() => setSalaryStatus("idle")} className="text-red-600 shrink-0 ml-2">Try Again</Button>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
             </CardContent>
           </Card>
         </div>

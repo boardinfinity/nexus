@@ -1,15 +1,9 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { supabase, APIFY_API_KEY, RAPIDAPI_KEY, OPENAI_API_KEY } from "../lib/supabase";
+import { supabase, APIFY_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, RESEND_API_KEY } from "../lib/supabase";
 import { type AuthResult, requireAdmin } from "../lib/auth";
 
 export async function handleSettingsRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   if (!requireAdmin(auth, res)) return;
-
-  if (path === "/providers/credits" && req.method === "GET") {
-    const { data, error } = await supabase.from("provider_credits").select("*").order("provider");
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json(data || []);
-  }
 
   if (path === "/monitoring/queue-stats" && req.method === "GET") {
     const [{ count: pendingCount }, { count: processingCount }, { count: deadLetterCount }] = await Promise.all([
@@ -38,13 +32,43 @@ export async function handleSettingsRoutes(path: string, req: VercelRequest, res
   }
 
   if (path === "/settings/providers" && req.method === "GET") {
+    // Fetch live Apify usage in parallel with plan details
+    let apifyUsage: { used?: number; limit?: number; plan?: string } = {};
+    if (APIFY_API_KEY) {
+      try {
+        const [limitsRes, userRes] = await Promise.all([
+          fetch(`https://api.apify.com/v2/users/me/limits?token=${APIFY_API_KEY}`),
+          fetch(`https://api.apify.com/v2/users/me?token=${APIFY_API_KEY}`),
+        ]);
+        if (limitsRes.ok && userRes.ok) {
+          const limitsData = await limitsRes.json();
+          const userData = await userRes.json();
+          apifyUsage = {
+            used: limitsData?.data?.current?.monthlyUsageUsd || 0,
+            limit: limitsData?.data?.limits?.maxMonthlyUsageUsd || 0,
+            plan: userData?.data?.plan?.id || null,
+          };
+        }
+      } catch {}
+    }
     return res.json({
-      apify: { configured: !!APIFY_API_KEY, key_preview: APIFY_API_KEY ? `...${APIFY_API_KEY.slice(-6)}` : null },
-      rapidapi: { configured: !!RAPIDAPI_KEY, key_preview: RAPIDAPI_KEY ? `...${RAPIDAPI_KEY.slice(-6)}` : null },
-      apollo: { configured: false, key_preview: null },
-      proxycurl: { configured: false, key_preview: null },
-      hunter: { configured: false, key_preview: null },
-      openai: { configured: !!OPENAI_API_KEY, key_preview: OPENAI_API_KEY ? `...${OPENAI_API_KEY.slice(-6)}` : null },
+      apify: {
+        configured: !!APIFY_API_KEY,
+        key_preview: APIFY_API_KEY ? `${APIFY_API_KEY.slice(0, 8)}…${APIFY_API_KEY.slice(-6)}` : null,
+        usage: apifyUsage,
+      },
+      openai: {
+        configured: !!OPENAI_API_KEY,
+        key_preview: OPENAI_API_KEY ? `${OPENAI_API_KEY.slice(0, 8)}…${OPENAI_API_KEY.slice(-6)}` : null,
+      },
+      anthropic: {
+        configured: !!ANTHROPIC_API_KEY,
+        key_preview: ANTHROPIC_API_KEY ? `${ANTHROPIC_API_KEY.slice(0, 8)}…${ANTHROPIC_API_KEY.slice(-6)}` : null,
+      },
+      resend: {
+        configured: !!RESEND_API_KEY,
+        key_preview: RESEND_API_KEY ? `${RESEND_API_KEY.slice(0, 6)}…${RESEND_API_KEY.slice(-4)}` : null,
+      },
     });
   }
 

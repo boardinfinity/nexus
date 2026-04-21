@@ -686,7 +686,7 @@ function GoogleJobsForm() {
         {/* ── FILTERS ─── */}
         <div>
           <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Filters</p>
-          <p className="text-[10px] text-muted-foreground mb-2">Google Jobs native filters — applied via JSearch API</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Google Jobs native filters — applied via Apify scraper</p>
           <div className="space-y-3">
             <div>
               <Label className="text-xs mb-1.5 block">Employment Type</Label>

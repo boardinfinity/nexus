@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { AuthResult, requirePermission, requireReader } from "../lib/auth";
-import { supabase, APIFY_API_KEY, RAPIDAPI_KEY, OPENAI_API_KEY } from "../lib/supabase";
+import { supabase, APIFY_API_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
@@ -403,16 +403,6 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json({ success: true });
   }
 
-  // ==================== PROVIDERS ====================
-  if (path === "/providers/credits" && req.method === "GET") {
-    const { data, error } = await supabase
-      .from("provider_credits")
-      .select("*")
-      .order("provider");
-    if (error) return res.status(500).json({ error: error.message });
-    return res.json(data || []);
-  }
-
   // ==================== MONITORING ====================
   if (path === "/monitoring/queue-stats" && req.method === "GET") {
     const [{ count: pendingCount }, { count: processingCount }, { count: deadLetterCount }] = await Promise.all([
@@ -451,17 +441,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json(data || []);
   }
 
-  // ==================== SETTINGS ====================
-  if (path === "/settings/providers" && req.method === "GET") {
-    return res.json({
-      apify: { configured: !!APIFY_API_KEY, key_preview: APIFY_API_KEY ? `...${APIFY_API_KEY.slice(-6)}` : null },
-      rapidapi: { configured: !!RAPIDAPI_KEY, key_preview: RAPIDAPI_KEY ? `...${RAPIDAPI_KEY.slice(-6)}` : null },
-      apollo: { configured: false, key_preview: null },
-      proxycurl: { configured: false, key_preview: null },
-      hunter: { configured: false, key_preview: null },
-      openai: { configured: !!OPENAI_API_KEY, key_preview: OPENAI_API_KEY ? `...${OPENAI_API_KEY.slice(-6)}` : null },
-    });
-  }
+  // Settings routes handled in api/routes/settings.ts
 
   return undefined;
 }

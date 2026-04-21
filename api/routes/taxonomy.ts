@@ -645,61 +645,8 @@ export async function handleTaxonomyRoutes(
   }
 
 
-  // ── Salary lookup: JSearch (instant, free via RapidAPI) ────────────────────
-  if (path === "/taxonomy/salary-lookup" && req.method === "POST") {
-    if (!requireReader(auth, "jobs", res)) return;
-    const { company_name, job_title, location } = req.body || {};
-    if (!company_name || !job_title) return res.status(400).json({ error: "company_name and job_title required" });
+  // Salary lookup removed — RapidAPI/JSearch deprecated. Apify-only.
 
-    const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
-    if (!RAPIDAPI_KEY) return res.status(500).json({ error: "RapidAPI not configured" });
-
-    try {
-      const url = new URL("https://jsearch.p.rapidapi.com/estimated-salary");
-      url.searchParams.set("job_title", job_title);
-      url.searchParams.set("location", location || "India");
-      url.searchParams.set("location_type", "ANY");
-      url.searchParams.set("years_of_experience", "ALL");
-
-      const jsRes = await fetch(url.toString(), {
-        headers: {
-          "X-RapidAPI-Key": RAPIDAPI_KEY,
-          "X-RapidAPI-Host": "jsearch.p.rapidapi.com",
-        },
-      });
-
-      if (!jsRes.ok) {
-        const err = await jsRes.text();
-        return res.status(500).json({ error: `JSearch error: ${jsRes.status}`, detail: err.slice(0, 200) });
-      }
-
-      const jsData = await jsRes.json();
-      const results = jsData?.data || [];
-
-      if (!results.length) {
-        return res.status(404).json({ error: "No salary data found for this role" });
-      }
-
-      return res.json({
-        status: "done",
-        source: "jsearch",
-        company: company_name,
-        role: job_title,
-        matches: results.slice(0, 5).map((d: any) => ({
-          role: d.job_title || job_title,
-          location: d.location || location || "India",
-          min_salary: d.min_salary,
-          max_salary: d.max_salary,
-          median_salary: d.median_salary,
-          salary_currency: d.salary_currency || "USD",
-          salary_period: d.salary_period || "YEAR",
-          publisher_name: d.publisher_name || null,
-        })),
-      });
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message });
-    }
-  }
 
 
   return undefined;

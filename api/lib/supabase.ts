@@ -5,7 +5,6 @@ const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY!;
 export const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 export const APIFY_API_KEY = process.env.APIFY_API_KEY || "";
-export const RAPIDAPI_KEY = process.env.RAPIDAPI_KEY || "";
 export const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 export const JWT_SECRET = process.env.JWT_SECRET!;
