@@ -53,31 +53,78 @@ const GRADUATION_YEARS = [
   { value: "older", label: "Older" },
 ];
 
+// Maps graduation year → actor's yearsOfExperienceIds enum (1=<1yr, 2=1-2, 3=3-5, 4=6-10, 5=10+)
 const GRAD_YEAR_TO_YOE: Record<string, number[]> = {
   "2025": [1],
-  "2024": [1, 2],
-  "2023": [2, 3],
-  "2022": [3, 4],
-  "2021": [4, 5],
-  "2020": [5, 6],
-  "older": [6],
+  "2024": [2],
+  "2023": [3],
+  "2022": [3],
+  "2021": [3, 4],
+  "2020": [4],
+  "older": [4, 5],
 };
 
+// Aligned with harvestapi/linkedin-profile-search enum values
 const YOE_OPTIONS = [
   { value: "1", label: "<1 yr" },
   { value: "2", label: "1-2 yr" },
   { value: "3", label: "3-5 yr" },
   { value: "4", label: "6-10 yr" },
-  { value: "5,6", label: "10+ yr" },
+  { value: "5", label: "10+ yr" },
 ];
 
 const SENIORITY_OPTIONS = [
-  { value: "100", label: "Entry" },
-  { value: "110", label: "Senior" },
-  { value: "120", label: "Manager" },
-  { value: "130", label: "Director" },
-  { value: "140", label: "VP" },
-  { value: "150", label: "CXO" },
+  { value: "100", label: "In Training" },
+  { value: "110", label: "Entry" },
+  { value: "120", label: "Senior" },
+  { value: "130", label: "Strategic" },
+  { value: "200", label: "Entry Manager" },
+  { value: "210", label: "Experienced Mgr" },
+  { value: "220", label: "Director" },
+  { value: "300", label: "VP" },
+  { value: "310", label: "CXO" },
+  { value: "320", label: "Owner/Partner" },
+];
+
+const FUNCTION_OPTIONS = [
+  { value: "8", label: "Engineering" },
+  { value: "25", label: "Sales" },
+  { value: "15", label: "Marketing" },
+  { value: "10", label: "Finance" },
+  { value: "18", label: "Operations" },
+  { value: "19", label: "Product Mgmt" },
+  { value: "13", label: "IT" },
+  { value: "6", label: "Consulting" },
+  { value: "12", label: "HR" },
+  { value: "4", label: "Business Dev" },
+  { value: "26", label: "Customer Success" },
+  { value: "1", label: "Accounting" },
+  { value: "14", label: "Legal" },
+  { value: "24", label: "Research" },
+  { value: "20", label: "Project Mgmt" },
+  { value: "9", label: "Entrepreneurship" },
+  { value: "3", label: "Arts & Design" },
+  { value: "11", label: "Healthcare" },
+  { value: "7", label: "Education" },
+  { value: "16", label: "Media & Comms" },
+  { value: "23", label: "Real Estate" },
+  { value: "22", label: "QA" },
+  { value: "21", label: "Purchasing" },
+  { value: "2", label: "Administrative" },
+  { value: "5", label: "Community Services" },
+  { value: "17", label: "Military/Protective" },
+];
+
+const HEADCOUNT_OPTIONS = [
+  { value: "A", label: "Self-Employed" },
+  { value: "B", label: "1-10" },
+  { value: "C", label: "11-50" },
+  { value: "D", label: "51-200" },
+  { value: "E", label: "201-500" },
+  { value: "F", label: "501-1K" },
+  { value: "G", label: "1K-5K" },
+  { value: "H", label: "5K-10K" },
+  { value: "I", label: "10K+" },
 ];
 
 const SCRAPER_MODES = [
@@ -158,18 +205,51 @@ function AlumniSearchForm() {
   const [gradYear, setGradYear] = useState("");
   const [yearsOfExperience, setYearsOfExperience] = useState<string[]>([]);
   const [seniority, setSeniority] = useState<string[]>([]);
-  const [companyInput, setCompanyInput] = useState("");
-  const [companyUrls, setCompanyUrls] = useState<string[]>([]);
+  const [functions, setFunctions] = useState<string[]>([]);
+  const [currentCompanyInput, setCurrentCompanyInput] = useState("");
+  const [currentCompanies, setCurrentCompanies] = useState<string[]>([]);
+  const [pastCompanyInput, setPastCompanyInput] = useState("");
+  const [pastCompanies, setPastCompanies] = useState<string[]>([]);
+  const [headcount, setHeadcount] = useState<string[]>([]);
+  const [recentlyChangedJobs, setRecentlyChangedJobs] = useState(false);
+
+  // ── Exclusions ──
+  const [excludeLocationInput, setExcludeLocationInput] = useState("");
+  const [excludeLocations, setExcludeLocations] = useState<string[]>([]);
+  const [excludeCurrentCompanyInput, setExcludeCurrentCompanyInput] = useState("");
+  const [excludeCurrentCompanies, setExcludeCurrentCompanies] = useState<string[]>([]);
+  const [excludeSchoolInput, setExcludeSchoolInput] = useState("");
+  const [excludeSchools, setExcludeSchools] = useState<string[]>([]);
 
   const addLocation = () => {
     const l = locationInput.trim();
     if (l && !locations.includes(l)) setLocations([...locations, l]);
     setLocationInput("");
   };
-  const addCompany = () => {
-    const c = companyInput.trim();
-    if (c && !companyUrls.includes(c)) setCompanyUrls([...companyUrls, c]);
-    setCompanyInput("");
+  const addCurrentCompany = () => {
+    const c = currentCompanyInput.trim();
+    if (c && !currentCompanies.includes(c)) setCurrentCompanies([...currentCompanies, c]);
+    setCurrentCompanyInput("");
+  };
+  const addPastCompany = () => {
+    const c = pastCompanyInput.trim();
+    if (c && !pastCompanies.includes(c)) setPastCompanies([...pastCompanies, c]);
+    setPastCompanyInput("");
+  };
+  const addExcludeLocation = () => {
+    const l = excludeLocationInput.trim();
+    if (l && !excludeLocations.includes(l)) setExcludeLocations([...excludeLocations, l]);
+    setExcludeLocationInput("");
+  };
+  const addExcludeCurrentCompany = () => {
+    const c = excludeCurrentCompanyInput.trim();
+    if (c && !excludeCurrentCompanies.includes(c)) setExcludeCurrentCompanies([...excludeCurrentCompanies, c]);
+    setExcludeCurrentCompanyInput("");
+  };
+  const addExcludeSchool = () => {
+    const s = excludeSchoolInput.trim();
+    if (s && !excludeSchools.includes(s)) setExcludeSchools([...excludeSchools, s]);
+    setExcludeSchoolInput("");
   };
 
   // When grad year changes, auto-set YOE
@@ -185,8 +265,7 @@ function AlumniSearchForm() {
 
   const yoeDisabled = gradYear !== "" && gradYear !== "none";
 
-  // Resolve YOE values (some options like "5,6" are compound)
-  const resolvedYoe = yearsOfExperience.flatMap(v => v.split(",").map(Number));
+  // YoE values are enum IDs now (1-5), passed through as-is
 
   // ── Options ──
   const [scraperMode, setScraperMode] = useState("Full");
@@ -213,9 +292,16 @@ function AlumniSearchForm() {
     search_query: searchQuery || undefined,
     locations: locations.length > 0 ? locations : undefined,
     graduation_year: gradYear && gradYear !== "none" ? gradYear : undefined,
-    years_of_experience: resolvedYoe.length > 0 ? resolvedYoe : undefined,
-    seniority_ids: seniority.length > 0 ? seniority.map(Number) : undefined,
-    company_urls: companyUrls.length > 0 ? companyUrls : undefined,
+    years_of_experience_ids: yearsOfExperience.length > 0 ? yearsOfExperience.map(Number) : undefined,
+    seniority_level_ids: seniority.length > 0 ? seniority.map(Number) : undefined,
+    function_ids: functions.length > 0 ? functions.map(Number) : undefined,
+    current_companies: currentCompanies.length > 0 ? currentCompanies : undefined,
+    past_companies: pastCompanies.length > 0 ? pastCompanies : undefined,
+    company_headcount: headcount.length > 0 ? headcount : undefined,
+    recently_changed_jobs: recentlyChangedJobs || undefined,
+    exclude_locations: excludeLocations.length > 0 ? excludeLocations : undefined,
+    exclude_current_companies: excludeCurrentCompanies.length > 0 ? excludeCurrentCompanies : undefined,
+    exclude_schools: excludeSchools.length > 0 ? excludeSchools : undefined,
     scraper_mode: scraperMode,
     pages,
     max_profiles: maxProfiles,
@@ -471,26 +557,132 @@ function AlumniSearchForm() {
               <ChipSelect options={SENIORITY_OPTIONS} selected={seniority} onChange={setSeniority} />
             </div>
             <div>
-              <Label className="text-xs">Current Company</Label>
-              <div className="flex gap-2 mt-1">
-                <Input value={companyInput} onChange={e => setCompanyInput(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addCompany())}
-                  placeholder="LinkedIn company slug + Enter" className="text-sm h-9 flex-1" />
-                <Button type="button" variant="outline" size="sm" onClick={addCompany} className="h-9 px-3 text-xs">Add</Button>
+              <Label className="text-xs mb-1.5 block">Function</Label>
+              <ChipSelect options={FUNCTION_OPTIONS} selected={functions} onChange={setFunctions} />
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Current Company</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input value={currentCompanyInput} onChange={e => setCurrentCompanyInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addCurrentCompany())}
+                    placeholder="e.g. Google + Enter" className="text-sm h-9 flex-1" />
+                  <Button type="button" variant="outline" size="sm" onClick={addCurrentCompany} className="h-9 px-3 text-xs">Add</Button>
+                </div>
+                {currentCompanies.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {currentCompanies.map(c => (
+                      <Badge key={c} variant="secondary" className="text-xs pr-1">
+                        {c}
+                        <button onClick={() => setCurrentCompanies(currentCompanies.filter(x => x !== c))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </div>
-              {companyUrls.length > 0 && (
+              <div>
+                <Label className="text-xs">Past Company</Label>
+                <div className="flex gap-2 mt-1">
+                  <Input value={pastCompanyInput} onChange={e => setPastCompanyInput(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addPastCompany())}
+                    placeholder="e.g. McKinsey + Enter" className="text-sm h-9 flex-1" />
+                  <Button type="button" variant="outline" size="sm" onClick={addPastCompany} className="h-9 px-3 text-xs">Add</Button>
+                </div>
+                {pastCompanies.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5 mt-2">
+                    {pastCompanies.map(c => (
+                      <Badge key={c} variant="secondary" className="text-xs pr-1">
+                        {c}
+                        <button onClick={() => setPastCompanies(pastCompanies.filter(x => x !== c))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div>
+              <Label className="text-xs mb-1.5 block">Company Size</Label>
+              <ChipSelect options={HEADCOUNT_OPTIONS} selected={headcount} onChange={setHeadcount} />
+            </div>
+            <div className="flex items-center justify-between rounded-lg border p-3 bg-muted/20">
+              <div>
+                <p className="text-xs font-medium">Recently Changed Jobs</p>
+                <p className="text-[10px] text-muted-foreground">Only include profiles who recently switched roles</p>
+              </div>
+              <Switch checked={recentlyChangedJobs} onCheckedChange={setRecentlyChangedJobs} />
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── EXCLUSIONS (collapsible) ── */}
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground uppercase tracking-wider hover:text-foreground transition-colors">
+            <span>Exclusions</span>
+            <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-3 space-y-3">
+            <p className="text-[10px] text-muted-foreground">Filter out profiles matching any of these criteria</p>
+            <div>
+              <Label className="text-xs">Exclude Locations</Label>
+              <div className="flex gap-2 mt-1">
+                <Input value={excludeLocationInput} onChange={e => setExcludeLocationInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addExcludeLocation())}
+                  placeholder="e.g. USA + Enter" className="text-sm h-9 flex-1" />
+                <Button type="button" variant="outline" size="sm" onClick={addExcludeLocation} className="h-9 px-3 text-xs">Add</Button>
+              </div>
+              {excludeLocations.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-2">
-                  {companyUrls.map(c => (
-                    <Badge key={c} variant="secondary" className="text-xs pr-1">
-                      {c}
-                      <button onClick={() => setCompanyUrls(companyUrls.filter(x => x !== c))} className="ml-1 hover:text-destructive"><X className="h-3 w-3" /></button>
+                  {excludeLocations.map(l => (
+                    <Badge key={l} variant="destructive" className="text-xs pr-1">
+                      {l}
+                      <button onClick={() => setExcludeLocations(excludeLocations.filter(x => x !== l))} className="ml-1"><X className="h-3 w-3" /></button>
                     </Badge>
                   ))}
                 </div>
               )}
             </div>
-          </div>
-        </div>
+            <div>
+              <Label className="text-xs">Exclude Current Companies</Label>
+              <div className="flex gap-2 mt-1">
+                <Input value={excludeCurrentCompanyInput} onChange={e => setExcludeCurrentCompanyInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addExcludeCurrentCompany())}
+                  placeholder="e.g. Meta + Enter" className="text-sm h-9 flex-1" />
+                <Button type="button" variant="outline" size="sm" onClick={addExcludeCurrentCompany} className="h-9 px-3 text-xs">Add</Button>
+              </div>
+              {excludeCurrentCompanies.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {excludeCurrentCompanies.map(c => (
+                    <Badge key={c} variant="destructive" className="text-xs pr-1">
+                      {c}
+                      <button onClick={() => setExcludeCurrentCompanies(excludeCurrentCompanies.filter(x => x !== c))} className="ml-1"><X className="h-3 w-3" /></button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div>
+              <Label className="text-xs">Exclude Schools</Label>
+              <div className="flex gap-2 mt-1">
+                <Input value={excludeSchoolInput} onChange={e => setExcludeSchoolInput(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && (e.preventDefault(), addExcludeSchool())}
+                  placeholder="e.g. IIT Delhi + Enter" className="text-sm h-9 flex-1" />
+                <Button type="button" variant="outline" size="sm" onClick={addExcludeSchool} className="h-9 px-3 text-xs">Add</Button>
+              </div>
+              {excludeSchools.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {excludeSchools.map(s => (
+                    <Badge key={s} variant="destructive" className="text-xs pr-1">
+                      {s}
+                      <button onClick={() => setExcludeSchools(excludeSchools.filter(x => x !== s))} className="ml-1"><X className="h-3 w-3" /></button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
 
         <Separator />
 

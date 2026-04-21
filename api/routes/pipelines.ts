@@ -182,20 +182,33 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
       // Build actor input — one run per college for best results
       // Use searchQuery with college name (90%+ match rate, validated to 100% post-scrape)
+      // IMPORTANT: field names must match harvestapi/linkedin-profile-search schema exactly
       const firstCollege = collegeNames[0];
+      const requestedMode = config?.scraper_mode;
+      // Must be "Full" or "Full + email search" to get education data for validation
+      const profileScraperMode = (requestedMode === "Full + email search" || requestedMode === "Full") ? requestedMode : "Full";
       const actorInput: Record<string, any> = {
         searchQuery: config?.search_query || firstCollege,
-        profileScraperMode: "Full",  // Must be Full to get education data for validation
+        profileScraperMode,
         startPage: 1,
         takePages: parseInt(config?.pages) || 5,
         maxItems: parseInt(config?.max_profiles) || 0,
       };
+      // Target profile filters
       if (config?.current_job_titles?.length) actorInput.currentJobTitles = config.current_job_titles;
       if (config?.past_job_titles?.length) actorInput.pastJobTitles = config.past_job_titles;
       if (config?.locations?.length) actorInput.locations = config.locations;
-      if (config?.years_of_experience?.length) actorInput.yearsOfExperience = config.years_of_experience;
-      if (config?.seniority_ids?.length) actorInput.seniorityLevelIds = config.seniority_ids;
-      if (config?.company_urls?.length) actorInput.companyUrls = config.company_urls;
+      if (config?.years_of_experience_ids?.length) actorInput.yearsOfExperienceIds = config.years_of_experience_ids;
+      if (config?.seniority_level_ids?.length) actorInput.seniorityLevelIds = config.seniority_level_ids;
+      if (config?.function_ids?.length) actorInput.functionIds = config.function_ids;
+      if (config?.current_companies?.length) actorInput.currentCompanies = config.current_companies;
+      if (config?.past_companies?.length) actorInput.pastCompanies = config.past_companies;
+      if (config?.company_headcount?.length) actorInput.companyHeadcount = config.company_headcount;
+      if (config?.recently_changed_jobs) actorInput.recentlyChangedJobs = true;
+      // Exclusions
+      if (config?.exclude_locations?.length) actorInput.excludeLocations = config.exclude_locations;
+      if (config?.exclude_current_companies?.length) actorInput.excludeCurrentCompanies = config.exclude_current_companies;
+      if (config?.exclude_schools?.length) actorInput.excludeSchools = config.exclude_schools;
 
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-search/runs?token=${APIFY_API_KEY}`,
