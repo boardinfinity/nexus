@@ -290,6 +290,9 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       config._total_urls = cleanUrls.length;
 
       // Start Apify profile scraper — actor expects `queries` array of URL strings
+      const validBulkModes = ["Profile details no email ($4 per 1k)", "Profile details + email search ($10 per 1k)"];
+      const requestedBulkMode = config?.profile_scraper_mode;
+      const bulkProfileScraperMode = validBulkModes.includes(requestedBulkMode) ? requestedBulkMode : validBulkModes[0];
       const startRes = await fetch(
         `https://api.apify.com/v2/acts/harvestapi~linkedin-profile-scraper/runs?token=${APIFY_API_KEY}`,
         {
@@ -297,7 +300,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             queries: cleanUrls,
-            profileScraperMode: "Profile details no email ($4 per 1k)",
+            profileScraperMode: bulkProfileScraperMode,
           }),
         }
       );

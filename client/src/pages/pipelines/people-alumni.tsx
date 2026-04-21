@@ -896,6 +896,10 @@ function BulkUploadForm() {
   const [fileName, setFileName] = useState("");
   const [collegeSearch, setCollegeSearch] = useState("");
   const [showDropdown, setShowDropdown] = useState(false);
+  const [bulkScraperMode, setBulkScraperMode] = useState("Profile details no email ($4 per 1k)");
+
+  const bulkPerProfile = bulkScraperMode.includes("$10") ? 0.010 : 0.004;
+  const bulkEstCost = urls.length * bulkPerProfile;
 
   const filteredColleges = allColleges.filter(c =>
     !collegeSearch || c.name.toLowerCase().includes(collegeSearch.toLowerCase()) ||
@@ -930,6 +934,7 @@ function BulkUploadForm() {
             urls,
             college_id: selectedCollegeId || undefined,
             college_name: selectedCollege?.name || "Unknown",
+            profile_scraper_mode: bulkScraperMode,
           },
         }),
       });
@@ -950,7 +955,7 @@ function BulkUploadForm() {
           <CardTitle className="text-base font-semibold flex items-center gap-2">
             <Upload className="h-5 w-5 text-green-600" /> Bulk Upload Profiles
           </CardTitle>
-          <Badge variant="outline" className="text-[10px]">CSV → Profile Scraper</Badge>
+          <Badge variant="outline" className="text-[10px]">from $4 / 1k profiles</Badge>
         </div>
       </CardHeader>
       <CardContent className="space-y-5">
@@ -1073,6 +1078,20 @@ function BulkUploadForm() {
         </div>
 
         {/* ── RUN BUTTON ─────────────────────────────────────── */}
+        <Separator />
+
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Scraper Mode</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Choose whether to also extract email addresses</p>
+          <Select value={bulkScraperMode} onValueChange={setBulkScraperMode}>
+            <SelectTrigger className="h-9 text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="Profile details no email ($4 per 1k)">Profile details (no email) — $4 / 1k</SelectItem>
+              <SelectItem value="Profile details + email search ($10 per 1k)">Profile details + email search — $10 / 1k</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+
         <Button
           onClick={() => runBulkUpload.mutate()}
           disabled={runBulkUpload.isPending || urls.length === 0 || !selectedCollegeId}
@@ -1084,10 +1103,13 @@ function BulkUploadForm() {
 
         {/* ── COST ESTIMATE ──────────────────────────────────── */}
         {urls.length > 0 && (
-          <div className="rounded-md bg-muted/50 p-2.5 text-[10px] text-muted-foreground">
-            <span className="font-medium">Estimated:</span> {urls.length} profiles via Apify Profile Scraper
-            {" "}= <span className="font-semibold text-foreground">~${(urls.length * 0.004).toFixed(2)}</span>
-            {" "} · Education validation filters non-matching profiles
+          <div className="rounded-md bg-muted/50 p-2.5 text-[10px] text-muted-foreground space-y-0.5">
+            <div>
+              <span className="font-medium">Estimated cost:</span>{" "}
+              {urls.length} profiles × ${bulkPerProfile.toFixed(3)} = {" "}
+              <span className="font-semibold text-foreground">${bulkEstCost.toFixed(2)}</span>
+            </div>
+            <div>Actor: harvestapi/linkedin-profile-scraper · Education validation filters non-matching profiles</div>
           </div>
         )}
       </CardContent>
