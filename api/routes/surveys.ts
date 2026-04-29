@@ -5,6 +5,9 @@ import { AuthResult, requirePermission, requireAdmin, verifyAuth } from "../lib/
 import { supabase, JWT_SECRET } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
 import { sendEmail, basicHtmlTemplate } from "../lib/mailer";
+import { callClaude } from "../lib/openai";
+import mammoth from "mammoth";
+// pdf-parse uses CommonJS-style export; require it lazily to avoid bundling issues.
 
 // ==================== JWT ====================
 // Survey JWTs are scoped to a single survey: { survey_id, respondent_id, email }.
@@ -655,7 +658,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
       respIds.length ? supabase.from("survey_skill_ratings").select("respondent_id").in("respondent_id", respIds).eq("survey_id", surveyId) : Promise.resolve({ data: [] }),
       supabase.from("surveys").select("schema").eq("id", surveyId).single(),
     ]);
-    const totalSections = (survey?.data?.schema?.sections || []).length;
+    const totalSections = (survey?.schema?.sections || []).length;
 
     const sectionsByR: Record<string, Set<string>> = {};
     const ratingsByR: Record<string, number> = {};
@@ -861,7 +864,349 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
     });
   }
 
+  // ---- POST /api/admin/surveys/parse-doc ----
+  // Multipart upload: extract plain text from a .docx or .pdf for the AI generator.
+  // The body is the raw multipart payload; we read it from the stream.
+  if (path === "/admin/surveys/parse-doc" && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    try {
+      const text = await parseUploadedDocText(req);
+      return res.json({ text, length: text.length });
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message || "Failed to parse document" });
+    }
+  }
+
+  // ---- POST /api/admin/surveys/generate ----
+  // AI-generated schema. Body: { mode: "brief"|"doc"|"clone", brief?, doc_text?, source_survey_id?, audience_type, college_id? }
+  // Returns { schema, suggested_title, suggested_description, estimated_minutes }.
+  if (path === "/admin/surveys/generate" && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+
+    const { mode, brief, doc_text, source_survey_id, audience_type } = req.body || {};
+    if (!mode || !audience_type) return res.status(400).json({ error: "mode and audience_type are required" });
+
+    let sourceText = "";
+    if (mode === "brief") {
+      if (!brief || typeof brief !== "string" || brief.trim().length < 20) {
+        return res.status(400).json({ error: "brief must be a description of at least 20 characters" });
+      }
+      sourceText = brief.trim();
+    } else if (mode === "doc") {
+      if (!doc_text || typeof doc_text !== "string" || doc_text.trim().length < 50) {
+        return res.status(400).json({ error: "doc_text must be at least 50 characters (call /parse-doc first)" });
+      }
+      sourceText = doc_text.trim().slice(0, 60000);
+    } else if (mode === "clone") {
+      if (!source_survey_id) return res.status(400).json({ error: "source_survey_id required for clone mode" });
+      const { data: src } = await supabase.from("surveys").select("title, description, schema, audience_type, estimated_minutes").eq("id", source_survey_id).single();
+      if (!src) return res.status(404).json({ error: "Source survey not found" });
+      // Clone returns the source schema directly (deep copy with regenerated slug suggestion). No AI call needed.
+      return res.json({
+        schema: src.schema || { sections: [], settings: {} },
+        suggested_title: `${src.title} (copy)`,
+        suggested_description: src.description || "",
+        estimated_minutes: src.estimated_minutes || null,
+        source: "clone",
+      });
+    } else {
+      return res.status(400).json({ error: "mode must be one of: brief, doc, clone" });
+    }
+
+    const prompt = buildSurveyGeneratorPrompt(sourceText, audience_type, mode);
+    let raw: string;
+    try {
+      raw = await callClaude(prompt, SURVEY_SCHEMA_TOOL_INPUT);
+    } catch (err: any) {
+      console.error("[admin/surveys/generate] AI call failed:", err.message);
+      return res.status(502).json({ error: "AI generation failed: " + err.message });
+    }
+
+    let parsed: any;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return res.status(502).json({ error: "AI returned invalid JSON" });
+    }
+
+    // Sanity-check + normalize
+    const normalized = normalizeGeneratedSchema(parsed);
+    if (!normalized.ok) return res.status(502).json({ error: normalized.error });
+
+    return res.json({
+      schema: normalized.schema,
+      suggested_title: normalized.title,
+      suggested_description: normalized.description,
+      estimated_minutes: normalized.estimated_minutes,
+      source: mode,
+    });
+  }
+
   return res.status(404).json({ error: "Survey admin endpoint not found", path });
+}
+
+// ==================== AI generator helpers ====================
+
+// JSON schema fed to Claude as the tool's input_schema. Keep this in sync with the
+// SurveyQuestion type in client/src/lib/survey-api.ts.
+const SURVEY_SCHEMA_TOOL_INPUT = {
+  type: "object",
+  required: ["title", "description", "estimated_minutes", "sections"],
+  properties: {
+    title: { type: "string", description: "Concise survey title (max 80 chars)" },
+    description: { type: "string", description: "1-2 sentence respondent-facing description" },
+    estimated_minutes: { type: "integer", minimum: 1, maximum: 60 },
+    sections: {
+      type: "array",
+      minItems: 1,
+      items: {
+        type: "object",
+        required: ["key", "title", "questions"],
+        properties: {
+          key: { type: "string", description: "snake_case slug, unique within survey" },
+          title: { type: "string" },
+          description: { type: "string" },
+          questions: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "object",
+              required: ["key", "type", "label"],
+              properties: {
+                key: { type: "string", description: "snake_case slug, unique within section" },
+                type: {
+                  type: "string",
+                  enum: ["text", "long_text", "single_choice", "multi_choice", "scale", "email", "date", "skill_matrix", "matrix_rating", "ranked_list"],
+                },
+                label: { type: "string" },
+                description: { type: "string" },
+                required: { type: "boolean" },
+                profile_field: {
+                  type: "string",
+                  enum: ["full_name", "company_name", "designation", "industry", "company_size", "years_of_experience", "location_city", "location_country"],
+                  description: "If set, this answer is stored on survey_respondents columns instead of survey_responses (use for identity/profile questions only)",
+                },
+                options: {
+                  type: "array",
+                  description: "Required for single_choice and multi_choice",
+                  items: {
+                    type: "object",
+                    required: ["value", "label"],
+                    properties: {
+                      value: { type: "string" },
+                      label: { type: "string" },
+                    },
+                  },
+                },
+                scale_min: { type: "integer" },
+                scale_max: { type: "integer" },
+                scale_min_label: { type: "string" },
+                scale_max_label: { type: "string" },
+                skill_categories: {
+                  type: "array",
+                  description: "For skill_matrix only: filter the master taxonomy to these categories",
+                  items: { type: "string" },
+                },
+                min_skills: { type: "integer", description: "For skill_matrix: minimum number of skills the respondent must rate" },
+                rows: {
+                  type: "array",
+                  description: "For matrix_rating: row labels (e.g. attributes being rated)",
+                  items: {
+                    type: "object",
+                    required: ["key", "label"],
+                    properties: { key: { type: "string" }, label: { type: "string" } },
+                  },
+                },
+                cols: {
+                  type: "array",
+                  description: "For matrix_rating: column labels (e.g. rating scale)",
+                  items: {
+                    type: "object",
+                    required: ["key", "label"],
+                    properties: { key: { type: "string" }, label: { type: "string" } },
+                  },
+                },
+                items: {
+                  type: "array",
+                  description: "For ranked_list: items the respondent should rank",
+                  items: {
+                    type: "object",
+                    required: ["key", "label"],
+                    properties: { key: { type: "string" }, label: { type: "string" } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  },
+} as const;
+
+function buildSurveyGeneratorPrompt(source: string, audienceType: string, mode: string): string {
+  return `You are a survey designer for the Nexus alumni-and-employer intelligence platform. Generate a clean, well-structured survey schema based on the source material below.
+
+## Audience
+The survey is for: **${audienceType}** (one of: employer, industry_sme, alumni, faculty, student, other).
+
+## Source (${mode})
+"""
+${source}
+"""
+
+## Rules
+1. Produce 3 to 7 sections. Each section should have 3 to 12 questions.
+2. The first section should always capture respondent identity. Use profile_field for these (full_name, company_name, designation, industry, years_of_experience, location_city, location_country, company_size). Do NOT invent extra identity questions outside that whitelist.
+3. Use type "email" for email capture; use type "text" for short answers (<200 chars); use "long_text" for free-form > 200 chars.
+4. Prefer "single_choice" / "multi_choice" with concrete options over open text whenever the source enumerates choices.
+5. "scale" is for 1–5, 1–10, or NPS-style ratings. Always set scale_min, scale_max, scale_min_label, scale_max_label.
+6. "skill_matrix" is special: it pulls from the master skill taxonomy and asks for both Importance and Demonstration ratings (1–5 stars each). Use it ONLY when the source explicitly asks about skills relevant to a role. Set min_skills (default 5) and optionally skill_categories to filter the catalog. There should be AT MOST one skill_matrix question per survey.
+7. "matrix_rating" is a generic rows × cols rating grid (e.g. "Rate each attribute on a 5-point scale").
+8. "ranked_list" asks the respondent to drag-rank a fixed set of items.
+9. "date" produces a calendar picker (use for graduation date, joining date, etc).
+10. All keys are snake_case, lowercase, alphanumeric + underscores, unique within their parent.
+11. "required" defaults to true. Only set required: false for genuinely optional questions.
+12. Mark a sensible estimated_minutes (typically 5–20 minutes for 20–40 questions).
+13. Output ONLY a valid call to the extract_data tool with the schema described.`;
+}
+
+function normalizeGeneratedSchema(input: any): { ok: true; schema: any; title: string; description: string; estimated_minutes: number | null } | { ok: false; error: string } {
+  if (!input || typeof input !== "object") return { ok: false, error: "AI did not return an object" };
+  const title = String(input.title || "").slice(0, 200) || "Untitled Survey";
+  const description = String(input.description || "").slice(0, 1000);
+  const estimated_minutes = typeof input.estimated_minutes === "number" ? input.estimated_minutes : null;
+  const sections = Array.isArray(input.sections) ? input.sections : [];
+  if (sections.length === 0) return { ok: false, error: "AI returned no sections" };
+
+  const usedSecKeys = new Set<string>();
+  const cleanSections: any[] = [];
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i] || {};
+    let secKey = slugify(sec.key || sec.title || `section_${i + 1}`);
+    while (usedSecKeys.has(secKey)) secKey = secKey + "_x";
+    usedSecKeys.add(secKey);
+    const usedQKeys = new Set<string>();
+    const qs = Array.isArray(sec.questions) ? sec.questions : [];
+    const cleanQs: any[] = [];
+    for (let j = 0; j < qs.length; j++) {
+      const q = qs[j] || {};
+      if (!q.type || !q.label) continue;
+      let qKey = slugify(q.key || q.label || `q_${j + 1}`);
+      while (usedQKeys.has(qKey)) qKey = qKey + "_x";
+      usedQKeys.add(qKey);
+      cleanQs.push({ ...q, key: qKey });
+    }
+    if (cleanQs.length === 0) continue;
+    cleanSections.push({
+      key: secKey,
+      title: String(sec.title || `Section ${i + 1}`).slice(0, 200),
+      description: sec.description ? String(sec.description).slice(0, 600) : undefined,
+      questions: cleanQs,
+    });
+  }
+  if (cleanSections.length === 0) return { ok: false, error: "AI returned no usable questions" };
+
+  return {
+    ok: true,
+    schema: { sections: cleanSections, settings: {} },
+    title,
+    description,
+    estimated_minutes,
+  };
+}
+
+function slugify(s: string): string {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/(^_|_$)/g, "").slice(0, 60) || "section";
+}
+
+// ==================== Document parsing for /parse-doc ====================
+// Reads the raw request body (Vercel disables bodyParser only when configured;
+// we rely on the runtime giving us a Buffer or string for non-JSON content types).
+// Simple multipart parse: pull the first file part out of the body.
+
+async function readRawBody(req: VercelRequest): Promise<Buffer> {
+  // If Vercel already parsed the body (when content-type is application/json) it's an object;
+  // for multipart we need the raw stream.
+  if (Buffer.isBuffer(req.body)) return req.body as Buffer;
+  if (typeof (req as any).body === "string") return Buffer.from((req as any).body);
+  return await new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: any) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+async function parseUploadedDocText(req: VercelRequest): Promise<string> {
+  const ct = String(req.headers["content-type"] || "");
+
+  // Plain text JSON body fallback: { filename, content_base64 }
+  if (ct.includes("application/json")) {
+    const body = req.body || {};
+    const filename = String(body.filename || "").toLowerCase();
+    const b64 = body.content_base64;
+    if (!b64 || typeof b64 !== "string") throw new Error("content_base64 required");
+    const buf = Buffer.from(b64, "base64");
+    return await extractText(buf, filename);
+  }
+
+  // Multipart form-data
+  if (ct.includes("multipart/form-data")) {
+    const boundaryMatch = ct.match(/boundary=([^;]+)/);
+    if (!boundaryMatch) throw new Error("Missing multipart boundary");
+    const boundary = boundaryMatch[1].replace(/^"|"$/g, "");
+    const raw = await readRawBody(req);
+    const file = extractFirstFilePart(raw, boundary);
+    if (!file) throw new Error("No file part in upload");
+    return await extractText(file.content, (file.filename || "").toLowerCase());
+  }
+
+  throw new Error("Unsupported content type: " + ct);
+}
+
+function extractFirstFilePart(raw: Buffer, boundary: string): { filename: string; content: Buffer } | null {
+  const sep = Buffer.from("--" + boundary);
+  const segments: Buffer[] = [];
+  let pos = raw.indexOf(sep);
+  while (pos !== -1) {
+    const next = raw.indexOf(sep, pos + sep.length);
+    if (next === -1) break;
+    segments.push(raw.subarray(pos + sep.length, next));
+    pos = next;
+  }
+  for (const seg of segments) {
+    const headerEnd = seg.indexOf("\r\n\r\n");
+    if (headerEnd === -1) continue;
+    const headers = seg.subarray(0, headerEnd).toString("utf-8");
+    const fnMatch = headers.match(/filename=\"([^\"]*)\"/);
+    if (!fnMatch) continue;
+    let body = seg.subarray(headerEnd + 4);
+    // Trim trailing \r\n
+    if (body.length >= 2 && body[body.length - 2] === 0x0d && body[body.length - 1] === 0x0a) {
+      body = body.subarray(0, body.length - 2);
+    }
+    return { filename: fnMatch[1], content: body };
+  }
+  return null;
+}
+
+async function extractText(buf: Buffer, filename: string): Promise<string> {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".docx")) {
+    const result = await mammoth.extractRawText({ buffer: buf });
+    return (result.value || "").trim();
+  }
+  if (lower.endsWith(".pdf")) {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pdfParse = require("pdf-parse");
+    const result = await pdfParse(buf);
+    return (result.text || "").trim();
+  }
+  if (lower.endsWith(".txt") || lower.endsWith(".md")) {
+    return buf.toString("utf-8").trim();
+  }
+  throw new Error("Unsupported file type. Use .docx, .pdf, .txt, or .md");
 }
 
 // ==================== Schema lock-edit validator ====================
