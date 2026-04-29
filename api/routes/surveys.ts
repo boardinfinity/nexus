@@ -6,79 +6,160 @@ import { supabase, JWT_SECRET } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
 import { sendEmail, basicHtmlTemplate } from "../lib/mailer";
 
-// ==================== INTERNAL HELPERS ====================
+// ==================== JWT ====================
+// Survey JWTs are scoped to a single survey: { survey_id, respondent_id, email }.
+// A respondent who participates in multiple surveys gets a separate token per survey.
 
-function verifySurveyJwt(req: VercelRequest): { respondent_id: string; email: string } | null {
+interface SurveyJwtPayload {
+  survey_id: string;
+  respondent_id: string;
+  email: string;
+}
+
+function verifySurveyJwt(req: VercelRequest): SurveyJwtPayload | null {
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) return null;
   const token = authHeader.substring(7);
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { respondent_id: string; email: string };
-    return decoded;
+    return jwt.verify(token, JWT_SECRET) as SurveyJwtPayload;
   } catch {
     return null;
   }
 }
 
-const SURVEY_SECTIONS = ["profile", "hiring_overview", "skill_ratings", "gap_analysis", "emerging_trends"];
+function signSurveyJwt(payload: SurveyJwtPayload): string {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
+}
 
-// ==================== PUBLIC SURVEY ROUTES (pre-auth) ====================
+// ==================== Helpers ====================
+
+async function loadSurveyBySlug(slug: string) {
+  const { data, error } = await supabase
+    .from("surveys")
+    .select("id, slug, title, description, audience_type, college_id, status, schema, intro_markdown, thank_you_markdown, estimated_minutes, opens_at, closes_at, locked_at, version")
+    .eq("slug", slug)
+    .single();
+  if (error || !data) return null;
+  return data;
+}
+
+function isOpenForResponses(survey: any): { open: boolean; reason?: string } {
+  if (survey.status === "draft") return { open: false, reason: "This survey is not yet published." };
+  if (survey.status === "paused") return { open: false, reason: "This survey is currently paused." };
+  if (survey.status === "closed" || survey.status === "archived") return { open: false, reason: "This survey is closed." };
+  const now = new Date();
+  if (survey.opens_at && new Date(survey.opens_at) > now) return { open: false, reason: "This survey has not opened yet." };
+  if (survey.closes_at && new Date(survey.closes_at) < now) return { open: false, reason: "This survey has closed." };
+  return { open: true };
+}
+
+function publicSurveyShape(survey: any) {
+  return {
+    id: survey.id,
+    slug: survey.slug,
+    title: survey.title,
+    description: survey.description,
+    audience_type: survey.audience_type,
+    schema: survey.schema || { sections: [], settings: {} },
+    intro_markdown: survey.intro_markdown,
+    thank_you_markdown: survey.thank_you_markdown,
+    estimated_minutes: survey.estimated_minutes,
+    status: survey.status,
+  };
+}
+
+// ==================== PUBLIC SURVEY ROUTES ====================
+// All routes scoped under /api/survey/:slug/... or use slug in body.
+// Old /api/survey/auth/send-otp is replaced by /api/survey/:slug/auth/send-otp.
 
 export async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelResponse): Promise<VercelResponse> {
-  // ---- POST /api/survey/auth/send-otp ----
-  if (path === "/survey/auth/send-otp" && req.method === "POST") {
-    const { email } = req.body || {};
-    if (!email || typeof email !== "string") {
-      return res.status(400).json({ error: "Email is required" });
-    }
-    const normalizedEmail = email.toLowerCase().trim();
+  // ---- GET /api/survey/:slug ----
+  // Public meta + schema (only for surveys that are open for responses)
+  let m = path.match(/^\/survey\/([^/]+)$/);
+  if (m && req.method === "GET") {
+    const survey = await loadSurveyBySlug(m[1]);
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+    const open = isOpenForResponses(survey);
+    if (!open.open) return res.status(403).json({ error: open.reason });
+    return res.json(publicSurveyShape(survey));
+  }
 
+  // ---- POST /api/survey/:slug/auth/send-otp ----
+  m = path.match(/^\/survey\/([^/]+)\/auth\/send-otp$/);
+  if (m && req.method === "POST") {
+    const slug = m[1];
+    const { email } = req.body || {};
+    if (!email || typeof email !== "string") return res.status(400).json({ error: "Email is required" });
+
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+    const open = isOpenForResponses(survey);
+    if (!open.open) return res.status(403).json({ error: open.reason });
+
+    const normalizedEmail = email.toLowerCase().trim();
     const otp = generateSecureOtp(6);
     const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
     const hashedOtp = await bcrypt.hash(otp, 10);
 
-    const { error } = await supabase.from("survey_respondents").upsert(
-      { email: normalizedEmail, auth_otp: hashedOtp, auth_otp_expires: expires },
-      { onConflict: "email" }
-    );
-    if (error) return res.status(500).json({ error: error.message });
+    // Upsert respondent scoped by (survey_id, email)
+    // Look up first to decide insert vs update (the unique index is on lower(email)+survey_id)
+    const { data: existing } = await supabase
+      .from("survey_respondents")
+      .select("id")
+      .eq("survey_id", survey.id)
+      .eq("email", normalizedEmail)
+      .maybeSingle();
 
-    // Send OTP via unified mailer (Mandrill primary, Resend fallback)
+    if (existing) {
+      const { error } = await supabase.from("survey_respondents")
+        .update({ auth_otp: hashedOtp, auth_otp_expires: expires })
+        .eq("id", existing.id);
+      if (error) return res.status(500).json({ error: error.message });
+    } else {
+      const { error } = await supabase.from("survey_respondents")
+        .insert({ survey_id: survey.id, email: normalizedEmail, auth_otp: hashedOtp, auth_otp_expires: expires });
+      if (error) return res.status(500).json({ error: error.message });
+    }
+
+    // Send OTP via unified mailer
     const otpResult = await sendEmail({
       to: normalizedEmail,
-      subject: "Your Nexus Survey Access Code",
+      subject: `Your access code for "${survey.title}"`,
       text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
       html: basicHtmlTemplate({
-        title: "Your Nexus Survey Access Code",
-        body_html: `<p>Use the code below to verify your email and continue with the survey.</p><p style="font-size:28px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:16px 24px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
+        title: `Access code for "${survey.title}"`,
+        body_html: `<p>Use the code below to verify your email and start the survey.</p><p style="font-size:28px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:16px 24px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
       }),
-      tags: ["nexus-survey", "survey-otp"],
-      metadata: { purpose: "survey_otp", email: normalizedEmail },
+      tags: ["nexus-survey", "survey-otp", `slug:${survey.slug}`],
+      metadata: { purpose: "survey_otp", survey_id: survey.id, slug: survey.slug, email: normalizedEmail },
     });
     if (!otpResult.ok) {
-      console.warn(`[SURVEY OTP] delivery failed for ${normalizedEmail} via ${otpResult.provider}: ${otpResult.error}`);
+      console.warn(`[SURVEY OTP] delivery failed slug=${survey.slug} email=${normalizedEmail} provider=${otpResult.provider}: ${otpResult.error}`);
     }
 
     return res.json({ message: "OTP sent to your email" });
   }
 
-  // ---- POST /api/survey/auth/verify-otp ----
-  if (path === "/survey/auth/verify-otp" && req.method === "POST") {
+  // ---- POST /api/survey/:slug/auth/verify-otp ----
+  m = path.match(/^\/survey\/([^/]+)\/auth\/verify-otp$/);
+  if (m && req.method === "POST") {
+    const slug = m[1];
     const { email, otp } = req.body || {};
-    if (!email || !otp) {
-      return res.status(400).json({ error: "Email and OTP are required" });
-    }
+    if (!email || !otp) return res.status(400).json({ error: "Email and OTP are required" });
+
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+
     const normalizedEmail = email.toLowerCase().trim();
 
     const { data: respondent, error } = await supabase
       .from("survey_respondents")
       .select("id, auth_otp, auth_otp_expires")
+      .eq("survey_id", survey.id)
       .eq("email", normalizedEmail)
-      .single();
+      .maybeSingle();
 
-    if (error || !respondent) {
-      return res.status(404).json({ error: "Email not found. Please request a new OTP." });
-    }
+    if (error || !respondent) return res.status(404).json({ error: "Email not found. Please request a new OTP." });
     if (!respondent.auth_otp || !respondent.auth_otp_expires) {
       return res.status(400).json({ error: "No OTP pending. Please request a new one." });
     }
@@ -86,9 +167,7 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
       return res.status(400).json({ error: "OTP has expired. Please request a new one." });
     }
     const isValid = await bcrypt.compare(otp, respondent.auth_otp);
-    if (!isValid) {
-      return res.status(400).json({ error: "Invalid OTP" });
-    }
+    if (!isValid) return res.status(400).json({ error: "Invalid OTP" });
 
     // Clear OTP and update login time
     await supabase.from("survey_respondents").update({
@@ -97,656 +176,721 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
       last_login_at: new Date().toISOString(),
     }).eq("id", respondent.id);
 
-    const token = jwt.sign(
-      { respondent_id: respondent.id, email: normalizedEmail },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    return res.json({ token, respondent_id: respondent.id });
-  }
-
-  // ---- POST /api/survey/auth/register ----
-  // Requires OTP verification before issuing JWT. Accepts email + otp_code.
-  if (path === "/survey/auth/register" && req.method === "POST") {
-    const { email, otp_code } = req.body || {};
-    if (!email || typeof email !== "string") {
-      return res.status(400).json({ error: "Email is required" });
-    }
-    if (!otp_code) {
-      return res.status(400).json({ error: "OTP code is required. Please request an OTP first." });
-    }
-    const normalizedEmail = email.toLowerCase().trim();
-
-    // Look up the respondent and verify OTP server-side
-    const { data: respondent, error } = await supabase
-      .from("survey_respondents")
-      .select("id, auth_otp, auth_otp_expires")
+    // Mark invite (if any) as 'started'
+    await supabase.from("survey_invites")
+      .update({ status: "started" })
+      .eq("survey_id", survey.id)
       .eq("email", normalizedEmail)
-      .single();
+      .in("status", ["pending", "sent", "opened"]);
 
-    if (error || !respondent) {
-      return res.status(404).json({ error: "Email not found. Please request a new OTP." });
-    }
-    if (!respondent.auth_otp || !respondent.auth_otp_expires) {
-      return res.status(400).json({ error: "No OTP pending. Please request a new one." });
-    }
-    if (new Date(respondent.auth_otp_expires) < new Date()) {
-      return res.status(400).json({ error: "OTP has expired. Please request a new one." });
-    }
-
-    const isValid = await bcrypt.compare(otp_code, respondent.auth_otp);
-    if (!isValid) {
-      return res.status(400).json({ error: "Invalid OTP" });
-    }
-
-    // Clear OTP after successful verification
-    await supabase.from("survey_respondents").update({
-      auth_otp: null,
-      auth_otp_expires: null,
-      last_login_at: new Date().toISOString(),
-    }).eq("id", respondent.id);
-
-    const token = jwt.sign(
-      { respondent_id: respondent.id, email: normalizedEmail },
-      JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    return res.json({ token, respondent_id: respondent.id });
+    const token = signSurveyJwt({ survey_id: survey.id, respondent_id: respondent.id, email: normalizedEmail });
+    return res.json({ token, respondent_id: respondent.id, survey_id: survey.id });
   }
 
-  // ---- GET /api/survey/skill-list (public) ----
+  // ---- GET /api/survey/skill-list (public, used by skill_matrix questions) ----
+  // Optionally filter by category list via query param
   if (path === "/survey/skill-list" && req.method === "GET") {
-    const { data: skills, error } = await supabase
-      .from("taxonomy_skills")
-      .select("id, name, category")
-      .order("category")
-      .order("name");
-
+    const { categories } = req.query as Record<string, string>;
+    let q = supabase.from("taxonomy_skills").select("id, name, category").order("category").order("name");
+    if (categories) {
+      const list = categories.split(",").map(s => s.trim()).filter(Boolean);
+      if (list.length) q = q.in("category", list);
+    }
+    const { data: skills, error } = await q;
     if (error) return res.status(500).json({ error: error.message });
 
-    // Group by category
     const grouped: Record<string, { id: string; name: string }[]> = {};
     for (const skill of skills || []) {
       const cat = skill.category || "Other";
       if (!grouped[cat]) grouped[cat] = [];
       grouped[cat].push({ id: skill.id, name: skill.name });
     }
-
     return res.json(grouped);
   }
 
-  // ---- All routes below require survey JWT ----
+  // ==================== AUTHENTICATED RESPONDENT ROUTES ====================
   const surveyAuth = verifySurveyJwt(req);
   if (!surveyAuth) {
     return res.status(401).json({ error: "Survey authentication required" });
   }
 
-  // ---- GET /api/survey/progress ----
-  if (path === "/survey/progress" && req.method === "GET") {
-    const respondentId = surveyAuth.respondent_id;
-
-    // Check profile completion
-    const { data: respondent } = await supabase
-      .from("survey_respondents")
-      .select("full_name, company_name, designation, industry, company_size, years_of_experience, location_city, location_country")
-      .eq("id", respondentId)
-      .single();
-
-    const profileFields = respondent
-      ? [respondent.full_name, respondent.company_name, respondent.designation, respondent.industry, respondent.company_size].filter(Boolean)
-      : [];
-    const profileStatus = profileFields.length >= 5 ? "complete" : profileFields.length > 0 ? "in_progress" : "pending";
-
-    // Check section responses
-    const { data: responses } = await supabase
-      .from("survey_responses")
-      .select("section_key, question_key")
-      .eq("respondent_id", respondentId);
-
-    const sectionCounts: Record<string, number> = {};
-    for (const r of responses || []) {
-      sectionCounts[r.section_key] = (sectionCounts[r.section_key] || 0) + 1;
+  // ---- GET /api/survey/:slug/progress ----
+  m = path.match(/^\/survey\/([^/]+)\/progress$/);
+  if (m && req.method === "GET") {
+    const slug = m[1];
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey || survey.id !== surveyAuth.survey_id) {
+      return res.status(403).json({ error: "Token does not match this survey" });
     }
 
-    // Check skill ratings
-    const { count: skillCount } = await supabase
-      .from("survey_skill_ratings")
-      .select("id", { count: "exact", head: true })
-      .eq("respondent_id", respondentId);
+    const sections = (survey.schema?.sections || []) as any[];
+    const sectionKeys = sections.map(s => s.key);
 
-    // Required question counts per section
-    const requiredCounts: Record<string, number> = {
-      hiring_overview: 5,
-      gap_analysis: 4,
-      emerging_trends: 3,
-    };
+    const [{ data: responses }, { count: skillCount }] = await Promise.all([
+      supabase.from("survey_responses")
+        .select("section_key, question_key")
+        .eq("respondent_id", surveyAuth.respondent_id)
+        .eq("survey_id", survey.id),
+      supabase.from("survey_skill_ratings")
+        .select("id", { count: "exact", head: true })
+        .eq("respondent_id", surveyAuth.respondent_id)
+        .eq("survey_id", survey.id),
+    ]);
 
-    const getStatus = (key: string) => {
-      if (key === "profile") return profileStatus;
-      if (key === "skill_ratings") {
-        if ((skillCount || 0) >= 10) return "complete";
-        if ((skillCount || 0) > 0) return "in_progress";
-        return "pending";
-      }
-      const count = sectionCounts[key] || 0;
-      const required = requiredCounts[key] || 1;
-      if (count >= required) return "complete";
-      if (count > 0) return "in_progress";
-      return "pending";
-    };
+    const sectionResponseCounts: Record<string, Set<string>> = {};
+    for (const r of responses || []) {
+      if (!sectionResponseCounts[r.section_key]) sectionResponseCounts[r.section_key] = new Set();
+      sectionResponseCounts[r.section_key].add(r.question_key);
+    }
 
     const progress: Record<string, string> = {};
-    let completedSections = 0;
-    for (const section of SURVEY_SECTIONS) {
-      progress[section] = getStatus(section);
-      if (progress[section] === "complete") completedSections++;
+    let completed = 0;
+    for (const sec of sections) {
+      const questions = (sec.questions || []) as any[];
+      const requiredQs = questions.filter(q => q.required !== false);
+      const requiredKeys = requiredQs.map(q => q.key);
+      const containsSkillMatrix = questions.some(q => q.type === "skill_matrix");
+      const answered = sectionResponseCounts[sec.key] || new Set();
+
+      let status: "complete" | "in_progress" | "pending" = "pending";
+      const requiredAnsweredCount = requiredKeys.filter(k => answered.has(k)).length;
+      if (containsSkillMatrix && (skillCount || 0) > 0) {
+        status = (skillCount || 0) >= 5 && requiredAnsweredCount === requiredKeys.length ? "complete" : "in_progress";
+      } else if (requiredKeys.length === 0) {
+        status = answered.size > 0 ? "complete" : "pending";
+      } else if (requiredAnsweredCount === requiredKeys.length) {
+        status = "complete";
+      } else if (requiredAnsweredCount > 0 || answered.size > 0) {
+        status = "in_progress";
+      }
+      progress[sec.key] = status;
+      if (status === "complete") completed++;
     }
 
     return res.json({
       ...progress,
-      total_pct: Math.round((completedSections / SURVEY_SECTIONS.length) * 100),
+      total_pct: sectionKeys.length ? Math.round((completed / sectionKeys.length) * 100) : 0,
+      completed_sections: completed,
+      total_sections: sectionKeys.length,
     });
   }
 
-  // ---- POST /api/survey/responses ----
-  if (path === "/survey/responses" && req.method === "POST") {
-    const respondentId = surveyAuth.respondent_id;
-    const { section_key, responses, profile, skill_ratings } = req.body || {};
+  // ---- POST /api/survey/:slug/responses ----
+  // Generic, schema-driven save. Body: { section_key, responses: [{question_key, response_type, response_value}], skill_ratings?: [...] }
+  m = path.match(/^\/survey\/([^/]+)\/responses$/);
+  if (m && req.method === "POST") {
+    const slug = m[1];
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey || survey.id !== surveyAuth.survey_id) {
+      return res.status(403).json({ error: "Token does not match this survey" });
+    }
+    const open = isOpenForResponses(survey);
+    if (!open.open) return res.status(403).json({ error: open.reason });
 
-    // Handle profile update (Section A)
-    if (section_key === "profile" && profile) {
-      const { error } = await supabase
-        .from("survey_respondents")
-        .update({
-          full_name: profile.full_name || null,
-          company_name: profile.company_name || null,
-          designation: profile.designation || null,
-          industry: profile.industry || null,
-          company_size: profile.company_size || null,
-          years_of_experience: profile.years_of_experience != null ? parseInt(profile.years_of_experience) : null,
-          location_city: profile.location_city || null,
-          location_country: profile.location_country || null,
-        })
-        .eq("id", respondentId);
-      if (error) return res.status(500).json({ error: error.message });
-      return res.json({ saved: true, section_key: "profile" });
+    const body = req.body || {};
+    const { section_key, responses, skill_ratings, profile_patch } = body;
+
+    if (!section_key) return res.status(400).json({ error: "section_key is required" });
+
+    const respondentId = surveyAuth.respondent_id;
+
+    // Optional respondent profile patch (some questions are stored on survey_respondents columns
+    // for back-compat: full_name, company_name, designation, industry, company_size,
+    // years_of_experience, location_city, location_country)
+    if (profile_patch && typeof profile_patch === "object") {
+      const allowed = ["full_name", "company_name", "designation", "industry", "company_size", "years_of_experience", "location_city", "location_country"];
+      const update: Record<string, any> = {};
+      for (const k of allowed) {
+        if (k in profile_patch) {
+          if (k === "years_of_experience" && profile_patch[k] != null) update[k] = parseInt(profile_patch[k]);
+          else update[k] = profile_patch[k] || null;
+        }
+      }
+      if (Object.keys(update).length) {
+        await supabase.from("survey_respondents").update(update).eq("id", respondentId);
+      }
     }
 
-    // Handle skill ratings (Section C)
-    if (section_key === "skill_ratings" && skill_ratings) {
+    // Skill matrix ratings
+    if (Array.isArray(skill_ratings)) {
       for (const rating of skill_ratings) {
-        const { error } = await supabase.from("survey_skill_ratings").upsert(
+        if (!rating?.skill_name) continue;
+        const { error: rErr } = await supabase.from("survey_skill_ratings").upsert(
           {
+            survey_id: survey.id,
             respondent_id: respondentId,
             skill_name: rating.skill_name,
             taxonomy_skill_id: rating.taxonomy_skill_id || null,
-            importance_rating: rating.importance_rating || null,
-            demonstration_rating: rating.demonstration_rating || null,
-            is_custom_skill: rating.is_custom_skill || false,
+            importance_rating: rating.importance_rating ?? null,
+            demonstration_rating: rating.demonstration_rating ?? null,
+            is_custom_skill: !!rating.is_custom_skill,
           },
           { onConflict: "respondent_id,skill_name" }
         );
-        if (error) {
-          console.error("Skill rating upsert error:", error);
-        }
-      }
-      return res.json({ saved: true, section_key: "skill_ratings", count: skill_ratings.length });
-    }
-
-    // Handle generic section responses (Sections B, D, E)
-    if (!section_key || !responses || !Array.isArray(responses)) {
-      return res.status(400).json({ error: "section_key and responses[] are required" });
-    }
-
-    for (const item of responses) {
-      const { error } = await supabase.from("survey_responses").upsert(
-        {
-          respondent_id: respondentId,
-          section_key,
-          question_key: item.question_key,
-          response_type: item.response_type,
-          response_value: item.response_value,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "respondent_id,section_key,question_key" }
-      );
-      if (error) {
-        console.error("Response upsert error:", error);
+        if (rErr) console.error("[SURVEY] skill rating upsert error:", rErr.message);
       }
     }
 
-    return res.json({ saved: true, section_key, count: responses.length });
+    // Generic responses
+    if (Array.isArray(responses)) {
+      for (const item of responses) {
+        if (!item?.question_key) continue;
+        const { error: qErr } = await supabase.from("survey_responses").upsert(
+          {
+            survey_id: survey.id,
+            respondent_id: respondentId,
+            section_key,
+            question_key: item.question_key,
+            response_type: item.response_type || "unknown",
+            response_value: item.response_value ?? null,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "respondent_id,section_key,question_key" }
+        );
+        if (qErr) console.error("[SURVEY] response upsert error:", qErr.message);
+      }
+    }
+
+    return res.json({ saved: true, section_key, response_count: Array.isArray(responses) ? responses.length : 0, skill_count: Array.isArray(skill_ratings) ? skill_ratings.length : 0 });
   }
 
-  // ---- GET /api/survey/my-responses ----
-  if (path === "/survey/my-responses" && req.method === "GET") {
-    const respondentId = surveyAuth.respondent_id;
+  // ---- POST /api/survey/:slug/submit ----
+  // Marks the response as final (locks invite to 'completed', sets completed_at on respondent)
+  m = path.match(/^\/survey\/([^/]+)\/submit$/);
+  if (m && req.method === "POST") {
+    const slug = m[1];
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey || survey.id !== surveyAuth.survey_id) {
+      return res.status(403).json({ error: "Token does not match this survey" });
+    }
+
+    // Lock the survey on first submission
+    if (!survey.locked_at) {
+      await supabase.from("surveys").update({ locked_at: new Date().toISOString() }).eq("id", survey.id);
+    }
+
+    // Mark invite (if any) as completed
+    await supabase.from("survey_invites")
+      .update({ status: "completed" })
+      .eq("survey_id", survey.id)
+      .eq("email", surveyAuth.email);
+
+    return res.json({ submitted: true });
+  }
+
+  // ---- GET /api/survey/:slug/my-responses ----
+  m = path.match(/^\/survey\/([^/]+)\/my-responses$/);
+  if (m && req.method === "GET") {
+    const slug = m[1];
+    const survey = await loadSurveyBySlug(slug);
+    if (!survey || survey.id !== surveyAuth.survey_id) {
+      return res.status(403).json({ error: "Token does not match this survey" });
+    }
 
     const [{ data: respondent }, { data: responses }, { data: skillRatings }] = await Promise.all([
       supabase.from("survey_respondents")
         .select("full_name, company_name, designation, industry, company_size, years_of_experience, location_city, location_country")
-        .eq("id", respondentId).single(),
-      supabase.from("survey_responses").select("*").eq("respondent_id", respondentId),
-      supabase.from("survey_skill_ratings").select("*").eq("respondent_id", respondentId),
+        .eq("id", surveyAuth.respondent_id).maybeSingle(),
+      supabase.from("survey_responses").select("section_key, question_key, response_type, response_value")
+        .eq("respondent_id", surveyAuth.respondent_id).eq("survey_id", survey.id),
+      supabase.from("survey_skill_ratings").select("skill_name, taxonomy_skill_id, importance_rating, demonstration_rating, is_custom_skill")
+        .eq("respondent_id", surveyAuth.respondent_id).eq("survey_id", survey.id),
     ]);
 
     return res.json({ profile: respondent, responses: responses || [], skill_ratings: skillRatings || [] });
-  }
-
-  // ---- GET /api/survey/results (admin-only via main app auth) ----
-  if (path === "/survey/results" && req.method === "GET") {
-    // For admin results, also check main app auth
-    const mainAuth = await verifyAuth(req);
-    if (!mainAuth.authenticated) {
-      return res.status(403).json({ error: "Admin access required" });
-    }
-
-    const [{ data: respondents, count }, { data: allResponses }, { data: allRatings }] = await Promise.all([
-      supabase.from("survey_respondents").select("id, email, full_name, company_name, industry, created_at", { count: "exact" }),
-      supabase.from("survey_responses").select("*"),
-      supabase.from("survey_skill_ratings").select("*"),
-    ]);
-
-    // Compute skill averages
-    const skillAverages: Record<string, { importance_avg: number; demonstration_avg: number; count: number }> = {};
-    for (const r of allRatings || []) {
-      if (!skillAverages[r.skill_name]) {
-        skillAverages[r.skill_name] = { importance_avg: 0, demonstration_avg: 0, count: 0 };
-      }
-      const sa = skillAverages[r.skill_name];
-      sa.importance_avg += r.importance_rating || 0;
-      sa.demonstration_avg += r.demonstration_rating || 0;
-      sa.count++;
-    }
-    for (const name of Object.keys(skillAverages)) {
-      const sa = skillAverages[name];
-      sa.importance_avg = Math.round((sa.importance_avg / sa.count) * 10) / 10;
-      sa.demonstration_avg = Math.round((sa.demonstration_avg / sa.count) * 10) / 10;
-    }
-
-    return res.json({
-      total_respondents: count || 0,
-      respondents: respondents || [],
-      responses: allResponses || [],
-      skill_averages: skillAverages,
-    });
   }
 
   return res.status(404).json({ error: "Survey endpoint not found", path });
 }
 
 // ==================== ADMIN SURVEY ROUTES (post-auth) ====================
+// These are used by /survey-admin in the Nexus app. They're scoped to a survey_id and
+// support the rebuilt admin UI. The legacy unscoped endpoints are gone.
 
-const ADMIN_SURVEY_SECTIONS = ["profile", "hiring_overview", "skill_ratings", "gap_analysis", "emerging_trends"];
+function determineSurveyStatus(respondent: any, responseSectionKeys: string[], totalSections: number): string {
+  const uniqueSections = new Set(responseSectionKeys);
+  if (totalSections > 0 && uniqueSections.size >= totalSections) return "completed";
+  if (uniqueSections.size > 0) return "started";
+  if (respondent.last_login_at) return "registered";
+  return "invited";
+}
 
-function determineSurveyStatus(respondent: any, responseSectionKeys: string[]): string {
-    const uniqueSections = [...new Set(responseSectionKeys)];
-    if (uniqueSections.length >= 5) return "completed";
-    if (uniqueSections.length > 0) return "started";
-    if (respondent.last_login_at) return "registered";
-    return "invited";
+// Apply college-scope filter for college_rep users
+function applyCollegeScope(query: any, auth: AuthResult, surveyTable = "surveys") {
+  const u = auth.nexusUser;
+  if (!u) return query;
+  if (u.role === "super_admin" || u.role === "admin") return query;
+  if (u.role === "college_rep" && u.restricted_college_ids?.length) {
+    return query.in(surveyTable === "surveys" ? "college_id" : "survey_id", u.restricted_college_ids);
+  }
+  return query;
 }
 
 export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
-    if (!requireAdmin(auth, res)) return;
+  if (!auth.nexusUser) return res.status(401).json({ error: "Authentication required" });
 
-    // GET /api/admin/survey/dashboard
-    if (path === "/admin/survey/dashboard" && req.method === "GET") {
-      // Use SQL aggregation RPC for dashboard stats
-      const { data: dbStats, error: statsErr } = await supabase.rpc("get_survey_dashboard_stats");
-      if (statsErr) return res.status(500).json({ error: statsErr.message });
+  // ---- GET /api/admin/surveys (list all surveys, college-scoped for SPOCs) ----
+  if (path === "/admin/surveys" && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const { status: statusFilter, audience, college_id } = req.query as Record<string, string>;
 
-      const stats = dbStats || {};
-      const totalRespondents = stats.total_respondents || 0;
-      const respondentsWithName = stats.respondents_with_name || 0;
-      const respondentsWithLogin = stats.respondents_with_login || 0;
+    let q = supabase.from("surveys").select("id, slug, title, description, audience_type, college_id, status, version, locked_at, opens_at, closes_at, created_by, created_at, updated_at, schema").order("created_at", { ascending: false });
+    if (statusFilter && statusFilter !== "all") q = q.eq("status", statusFilter);
+    if (audience) q = q.eq("audience_type", audience);
+    if (college_id) q = q.eq("college_id", college_id);
+    q = applyCollegeScope(q, auth);
 
-      // Compute status counts from SQL-aggregated data
-      // "completed" = respondent who has responses in 5+ distinct sections
-      // We use the sections_completion to approximate
-      const sectionsCompletion: Record<string, number> = {};
-      for (const section of ADMIN_SURVEY_SECTIONS) {
-        sectionsCompletion[section] = (stats.sections_completion || {})[section] || 0;
-      }
-      // Add profile section count from respondents with full_name
-      sectionsCompletion["profile"] = respondentsWithName;
+    const { data: surveys, error } = await q;
+    if (error) return res.status(500).json({ error: error.message });
 
-      // Skill ratings summary from RPC
-      const skillRatings = stats.skill_ratings_summary || [];
-      const topImportance = [...skillRatings]
-        .sort((a: any, b: any) => (b.importance || 0) - (a.importance || 0))
-        .slice(0, 10);
-      const topGap = [...skillRatings]
-        .sort((a: any, b: any) => (b.gap || 0) - (a.gap || 0))
-        .slice(0, 10);
-
-      return res.json({
-        total_invited: totalRespondents,
-        total_registered: respondentsWithLogin,
-        total_started: respondentsWithName,
-        total_completed: Math.min(respondentsWithName, sectionsCompletion["skill_ratings"] || 0),
-        completion_rate: totalRespondents > 0 ? Math.round((respondentsWithName / totalRespondents) * 1000) / 10 : 0,
-        sections_completion: sectionsCompletion,
-        responses_by_industry: stats.responses_by_industry || [],
-        responses_by_company_size: stats.responses_by_company_size || [],
-        skill_ratings_summary: {
-          top_importance: topImportance.map((s: any) => ({ skill: s.skill, avg: Number(s.importance) })),
-          top_gap: topGap.map((s: any) => ({ skill: s.skill, gap: Number(s.gap) })),
-          total_skills_rated: stats.total_ratings || 0,
-        },
-      });
-    }
-
-    // GET /api/admin/survey/respondents
-    if (path === "/admin/survey/respondents" && req.method === "GET") {
-      const { page = "1", limit = "20", status: filterStatus, search } = req.query as Record<string, string>;
-      const pageNum = parseInt(page) || 1;
-      const limitNum = Math.min(parseInt(limit) || 20, 100);
-      const offset = (pageNum - 1) * limitNum;
-
-      // Use server-side pagination for respondents
-      let respondentsQuery = supabase
+    // Augment with respondent counts in one query
+    const surveyIds = (surveys || []).map(s => s.id);
+    let countsBySurvey: Record<string, { respondents: number; completed: number }> = {};
+    if (surveyIds.length) {
+      const { data: respCounts } = await supabase
         .from("survey_respondents")
-        .select("*", { count: "exact" })
-        .order("created_at", { ascending: false });
-
-      // Apply search filter at SQL level
-      if (search) {
-        respondentsQuery = respondentsQuery.or(
-          `email.ilike.%${search}%,full_name.ilike.%${search}%,company_name.ilike.%${search}%`
-        );
+        .select("survey_id, last_login_at")
+        .in("survey_id", surveyIds);
+      for (const r of respCounts || []) {
+        if (!countsBySurvey[r.survey_id]) countsBySurvey[r.survey_id] = { respondents: 0, completed: 0 };
+        countsBySurvey[r.survey_id].respondents++;
+        if (r.last_login_at) countsBySurvey[r.survey_id].completed++;
       }
-
-      respondentsQuery = respondentsQuery.range(offset, offset + limitNum - 1);
-
-      const { data: respondents, count, error: rErr } = await respondentsQuery;
-      if (rErr) return res.status(500).json({ error: rErr.message });
-
-      const respList = respondents || [];
-      const respIds = respList.map((r: any) => r.id);
-
-      // Only fetch responses/ratings for the current page of respondents
-      const [{ data: pageResponses }, { data: pageRatings }] = await Promise.all([
-        respIds.length > 0
-          ? supabase.from("survey_responses").select("respondent_id, section_key").in("respondent_id", respIds)
-          : Promise.resolve({ data: [] }),
-        respIds.length > 0
-          ? supabase.from("survey_skill_ratings").select("respondent_id").in("respondent_id", respIds)
-          : Promise.resolve({ data: [] }),
-      ]);
-
-      // Build per-respondent data
-      const respondentSections: Record<string, Set<string>> = {};
-      const respondentRatingCounts: Record<string, number> = {};
-      for (const r of pageResponses || []) {
-        if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
-        respondentSections[r.respondent_id].add(r.section_key);
-      }
-      for (const r of pageRatings || []) {
-        respondentRatingCounts[r.respondent_id] = (respondentRatingCounts[r.respondent_id] || 0) + 1;
-      }
-      for (const resp of respList) {
-        if (resp.full_name) {
-          if (!respondentSections[resp.id]) respondentSections[resp.id] = new Set();
-          respondentSections[resp.id].add("profile");
-        }
-      }
-
-      let enriched = respList.map((resp: any) => {
-        const sections = respondentSections[resp.id] ? [...respondentSections[resp.id]] : [];
-        return {
-          id: resp.id,
-          email: resp.email,
-          full_name: resp.full_name,
-          company_name: resp.company_name,
-          designation: resp.designation,
-          industry: resp.industry,
-          status: determineSurveyStatus(resp, sections),
-          sections_completed: sections,
-          skills_rated: respondentRatingCounts[resp.id] || 0,
-          created_at: resp.created_at,
-          last_login_at: resp.last_login_at,
-        };
-      });
-
-      // Apply status filter client-side (status is derived, not a DB column)
-      if (filterStatus && filterStatus !== "all") {
-        enriched = enriched.filter((r: any) => r.status === filterStatus);
-      }
-
-      return res.json({ respondents: enriched, total: count || 0, page: pageNum });
     }
 
-    // GET /api/admin/survey/respondent/:id
-    if (path.match(/^\/admin\/survey\/respondent\/[^/]+$/) && req.method === "GET") {
-      const id = path.split("/").pop()!;
+    return res.json({
+      surveys: (surveys || []).map((s: any) => ({
+        ...s,
+        section_count: (s.schema?.sections || []).length,
+        question_count: (s.schema?.sections || []).reduce((sum: number, sec: any) => sum + ((sec.questions || []).length), 0),
+        respondent_count: countsBySurvey[s.id]?.respondents || 0,
+        completed_count: countsBySurvey[s.id]?.completed || 0,
+        // strip schema from list payload (not needed)
+        schema: undefined,
+      })),
+    });
+  }
 
-      const [{ data: respondent, error: rErr }, { data: responses }, { data: ratings }] = await Promise.all([
-        supabase.from("survey_respondents").select("*").eq("id", id).single(),
-        supabase.from("survey_responses").select("*").eq("respondent_id", id).order("section_key"),
-        supabase.from("survey_skill_ratings").select("*").eq("respondent_id", id).order("skill_name"),
-      ]);
+  // ---- POST /api/admin/surveys (create a new survey) ----
+  if (path === "/admin/surveys" && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    const { title, slug, description, audience_type, college_id, schema, intro_markdown, thank_you_markdown, estimated_minutes } = req.body || {};
 
-      if (rErr || !respondent) return res.status(404).json({ error: "Respondent not found" });
+    if (!title || !audience_type) return res.status(400).json({ error: "title and audience_type are required" });
 
-      return res.json({
-        respondent,
-        responses: responses || [],
-        skill_ratings: ratings || [],
-      });
+    const finalSlug = (slug && typeof slug === "string" ? slug : title)
+      .toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 80) + "-" + Math.random().toString(36).slice(2, 6);
+
+    const { data, error } = await supabase.from("surveys").insert({
+      slug: finalSlug,
+      title,
+      description: description || null,
+      audience_type,
+      college_id: college_id || null,
+      schema: schema || { sections: [], settings: {} },
+      intro_markdown: intro_markdown || null,
+      thank_you_markdown: thank_you_markdown || null,
+      estimated_minutes: estimated_minutes || null,
+      created_by: auth.nexusUser.id,
+      status: "draft",
+    }).select().single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ survey: data });
+  }
+
+  // ---- GET /api/admin/surveys/:id ----
+  let m = path.match(/^\/admin\/surveys\/([^/]+)$/);
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const { data: survey, error } = await supabase.from("surveys").select("*").eq("id", m[1]).single();
+    if (error || !survey) return res.status(404).json({ error: "Survey not found" });
+    // college scope check
+    if (auth.nexusUser.role === "college_rep" && auth.nexusUser.restricted_college_ids?.length && !auth.nexusUser.restricted_college_ids.includes(survey.college_id)) {
+      return res.status(403).json({ error: "Survey not in your scope" });
     }
+    return res.json({ survey });
+  }
 
-    // POST /api/admin/survey/invite
-    if (path === "/admin/survey/invite" && req.method === "POST") {
-      if (!requirePermission("surveys", "write")(auth, res)) return;
-      const { emails } = req.body || {};
-      if (!emails || !Array.isArray(emails) || emails.length === 0) {
-        return res.status(400).json({ error: "emails array is required" });
-      }
+  // ---- PATCH /api/admin/surveys/:id ----
+  if (m && req.method === "PATCH") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    const surveyId = m[1];
 
-      const results: Array<{ email: string; status: string; error?: string }> = [];
+    const { data: existing, error: loadErr } = await supabase.from("surveys").select("*").eq("id", surveyId).single();
+    if (loadErr || !existing) return res.status(404).json({ error: "Survey not found" });
 
-      for (const rawEmail of emails) {
-        const email = (rawEmail as string).toLowerCase().trim();
-        if (!email || !email.includes("@")) {
-          results.push({ email: rawEmail, status: "failed", error: "Invalid email" });
-          continue;
-        }
+    const body = req.body || {};
+    const update: Record<string, any> = {};
+    const editable = ["title", "description", "audience_type", "college_id", "intro_markdown", "thank_you_markdown", "estimated_minutes", "status", "opens_at", "closes_at", "schema"];
+    for (const k of editable) if (k in body) update[k] = body[k];
 
-        try {
-          // Upsert respondent record
-          const { error: upsertErr } = await supabase
-            .from("survey_respondents")
-            .upsert({ email }, { onConflict: "email" });
-
-          if (upsertErr) {
-            results.push({ email, status: "failed", error: upsertErr.message });
-            continue;
-          }
-
-          // Try sending invite via Supabase Auth magic link
-          let emailSent = false;
-          try {
-            const { error: linkErr } = await supabase.auth.admin.generateLink({
-              type: "magiclink",
-              email,
-            });
-            if (!linkErr) emailSent = true;
-          } catch {
-            // generateLink not available or failed
-          }
-
-          // Fallback: send invite email with OTP via unified mailer (Mandrill -> Resend)
-          if (!emailSent) {
-            try {
-              const otp = generateSecureOtp(6);
-              const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-              const hashedOtp = await bcrypt.hash(otp, 10);
-              await supabase.from("survey_respondents").update({
-                auth_otp: hashedOtp,
-                auth_otp_expires: expires,
-              }).eq("email", email);
-
-              const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey`;
-              const inviteResult = await sendEmail({
-                to: email,
-                subject: "You're invited to the Nexus MBA Skills Survey",
-                text: `You've been invited to participate in the Board Infinity MBA Skills Survey.\n\nYour one-time access code is: ${otp}\n\nAccess the survey at: ${surveyUrl}\n\nThis code is valid for 15 minutes.`,
-                html: basicHtmlTemplate({
-                  title: "You're invited to the Nexus MBA Skills Survey",
-                  body_html: `<p>You've been invited to participate in the Board Infinity MBA Skills Survey.</p><p>Your one-time access code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:14px 20px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
-                  cta_label: "Open Survey",
-                  cta_url: surveyUrl,
-                }),
-                tags: ["nexus-survey", "survey-invite"],
-                metadata: { purpose: "survey_invite", email },
-              });
-              if (inviteResult.ok) emailSent = true;
-            } catch {
-              // email send failed
-            }
-          }
-
-          results.push({ email, status: emailSent ? "invited" : "added" });
-        } catch (err: any) {
-          results.push({ email, status: "failed", error: err.message });
-        }
-      }
-
-      return res.json({
-        results,
-        total: results.length,
-        successful: results.filter(r => r.status !== "failed").length,
-        failed: results.filter(r => r.status === "failed").length,
-      });
-    }
-
-    // POST /api/admin/survey/remind
-    if (path === "/admin/survey/remind" && req.method === "POST") {
-      if (!requirePermission("surveys", "write")(auth, res)) return;
-      const { email } = req.body || {};
-      if (!email) return res.status(400).json({ error: "email is required" });
-
-      const normalizedEmail = (email as string).toLowerCase().trim();
-
-      // Generate new OTP and send
-      let emailSent = false;
-      try {
-        const { error: linkErr } = await supabase.auth.admin.generateLink({
-          type: "magiclink",
-          email: normalizedEmail,
+    // If survey is locked (has responses), only allow label/copy edits — not structural schema changes
+    if (existing.locked_at && "schema" in update) {
+      const structurallyValid = isOnlyLabelEdit(existing.schema, update.schema);
+      if (!structurallyValid) {
+        return res.status(409).json({
+          error: "Survey is locked (has responses). Only label/copy edits allowed. Clone as new version for structural changes.",
         });
-        if (!linkErr) emailSent = true;
-      } catch {
-        // fallback
       }
-
-      if (!emailSent) {
-        try {
-          const otp = generateSecureOtp(6);
-          const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-          const hashedOtp = await bcrypt.hash(otp, 10);
-          await supabase.from("survey_respondents").update({
-            auth_otp: hashedOtp,
-            auth_otp_expires: expires,
-          }).eq("email", normalizedEmail);
-
-          const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey`;
-          const reminderResult = await sendEmail({
-            to: normalizedEmail,
-            subject: "Reminder: Complete the Nexus MBA Skills Survey",
-            text: `This is a reminder to complete the Board Infinity MBA Skills Survey.\n\nYour new one-time access code is: ${otp}\n\nAccess the survey at: ${surveyUrl}\n\nThis code is valid for 15 minutes.`,
-            html: basicHtmlTemplate({
-              title: "Reminder: Complete the Nexus MBA Skills Survey",
-              body_html: `<p>This is a reminder to complete the Board Infinity MBA Skills Survey.</p><p>Your new one-time access code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:14px 20px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
-              cta_label: "Open Survey",
-              cta_url: surveyUrl,
-            }),
-            tags: ["nexus-survey", "survey-reminder"],
-            metadata: { purpose: "survey_reminder", email: normalizedEmail },
-          });
-          if (reminderResult.ok) emailSent = true;
-        } catch {
-          // failed
-        }
-      }
-
-      return res.json({ success: true, email_sent: emailSent });
     }
 
-    // GET /api/admin/survey/analytics
-    if (path === "/admin/survey/analytics" && req.method === "GET") {
-      const [{ data: allResponses }, { data: allRatings }, { data: respondents }] = await Promise.all([
-        supabase.from("survey_responses").select("*"),
-        supabase.from("survey_skill_ratings").select("*"),
-        supabase.from("survey_respondents").select("*"),
-      ]);
+    const { data, error } = await supabase.from("surveys").update(update).eq("id", surveyId).select().single();
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ survey: data });
+  }
 
-      const responseList = allResponses || [];
-      const ratingList = allRatings || [];
+  // ---- POST /api/admin/surveys/:id/clone ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/clone$/);
+  if (m && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    const { data: source } = await supabase.from("surveys").select("*").eq("id", m[1]).single();
+    if (!source) return res.status(404).json({ error: "Source survey not found" });
 
-      // Skill importance vs demonstration
-      const skillAggs: Record<string, { impSum: number; demSum: number; count: number }> = {};
-      for (const r of ratingList) {
-        if (!skillAggs[r.skill_name]) skillAggs[r.skill_name] = { impSum: 0, demSum: 0, count: 0 };
-        skillAggs[r.skill_name].impSum += r.importance_rating || 0;
-        skillAggs[r.skill_name].demSum += r.demonstration_rating || 0;
-        skillAggs[r.skill_name].count++;
+    const { title, slug, audience_type, college_id } = req.body || {};
+    const newTitle = title || `${source.title} (copy)`;
+    const finalSlug = (slug || newTitle).toString().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 80) + "-" + Math.random().toString(36).slice(2, 6);
+
+    const { data, error } = await supabase.from("surveys").insert({
+      slug: finalSlug,
+      title: newTitle,
+      description: source.description,
+      audience_type: audience_type || source.audience_type,
+      college_id: college_id !== undefined ? college_id : source.college_id,
+      schema: source.schema,
+      intro_markdown: source.intro_markdown,
+      thank_you_markdown: source.thank_you_markdown,
+      estimated_minutes: source.estimated_minutes,
+      version: 1,
+      parent_survey_id: source.id,
+      created_by: auth.nexusUser.id,
+      status: "draft",
+    }).select().single();
+
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ survey: data });
+  }
+
+  // ---- GET /api/admin/surveys/:id/dashboard ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/dashboard$/);
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const surveyId = m[1];
+
+    const [{ data: survey }, { data: respondents }, { data: responses }, { data: ratings }, { data: invites }] = await Promise.all([
+      supabase.from("surveys").select("id, schema, status").eq("id", surveyId).single(),
+      supabase.from("survey_respondents").select("id, last_login_at, industry, company_size").eq("survey_id", surveyId),
+      supabase.from("survey_responses").select("respondent_id, section_key").eq("survey_id", surveyId),
+      supabase.from("survey_skill_ratings").select("respondent_id").eq("survey_id", surveyId),
+      supabase.from("survey_invites").select("status").eq("survey_id", surveyId),
+    ]);
+
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+
+    const sections = (survey.schema?.sections || []) as any[];
+    const totalSections = sections.length;
+
+    const respondentSections: Record<string, Set<string>> = {};
+    for (const r of responses || []) {
+      if (!respondentSections[r.respondent_id]) respondentSections[r.respondent_id] = new Set();
+      respondentSections[r.respondent_id].add(r.section_key);
+    }
+
+    const sectionsCompletion: Record<string, number> = {};
+    for (const s of sections) sectionsCompletion[s.key] = 0;
+    for (const set of Object.values(respondentSections)) {
+      for (const key of set) {
+        if (key in sectionsCompletion) sectionsCompletion[key]++;
       }
-      const skillComparison = Object.entries(skillAggs).map(([skill, agg]) => ({
-        skill,
-        importance: Math.round((agg.impSum / agg.count) * 10) / 10,
-        demonstration: Math.round((agg.demSum / agg.count) * 10) / 10,
-        gap: Math.round(((agg.impSum - agg.demSum) / agg.count) * 10) / 10,
-        respondent_count: agg.count,
-      })).sort((a, b) => b.gap - a.gap);
+    }
 
-      // Hiring patterns from survey responses
-      const hiringResponses = responseList.filter((r: any) => r.section_key === "hiring_overview");
-      const roleCounts: Record<string, number> = {};
-      const rejectionCounts: Record<string, number[]> = {};
-      for (const r of hiringResponses) {
-        if (r.question_key === "B1" && r.response_value) {
-          const roles = Array.isArray(r.response_value) ? r.response_value : (r.response_value as any)?.selected || [];
-          for (const role of roles) {
-            if (typeof role === "string") roleCounts[role] = (roleCounts[role] || 0) + 1;
-          }
-        }
-        if (r.question_key === "B5" && r.response_value) {
-          const rankings = Array.isArray(r.response_value) ? r.response_value : (r.response_value as any)?.rankings || [];
-          for (const item of rankings) {
-            if (item && typeof item === "object" && item.reason && item.rank) {
-              if (!rejectionCounts[item.reason]) rejectionCounts[item.reason] = [];
-              rejectionCounts[item.reason].push(item.rank);
-            }
-          }
-        }
+    const totalRespondents = (respondents || []).length;
+    const totalRegistered = (respondents || []).filter(r => r.last_login_at).length;
+    const totalCompleted = totalSections > 0 ? Object.values(respondentSections).filter(set => set.size >= totalSections).length : 0;
+
+    // Industry / company size breakdowns
+    const byIndustry: Record<string, number> = {};
+    const byCompanySize: Record<string, number> = {};
+    for (const r of respondents || []) {
+      if (r.industry) byIndustry[r.industry] = (byIndustry[r.industry] || 0) + 1;
+      if (r.company_size) byCompanySize[r.company_size] = (byCompanySize[r.company_size] || 0) + 1;
+    }
+
+    const inviteCounts: Record<string, number> = {};
+    for (const i of invites || []) inviteCounts[i.status] = (inviteCounts[i.status] || 0) + 1;
+
+    return res.json({
+      total_invited: (invites || []).length,
+      total_respondents: totalRespondents,
+      total_registered: totalRegistered,
+      total_completed: totalCompleted,
+      completion_rate: totalRespondents > 0 ? Math.round((totalCompleted / totalRespondents) * 1000) / 10 : 0,
+      sections_completion: sectionsCompletion,
+      total_skills_rated: (ratings || []).length,
+      responses_by_industry: Object.entries(byIndustry).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count),
+      responses_by_company_size: Object.entries(byCompanySize).map(([name, count]) => ({ name, count })),
+      invite_counts: inviteCounts,
+    });
+  }
+
+  // ---- GET /api/admin/surveys/:id/respondents ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/respondents$/);
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const surveyId = m[1];
+    const { page = "1", limit = "20", status: filterStatus, search } = req.query as Record<string, string>;
+    const pageNum = parseInt(page) || 1;
+    const limitNum = Math.min(parseInt(limit) || 20, 100);
+    const offset = (pageNum - 1) * limitNum;
+
+    let q = supabase.from("survey_respondents").select("*", { count: "exact" }).eq("survey_id", surveyId).order("created_at", { ascending: false });
+    if (search) q = q.or(`email.ilike.%${search}%,full_name.ilike.%${search}%,company_name.ilike.%${search}%`);
+    q = q.range(offset, offset + limitNum - 1);
+    const { data: respondents, count, error: rErr } = await q;
+    if (rErr) return res.status(500).json({ error: rErr.message });
+
+    const respIds = (respondents || []).map(r => r.id);
+    const [{ data: pageResponses }, { data: pageRatings }, { data: survey }] = await Promise.all([
+      respIds.length ? supabase.from("survey_responses").select("respondent_id, section_key").in("respondent_id", respIds).eq("survey_id", surveyId) : Promise.resolve({ data: [] }),
+      respIds.length ? supabase.from("survey_skill_ratings").select("respondent_id").in("respondent_id", respIds).eq("survey_id", surveyId) : Promise.resolve({ data: [] }),
+      supabase.from("surveys").select("schema").eq("id", surveyId).single(),
+    ]);
+    const totalSections = (survey?.data?.schema?.sections || []).length;
+
+    const sectionsByR: Record<string, Set<string>> = {};
+    const ratingsByR: Record<string, number> = {};
+    for (const r of pageResponses || []) {
+      if (!sectionsByR[r.respondent_id]) sectionsByR[r.respondent_id] = new Set();
+      sectionsByR[r.respondent_id].add(r.section_key);
+    }
+    for (const r of pageRatings || []) ratingsByR[r.respondent_id] = (ratingsByR[r.respondent_id] || 0) + 1;
+
+    let enriched = (respondents || []).map((resp: any) => {
+      const sections = sectionsByR[resp.id] ? [...sectionsByR[resp.id]] : [];
+      return {
+        id: resp.id,
+        email: resp.email,
+        full_name: resp.full_name,
+        company_name: resp.company_name,
+        designation: resp.designation,
+        industry: resp.industry,
+        status: determineSurveyStatus(resp, sections, totalSections),
+        sections_completed: sections,
+        skills_rated: ratingsByR[resp.id] || 0,
+        created_at: resp.created_at,
+        last_login_at: resp.last_login_at,
+      };
+    });
+    if (filterStatus && filterStatus !== "all") enriched = enriched.filter((r: any) => r.status === filterStatus);
+
+    return res.json({ respondents: enriched, total: count || 0, page: pageNum });
+  }
+
+  // ---- GET /api/admin/surveys/:id/respondents/:respondentId ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/respondents\/([^/]+)$/);
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const [, surveyId, respondentId] = m;
+    const [{ data: respondent }, { data: responses }, { data: ratings }] = await Promise.all([
+      supabase.from("survey_respondents").select("*").eq("id", respondentId).eq("survey_id", surveyId).single(),
+      supabase.from("survey_responses").select("*").eq("respondent_id", respondentId).eq("survey_id", surveyId).order("section_key"),
+      supabase.from("survey_skill_ratings").select("*").eq("respondent_id", respondentId).eq("survey_id", surveyId).order("skill_name"),
+    ]);
+    if (!respondent) return res.status(404).json({ error: "Respondent not found" });
+    return res.json({ respondent, responses: responses || [], skill_ratings: ratings || [] });
+  }
+
+  // ---- POST /api/admin/surveys/:id/invites (bulk add + queue email send) ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/invites$/);
+  if (m && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    const surveyId = m[1];
+    const { emails, send_now = true } = req.body || {};
+    if (!Array.isArray(emails) || !emails.length) return res.status(400).json({ error: "emails array is required" });
+
+    const { data: survey } = await supabase.from("surveys").select("id, slug, title, status").eq("id", surveyId).single();
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+    const open = isOpenForResponses(survey);
+    if (!open.open) return res.status(400).json({ error: `Cannot send invites: ${open.reason}` });
+
+    const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/s/${survey.slug}`;
+    const results: Array<{ email: string; status: string; error?: string }> = [];
+
+    for (const rawEmail of emails) {
+      const email = (rawEmail as string).toLowerCase().trim();
+      if (!email || !email.includes("@")) {
+        results.push({ email: rawEmail, status: "failed", error: "Invalid email" });
+        continue;
       }
 
-      // Gap analysis responses
-      const gapResponses = responseList.filter((r: any) => r.section_key === "gap_analysis");
-      // Trend responses
-      const trendResponses = responseList.filter((r: any) => r.section_key === "emerging_trends");
+      // Upsert invite
+      const { error: invErr } = await supabase.from("survey_invites").upsert(
+        { survey_id: surveyId, email, invited_by: auth.nexusUser.id, status: "pending" },
+        { onConflict: "survey_id,email" }
+      );
+      if (invErr) { results.push({ email, status: "failed", error: invErr.message }); continue; }
 
-      return res.json({
-        skill_importance_vs_demonstration: skillComparison,
-        biggest_gaps: skillComparison.slice(0, 10),
-        most_adequate: [...skillComparison].sort((a, b) => a.gap - b.gap).slice(0, 10),
-        hiring_patterns: {
-          top_roles_hired: Object.entries(roleCounts).map(([role, count]) => ({ role, count })).sort((a, b) => b.count - a.count).slice(0, 15),
-          top_rejection_reasons: Object.entries(rejectionCounts).map(([reason, ranks]) => ({
-            reason,
-            avg_rank: Math.round((ranks.reduce((s, r) => s + r, 0) / ranks.length) * 10) / 10,
-            count: ranks.length,
-          })).sort((a, b) => a.avg_rank - b.avg_rank),
-        },
-        gap_analysis_responses: gapResponses,
-        trend_responses: trendResponses,
-        total_respondents: (respondents || []).length,
-        total_ratings: ratingList.length,
-        total_responses: responseList.length,
+      if (!send_now) { results.push({ email, status: "pending" }); continue; }
+
+      const sendResult = await sendEmail({
+        to: email,
+        subject: `You're invited: ${survey.title}`,
+        text: `You've been invited to participate in "${survey.title}".\n\nOpen the survey: ${surveyUrl}\n\nWhen you click the link, you'll be asked to verify your email with a one-time code.`,
+        html: basicHtmlTemplate({
+          title: `You're invited to: ${survey.title}`,
+          body_html: `<p>You've been invited to participate in <strong>${survey.title}</strong>.</p><p>When you open the survey, you'll be asked to verify your email with a one-time code (sent instantly).</p>`,
+          cta_label: "Open Survey",
+          cta_url: surveyUrl,
+        }),
+        tags: ["nexus-survey", "survey-invite", `slug:${survey.slug}`],
+        metadata: { purpose: "survey_invite", survey_id: surveyId, slug: survey.slug, email },
       });
+
+      if (sendResult.ok) {
+        await supabase.from("survey_invites").update({ status: "sent", invite_sent_at: new Date().toISOString() }).eq("survey_id", surveyId).eq("email", email);
+        results.push({ email, status: "sent" });
+      } else {
+        await supabase.from("survey_invites").update({ status: "failed", bounced_reason: sendResult.error }).eq("survey_id", surveyId).eq("email", email);
+        results.push({ email, status: "failed", error: sendResult.error });
+      }
     }
+
+    return res.json({
+      results,
+      total: results.length,
+      successful: results.filter(r => r.status === "sent" || r.status === "pending").length,
+      failed: results.filter(r => r.status === "failed").length,
+    });
+  }
+
+  // ---- GET /api/admin/surveys/:id/invites ----
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const surveyId = m[1];
+    const { data, error } = await supabase.from("survey_invites").select("*").eq("survey_id", surveyId).order("created_at", { ascending: false });
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ invites: data || [] });
+  }
+
+  // ---- POST /api/admin/surveys/:id/remind ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/remind$/);
+  if (m && req.method === "POST") {
+    if (!requirePermission("surveys", "write")(auth, res)) return;
+    const surveyId = m[1];
+    const { email } = req.body || {};
+    if (!email) return res.status(400).json({ error: "email is required" });
+
+    const { data: survey } = await supabase.from("surveys").select("id, slug, title, status").eq("id", surveyId).single();
+    if (!survey) return res.status(404).json({ error: "Survey not found" });
+    const open = isOpenForResponses(survey);
+    if (!open.open) return res.status(400).json({ error: `Cannot send reminder: ${open.reason}` });
+
+    const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/s/${survey.slug}`;
+    const result = await sendEmail({
+      to: email,
+      subject: `Reminder: ${survey.title}`,
+      text: `This is a reminder to complete "${survey.title}".\n\nOpen the survey: ${surveyUrl}`,
+      html: basicHtmlTemplate({
+        title: `Reminder: ${survey.title}`,
+        body_html: `<p>This is a reminder to complete the survey.</p>`,
+        cta_label: "Open Survey",
+        cta_url: surveyUrl,
+      }),
+      tags: ["nexus-survey", "survey-reminder", `slug:${survey.slug}`],
+      metadata: { purpose: "survey_reminder", survey_id: surveyId, slug: survey.slug, email },
+    });
+
+    if (result.ok) {
+      await supabase.from("survey_invites").update({
+        last_reminder_at: new Date().toISOString(),
+        reminder_count: (await supabase.from("survey_invites").select("reminder_count").eq("survey_id", surveyId).eq("email", email).maybeSingle()).data?.reminder_count + 1 || 1,
+      }).eq("survey_id", surveyId).eq("email", email);
+    }
+    return res.json({ success: result.ok, error: result.error });
+  }
+
+  // ---- GET /api/admin/surveys/:id/analytics ----
+  m = path.match(/^\/admin\/surveys\/([^/]+)\/analytics$/);
+  if (m && req.method === "GET") {
+    if (!requirePermission("surveys", "read")(auth, res)) return;
+    const surveyId = m[1];
+
+    const [{ data: responses }, { data: ratings }, { data: respondents }] = await Promise.all([
+      supabase.from("survey_responses").select("*").eq("survey_id", surveyId),
+      supabase.from("survey_skill_ratings").select("*").eq("survey_id", surveyId),
+      supabase.from("survey_respondents").select("*").eq("survey_id", surveyId),
+    ]);
+
+    // Skill matrix aggregation (only meaningful if survey has a skill_matrix question)
+    const skillAggs: Record<string, { impSum: number; demSum: number; count: number }> = {};
+    for (const r of ratings || []) {
+      if (!skillAggs[r.skill_name]) skillAggs[r.skill_name] = { impSum: 0, demSum: 0, count: 0 };
+      skillAggs[r.skill_name].impSum += r.importance_rating || 0;
+      skillAggs[r.skill_name].demSum += r.demonstration_rating || 0;
+      skillAggs[r.skill_name].count++;
+    }
+    const skillComparison = Object.entries(skillAggs).map(([skill, agg]) => ({
+      skill,
+      importance: Math.round((agg.impSum / agg.count) * 10) / 10,
+      demonstration: Math.round((agg.demSum / agg.count) * 10) / 10,
+      gap: Math.round(((agg.impSum - agg.demSum) / agg.count) * 10) / 10,
+      respondent_count: agg.count,
+    })).sort((a, b) => b.gap - a.gap);
+
+    // Generic per-question aggregation (counts of values for choice types)
+    const responseAggsByQ: Record<string, Record<string, number>> = {};
+    for (const r of responses || []) {
+      const k = `${r.section_key}::${r.question_key}::${r.response_type}`;
+      if (!responseAggsByQ[k]) responseAggsByQ[k] = {};
+      const val = r.response_value;
+      const items: any[] = Array.isArray(val) ? val : [val];
+      for (const it of items) {
+        const label = typeof it === "string" || typeof it === "number" || typeof it === "boolean" ? String(it) : JSON.stringify(it);
+        responseAggsByQ[k][label] = (responseAggsByQ[k][label] || 0) + 1;
+      }
+    }
+
+    return res.json({
+      total_respondents: (respondents || []).length,
+      total_responses: (responses || []).length,
+      total_ratings: (ratings || []).length,
+      skill_comparison: skillComparison,
+      biggest_gaps: skillComparison.slice(0, 10),
+      most_adequate: [...skillComparison].sort((a, b) => a.gap - b.gap).slice(0, 10),
+      response_aggregations: responseAggsByQ,
+    });
+  }
+
+  return res.status(404).json({ error: "Survey admin endpoint not found", path });
+}
+
+// ==================== Schema lock-edit validator ====================
+// Returns true if the new schema only differs from old in labels/copy/option labels
+// (allowed) — false if structural fields change (key/type/scale/options[].value).
+
+function isOnlyLabelEdit(oldSchema: any, newSchema: any): boolean {
+  if (!oldSchema || !newSchema) return false;
+  const oldSecs = oldSchema.sections || [];
+  const newSecs = newSchema.sections || [];
+  if (oldSecs.length !== newSecs.length) return false;
+  for (let i = 0; i < oldSecs.length; i++) {
+    const a = oldSecs[i], b = newSecs[i];
+    if (a.key !== b.key) return false;
+    const aQs = a.questions || [], bQs = b.questions || [];
+    if (aQs.length !== bQs.length) return false;
+    for (let j = 0; j < aQs.length; j++) {
+      const qa = aQs[j], qb = bQs[j];
+      if (qa.key !== qb.key) return false;
+      if (qa.type !== qb.type) return false;
+      if (qa.required !== qb.required) return false;
+      if ((qa.min ?? null) !== (qb.min ?? null)) return false;
+      if ((qa.max ?? null) !== (qb.max ?? null)) return false;
+      // option values must match (labels can change)
+      const aOpts = (qa.options || []).map((o: any) => typeof o === "string" ? o : o.value);
+      const bOpts = (qb.options || []).map((o: any) => typeof o === "string" ? o : o.value);
+      if (aOpts.length !== bOpts.length) return false;
+      for (let k = 0; k < aOpts.length; k++) if (aOpts[k] !== bOpts[k]) return false;
+    }
+  }
+  return true;
 }

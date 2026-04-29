@@ -33,8 +33,7 @@ import Colleges from "@/pages/colleges";
 import CollegeDetail from "@/pages/college-detail";
 import ProgramDetail from "@/pages/program-detail";
 import CourseDetailPage from "@/pages/course-detail";
-import SurveyLanding from "@/pages/survey-landing";
-import SurveyForm from "@/pages/survey-form";
+import SurveyRuntime from "@/pages/survey-runtime";
 import PlacementForm from "@/pages/placement-form";
 import PlaceIntelAdmin from "@/pages/placeintel-admin";
 import MasterData from "@/pages/masters";
@@ -107,12 +106,12 @@ function AuthenticatedApp() {
 function RootRouter() {
   const [location] = useLocation();
 
-  // Survey pages are standalone — no sidebar, no main app auth
-  if (location === "/survey" || location.startsWith("/survey/")) {
+  // Public survey runtime is standalone — no sidebar, no main app auth.
+  // URL pattern: /#/s/<slug>. The runtime handles its own OTP gate.
+  if (location.startsWith("/s/")) {
     return (
       <Switch>
-        <Route path="/survey" component={SurveyLanding} />
-        <Route path="/survey/form" component={SurveyForm} />
+        <Route path="/s/:slug" component={SurveyRuntime} />
       </Switch>
     );
   }
