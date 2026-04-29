@@ -2,8 +2,9 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { AuthResult, requirePermission, requireAdmin } from "../lib/auth";
-import { supabase, JWT_SECRET, RESEND_API_KEY } from "../lib/supabase";
+import { supabase, JWT_SECRET } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
+import { sendEmail } from "../lib/mailer";
 
 function verifyPlaceIntelJwt(req: VercelRequest): { respondent_id: string; email: string; college_id: string } | null {
   const authHeader = req.headers.authorization;
@@ -66,29 +67,16 @@ export async function handlePlaceIntelRoutes(path: string, req: VercelRequest, r
     );
     if (error) return res.status(500).json({ error: error.message });
 
-    // Send OTP via Resend
-    if (RESEND_API_KEY) {
-      try {
-        const emailRes = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM_EMAIL || "Nexus PlaceIntel <onboarding@resend.dev>",
-            to: [normalizedEmail],
-            subject: `Your PlaceIntel Verification Code — ${college.name}`,
-            text: `Your one-time verification code is: ${otp}\n\nValid for 15 minutes.\n\nUse this code to access the placement data form for ${college.name}.`,
-          }),
-        });
-        if (!emailRes.ok) {
-          console.error(`[PLACEINTEL OTP] Resend error:`, await emailRes.text());
-          console.log(`[PLACEINTEL OTP FALLBACK] Sent to ${normalizedEmail}`);
-        }
-      } catch (emailErr: any) {
-        console.error("[PLACEINTEL OTP] Email send failed:", emailErr.message);
-        console.log(`[PLACEINTEL OTP FALLBACK] Sent to ${normalizedEmail}`);
-      }
-    } else {
-      console.log(`[PLACEINTEL OTP] No RESEND_API_KEY. Sent to ${normalizedEmail}`);
+    // Send OTP via unified mailer (Mandrill primary, Resend fallback)
+    const otpResult = await sendEmail({
+      to: normalizedEmail,
+      subject: `Your PlaceIntel Verification Code — ${college.name}`,
+      text: `Your one-time verification code is: ${otp}\n\nValid for 15 minutes.\n\nUse this code to access the placement data form for ${college.name}.`,
+      tags: ["nexus-placeintel", "placeintel-otp"],
+      metadata: { purpose: "placeintel_otp", college_id, email: normalizedEmail },
+    });
+    if (!otpResult.ok) {
+      console.warn(`[PLACEINTEL OTP] delivery failed for ${normalizedEmail} via ${otpResult.provider}: ${otpResult.error}`);
     }
 
     return res.json({ success: true, domain_verified: domainVerified });
@@ -412,27 +400,19 @@ export async function handlePlaceIntelAdminRoutes(path: string, req: VercelReque
 
     const inviteLink = `${req.headers.origin || "https://nexus-bi-one.vercel.app"}/#/placement-form/${college_id}`;
 
-    // Send invite email
-    if (RESEND_API_KEY) {
-      try {
-        await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${RESEND_API_KEY}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM_EMAIL || "Nexus PlaceIntel <onboarding@resend.dev>",
-            to: [normalizedEmail],
-            subject: `Placement Data Request — ${college.name}`,
-            html: `<p>Hello ${name || ""},</p>
+    // Send invite email via unified mailer (Mandrill primary, Resend fallback)
+    await sendEmail({
+      to: normalizedEmail,
+      to_name: name,
+      subject: `Placement Data Request — ${college.name}`,
+      html: `<p>Hello ${name || ""},</p>
 <p>Board Infinity is collecting structured placement data from leading institutions. Please fill out the placement intelligence form for <strong>${college.name}</strong>:</p>
 <p><a href="${inviteLink}" style="background:#2563eb;color:white;padding:12px 24px;border-radius:6px;text-decoration:none;display:inline-block;">Fill Placement Form</a></p>
 <p>You will be asked to verify your email via OTP before proceeding.</p>
 <p>Thank you,<br/>Board Infinity Team</p>`,
-          }),
-        });
-      } catch (emailErr: any) {
-        console.error("[PLACEINTEL INVITE] Email send failed:", emailErr.message);
-      }
-    }
+      tags: ["nexus-placeintel", "placeintel-invite"],
+      metadata: { purpose: "placeintel_invite", college_id, email: normalizedEmail },
+    });
 
     return res.json({ success: true, respondent_id: respondent?.id, invite_link: inviteLink, domain_verified: domainVerified });
   }

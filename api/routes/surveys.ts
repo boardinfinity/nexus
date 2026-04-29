@@ -2,8 +2,9 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
 import { AuthResult, requirePermission, requireAdmin, verifyAuth } from "../lib/auth";
-import { supabase, JWT_SECRET, RESEND_API_KEY } from "../lib/supabase";
+import { supabase, JWT_SECRET } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
+import { sendEmail, basicHtmlTemplate } from "../lib/mailer";
 
 // ==================== INTERNAL HELPERS ====================
 
@@ -42,35 +43,20 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
     );
     if (error) return res.status(500).json({ error: error.message });
 
-    // Send OTP via Resend if configured, otherwise log to console
-    if (RESEND_API_KEY) {
-      try {
-        const emailRes = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${RESEND_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
-            to: [normalizedEmail],
-            subject: "Your Nexus Survey Access Code",
-            text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
-          }),
-        });
-        const emailBody = await emailRes.json();
-        if (!emailRes.ok) {
-          console.error(`[SURVEY OTP] Resend API error (${emailRes.status}):`, JSON.stringify(emailBody));
-          console.log(`[SURVEY OTP FALLBACK] Sent to ${normalizedEmail}`);
-        } else {
-          console.log(`[SURVEY OTP] Sent via Resend to ${normalizedEmail}, id: ${emailBody.id}`);
-        }
-      } catch (emailErr: any) {
-        console.error("[SURVEY OTP] Failed to send email:", emailErr.message);
-        console.log(`[SURVEY OTP FALLBACK] Sent to ${normalizedEmail}`);
-      }
-    } else {
-      console.log(`[SURVEY OTP] No RESEND_API_KEY configured. Sent to ${normalizedEmail}`);
+    // Send OTP via unified mailer (Mandrill primary, Resend fallback)
+    const otpResult = await sendEmail({
+      to: normalizedEmail,
+      subject: "Your Nexus Survey Access Code",
+      text: `Your one-time code is: ${otp}\n\nValid for 15 minutes.`,
+      html: basicHtmlTemplate({
+        title: "Your Nexus Survey Access Code",
+        body_html: `<p>Use the code below to verify your email and continue with the survey.</p><p style="font-size:28px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:16px 24px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
+      }),
+      tags: ["nexus-survey", "survey-otp"],
+      metadata: { purpose: "survey_otp", email: normalizedEmail },
+    });
+    if (!otpResult.ok) {
+      console.warn(`[SURVEY OTP] delivery failed for ${normalizedEmail} via ${otpResult.provider}: ${otpResult.error}`);
     }
 
     return res.json({ message: "OTP sent to your email" });
@@ -592,8 +578,8 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
             // generateLink not available or failed
           }
 
-          // Fallback: try signInWithOtp via service role
-          if (!emailSent && RESEND_API_KEY) {
+          // Fallback: send invite email with OTP via unified mailer (Mandrill -> Resend)
+          if (!emailSent) {
             try {
               const otp = generateSecureOtp(6);
               const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
@@ -603,20 +589,21 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
                 auth_otp_expires: expires,
               }).eq("email", email);
 
-              await fetch("https://api.resend.com/emails", {
-                method: "POST",
-                headers: {
-                  Authorization: `Bearer ${RESEND_API_KEY}`,
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify({
-                  from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
-                  to: [email],
-                  subject: "You're invited to the Nexus MBA Skills Survey",
-                  text: `You've been invited to participate in the Board Infinity MBA Skills Survey.\n\nYour one-time access code is: ${otp}\n\nAccess the survey at: ${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey\n\nThis code is valid for 15 minutes.`,
+              const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey`;
+              const inviteResult = await sendEmail({
+                to: email,
+                subject: "You're invited to the Nexus MBA Skills Survey",
+                text: `You've been invited to participate in the Board Infinity MBA Skills Survey.\n\nYour one-time access code is: ${otp}\n\nAccess the survey at: ${surveyUrl}\n\nThis code is valid for 15 minutes.`,
+                html: basicHtmlTemplate({
+                  title: "You're invited to the Nexus MBA Skills Survey",
+                  body_html: `<p>You've been invited to participate in the Board Infinity MBA Skills Survey.</p><p>Your one-time access code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:14px 20px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
+                  cta_label: "Open Survey",
+                  cta_url: surveyUrl,
                 }),
+                tags: ["nexus-survey", "survey-invite"],
+                metadata: { purpose: "survey_invite", email },
               });
-              emailSent = true;
+              if (inviteResult.ok) emailSent = true;
             } catch {
               // email send failed
             }
@@ -656,7 +643,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
         // fallback
       }
 
-      if (!emailSent && RESEND_API_KEY) {
+      if (!emailSent) {
         try {
           const otp = generateSecureOtp(6);
           const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
@@ -666,20 +653,21 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
             auth_otp_expires: expires,
           }).eq("email", normalizedEmail);
 
-          await fetch("https://api.resend.com/emails", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${RESEND_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              from: process.env.RESEND_FROM_EMAIL || "Nexus Survey <onboarding@resend.dev>",
-              to: [normalizedEmail],
-              subject: "Reminder: Complete the Nexus MBA Skills Survey",
-              text: `This is a reminder to complete the Board Infinity MBA Skills Survey.\n\nYour new one-time access code is: ${otp}\n\nAccess the survey at: ${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey\n\nThis code is valid for 15 minutes.`,
+          const surveyUrl = `${process.env.APP_URL || "https://nexus.boardinfinity.com"}/#/survey`;
+          const reminderResult = await sendEmail({
+            to: normalizedEmail,
+            subject: "Reminder: Complete the Nexus MBA Skills Survey",
+            text: `This is a reminder to complete the Board Infinity MBA Skills Survey.\n\nYour new one-time access code is: ${otp}\n\nAccess the survey at: ${surveyUrl}\n\nThis code is valid for 15 minutes.`,
+            html: basicHtmlTemplate({
+              title: "Reminder: Complete the Nexus MBA Skills Survey",
+              body_html: `<p>This is a reminder to complete the Board Infinity MBA Skills Survey.</p><p>Your new one-time access code is:</p><p style="font-size:24px;font-weight:700;letter-spacing:4px;background:#f3f4f6;padding:14px 20px;border-radius:8px;text-align:center;">${otp}</p><p style="color:#6b7280;font-size:13px;">This code is valid for 15 minutes.</p>`,
+              cta_label: "Open Survey",
+              cta_url: surveyUrl,
             }),
+            tags: ["nexus-survey", "survey-reminder"],
+            metadata: { purpose: "survey_reminder", email: normalizedEmail },
           });
-          emailSent = true;
+          if (reminderResult.ok) emailSent = true;
         } catch {
           // failed
         }
