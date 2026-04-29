@@ -141,3 +141,116 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
   }
   return btoa(binary);
 }
+
+// ==================== Dashboard / Invites / Respondents / Analytics ====================
+
+export interface SurveyDashboard {
+  total_invited: number;
+  total_respondents: number;
+  total_registered: number;
+  total_completed: number;
+  completion_rate: number;
+  sections_completion: Record<string, number>;
+  total_skills_rated: number;
+  responses_by_industry: { name: string; count: number }[];
+  responses_by_company_size: { name: string; count: number }[];
+  invite_counts: Record<string, number>;
+}
+
+export async function getDashboard(id: string): Promise<SurveyDashboard> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(id)}/dashboard`);
+}
+
+export interface SurveyInvite {
+  id: string;
+  survey_id: string;
+  email: string;
+  status: "pending" | "sent" | "opened" | "started" | "completed" | "failed";
+  invited_by: string | null;
+  invite_sent_at: string | null;
+  last_reminder_at: string | null;
+  reminder_count: number | null;
+  bounced_reason: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listInvites(surveyId: string): Promise<{ invites: SurveyInvite[] }> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(surveyId)}/invites`);
+}
+
+export interface BulkInviteResult {
+  results: { email: string; status: string; error?: string }[];
+  total: number;
+  successful: number;
+  failed: number;
+}
+
+export async function addInvites(
+  surveyId: string,
+  emails: string[],
+  send_now = true
+): Promise<BulkInviteResult> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(surveyId)}/invites`, {
+    method: "POST",
+    body: JSON.stringify({ emails, send_now }),
+  });
+}
+
+export async function sendReminder(surveyId: string, email: string): Promise<{ success: boolean; error?: string }> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(surveyId)}/remind`, {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}
+
+export interface RespondentRow {
+  id: string;
+  email: string;
+  full_name: string | null;
+  company_name: string | null;
+  designation: string | null;
+  industry: string | null;
+  status: "invited" | "registered" | "started" | "completed";
+  sections_completed: string[];
+  skills_rated: number;
+  created_at: string;
+  last_login_at: string | null;
+}
+
+export async function listRespondents(
+  surveyId: string,
+  filters: { page?: number; limit?: number; status?: string; search?: string } = {}
+): Promise<{ respondents: RespondentRow[]; total: number; page: number }> {
+  const qs = new URLSearchParams();
+  if (filters.page) qs.set("page", String(filters.page));
+  if (filters.limit) qs.set("limit", String(filters.limit));
+  if (filters.status && filters.status !== "all") qs.set("status", filters.status);
+  if (filters.search) qs.set("search", filters.search);
+  const url = `/api/admin/surveys/${encodeURIComponent(surveyId)}/respondents${qs.toString() ? "?" + qs.toString() : ""}`;
+  return jsonFetch(url);
+}
+
+export interface RespondentDetail {
+  respondent: any;
+  responses: { section_key: string; question_key: string; response_type: string; response_value: any }[];
+  skill_ratings: { skill_name: string; importance_rating: number | null; demonstration_rating: number | null; is_custom_skill: boolean }[];
+}
+
+export async function getRespondent(surveyId: string, respondentId: string): Promise<RespondentDetail> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(surveyId)}/respondents/${encodeURIComponent(respondentId)}`);
+}
+
+export interface SurveyAnalytics {
+  total_respondents: number;
+  total_responses: number;
+  total_ratings: number;
+  skill_comparison: { skill: string; importance: number; demonstration: number; gap: number; respondent_count: number }[];
+  biggest_gaps: { skill: string; importance: number; demonstration: number; gap: number; respondent_count: number }[];
+  most_adequate: { skill: string; importance: number; demonstration: number; gap: number; respondent_count: number }[];
+  response_aggregations: Record<string, Record<string, number>>;
+}
+
+export async function getAnalytics(id: string): Promise<SurveyAnalytics> {
+  return jsonFetch(`/api/admin/surveys/${encodeURIComponent(id)}/analytics`);
+}
