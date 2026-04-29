@@ -56,7 +56,10 @@ interface RuntimeProps {
 
 export default function SurveyRuntime(_props: RuntimeProps) {
   const [, params] = useRoute("/s/:slug");
-  const slug = params?.slug || "";
+  // wouter on a hash router treats anything after /s/ as the slug, including
+  // any "?..." query string appended after the hash (e.g. /#/s/foo?preview=1).
+  // Strip the query off the slug param so API calls hit the right endpoint.
+  const slug = (params?.slug || "").split("?")[0];
   const { toast } = useToast();
 
   // Detect ?preview=1 from the URL. Survey runtime sits on the hash-router so
