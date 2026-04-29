@@ -41,15 +41,15 @@ export async function callGPT(prompt: string, retries = 2): Promise<string> {
   throw new Error("callGPT: all retries failed");
 }
 
-export async function callClaude(prompt: string, jsonSchema?: any, retries = 2): Promise<string> {
+export async function callClaude(prompt: string, jsonSchema?: any, retries = 2, maxTokens = 16000): Promise<string> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 90000);
+      const timeout = setTimeout(() => controller.abort(), 120000);
 
       const body: any = {
         model: "claude-sonnet-4-20250514",
-        max_tokens: 4096,
+        max_tokens: maxTokens,
         messages: [{ role: "user", content: prompt }],
       };
 
@@ -80,10 +80,23 @@ export async function callClaude(prompt: string, jsonSchema?: any, retries = 2):
       }
 
       const data = await response.json();
+      const stopReason = data?.stop_reason;
+      const usage = data?.usage;
 
       if (jsonSchema) {
         const toolBlock = data.content?.find((b: any) => b.type === "tool_use");
-        return JSON.stringify(toolBlock?.input || {});
+        if (!toolBlock || !toolBlock.input || (typeof toolBlock.input === "object" && Object.keys(toolBlock.input).length === 0)) {
+          // Surface why this happened so caller can show a useful error.
+          const blockTypes = (data.content || []).map((b: any) => b.type).join(",") || "none";
+          const textBlock = data.content?.find((b: any) => b.type === "text");
+          const textHint = textBlock?.text ? ` text=${String(textBlock.text).slice(0, 300)}` : "";
+          throw new Error(`Claude returned no tool_use block (stop_reason=${stopReason}, blocks=${blockTypes}, usage=${JSON.stringify(usage || {})}).${textHint}`);
+        }
+        if (stopReason === "max_tokens") {
+          // Tool input was likely truncated mid-stream — retry with even bigger budget on next attempt.
+          throw new Error(`Claude hit max_tokens (${maxTokens}) before finishing tool call. Retry with bigger budget.`);
+        }
+        return JSON.stringify(toolBlock.input);
       } else {
         const textBlock = data.content?.find((b: any) => b.type === "text");
         return textBlock?.text || "";
@@ -91,6 +104,10 @@ export async function callClaude(prompt: string, jsonSchema?: any, retries = 2):
     } catch (err: any) {
       console.error(`callClaude attempt ${attempt + 1} failed:`, err.message);
       if (attempt === retries) throw err;
+      // On retry, also bump tokens further if we hit max_tokens.
+      if (/max_tokens/.test(err.message) && maxTokens < 32000) {
+        maxTokens = Math.min(32000, maxTokens * 2);
+      }
       await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
     }
   }
