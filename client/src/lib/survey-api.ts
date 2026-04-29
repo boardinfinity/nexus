@@ -3,6 +3,8 @@
 // Tokens are stored per slug in localStorage so a respondent can hold sessions
 // for multiple surveys simultaneously without collision.
 
+import { authFetch } from "./queryClient";
+
 const API_BASE = "";
 
 function tokenKey(slug: string): string {
@@ -48,6 +50,7 @@ export interface SurveyMeta {
   thank_you_markdown: string | null;
   estimated_minutes: number | null;
   status: string;
+  preview_mode?: boolean;
 }
 
 export interface SurveySchema {
@@ -103,8 +106,12 @@ export interface SurveyQuestion {
     | "location_country";
 }
 
-export async function fetchSurveyMeta(slug: string): Promise<SurveyMeta> {
-  const res = await fetch(`${API_BASE}/api/survey/${encodeURIComponent(slug)}`);
+export async function fetchSurveyMeta(slug: string, opts?: { preview?: boolean }): Promise<SurveyMeta> {
+  const url = opts?.preview
+    ? `${API_BASE}/api/survey/${encodeURIComponent(slug)}?preview=1`
+    : `${API_BASE}/api/survey/${encodeURIComponent(slug)}`;
+  // When previewing, attach the admin's Supabase Bearer token via authFetch.
+  const res = opts?.preview ? await authFetch(url) : await fetch(url);
   const data = await res.json();
   if (!res.ok) throw new Error(data.error || "Survey not found");
   return data;

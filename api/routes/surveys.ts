@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import * as bcrypt from "bcryptjs";
 import * as jwt from "jsonwebtoken";
-import { AuthResult, requirePermission, requireAdmin, verifyAuth } from "../lib/auth";
+import { AuthResult, requirePermission, requireAdmin, verifyAuth, hasPermission } from "../lib/auth";
 import { supabase, JWT_SECRET } from "../lib/supabase";
 import { generateSecureOtp } from "../lib/helpers";
 import { sendEmail, basicHtmlTemplate } from "../lib/mailer";
@@ -56,7 +56,7 @@ function isOpenForResponses(survey: any): { open: boolean; reason?: string } {
   return { open: true };
 }
 
-function publicSurveyShape(survey: any) {
+function publicSurveyShape(survey: any, opts?: { preview_mode?: boolean }) {
   return {
     id: survey.id,
     slug: survey.slug,
@@ -68,7 +68,24 @@ function publicSurveyShape(survey: any) {
     thank_you_markdown: survey.thank_you_markdown,
     estimated_minutes: survey.estimated_minutes,
     status: survey.status,
+    preview_mode: !!opts?.preview_mode,
   };
+}
+
+// Returns true if the authed user is an admin/SPOC who can preview this draft
+// (super_admin/admin always; college_rep only if survey is in their scope).
+function canPreviewSurvey(auth: AuthResult, survey: any): boolean {
+  const u = auth.nexusUser;
+  if (!u) return false;
+  // Must have read permission on surveys section
+  if (!hasPermission(u, "surveys", "read")) return false;
+  if (u.role === "super_admin" || u.role === "admin") return true;
+  if (u.role === "college_rep") {
+    const ids = u.restricted_college_ids || [];
+    if (!ids.length) return false; // no scope = no preview
+    return ids.includes(survey.college_id || "");
+  }
+  return false;
 }
 
 // ==================== PUBLIC SURVEY ROUTES ====================
@@ -77,11 +94,23 @@ function publicSurveyShape(survey: any) {
 
 export async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelResponse): Promise<VercelResponse> {
   // ---- GET /api/survey/:slug ----
-  // Public meta + schema (only for surveys that are open for responses)
+  // Public meta + schema (only for surveys that are open for responses).
+  // Special case: if ?preview=1 and caller is an authenticated admin/SPOC with
+  // scope over this survey, bypass status gating and return preview_mode=true.
   let m = path.match(/^\/survey\/([^/]+)$/);
   if (m && req.method === "GET") {
     const survey = await loadSurveyBySlug(m[1]);
     if (!survey) return res.status(404).json({ error: "Survey not found" });
+
+    const previewRequested = req.query?.preview === "1" || req.query?.preview === "true";
+    if (previewRequested) {
+      const auth = await verifyAuth(req).catch(() => ({ authenticated: false } as AuthResult));
+      if (canPreviewSurvey(auth, survey)) {
+        return res.json(publicSurveyShape(survey, { preview_mode: true }));
+      }
+      // Fall through to normal gating if not authorised
+    }
+
     const open = isOpenForResponses(survey);
     if (!open.open) return res.status(403).json({ error: open.reason });
     return res.json(publicSurveyShape(survey));

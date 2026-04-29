@@ -22,6 +22,7 @@ import {
   ArrowDown,
   Plus,
   X,
+  Eye,
 } from "lucide-react";
 import {
   fetchSurveyMeta,
@@ -58,9 +59,26 @@ export default function SurveyRuntime(_props: RuntimeProps) {
   const slug = params?.slug || "";
   const { toast } = useToast();
 
+  // Detect ?preview=1 from the URL. Survey runtime sits on the hash-router so
+  // the query string lives on window.location.search (Vercel/Vite serve
+  // index.html and the hash is appended after); we accept it from either.
+  const previewMode = (() => {
+    if (typeof window === "undefined") return false;
+    const fromSearch = new URLSearchParams(window.location.search).get("preview");
+    if (fromSearch === "1" || fromSearch === "true") return true;
+    // Hash form: /#/s/<slug>?preview=1
+    const hash = window.location.hash || "";
+    const qIdx = hash.indexOf("?");
+    if (qIdx >= 0) {
+      const fromHash = new URLSearchParams(hash.substring(qIdx + 1)).get("preview");
+      if (fromHash === "1" || fromHash === "true") return true;
+    }
+    return false;
+  })();
+
   const [survey, setSurvey] = useState<SurveyMeta | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [authenticated, setAuthenticated] = useState(false);
+  const [authenticated, setAuthenticated] = useState(previewMode); // preview skips OTP
   const [currentSection, setCurrentSection] = useState(0);
   const [submitted, setSubmitted] = useState(false);
   const [answers, setAnswers] = useState<AnswerMap>({});
@@ -72,19 +90,22 @@ export default function SurveyRuntime(_props: RuntimeProps) {
   // ---- load survey meta on mount ----
   useEffect(() => {
     if (!slug) return;
-    fetchSurveyMeta(slug)
+    fetchSurveyMeta(slug, { preview: previewMode })
       .then((s) => {
         setSurvey(s);
-        if (hasSurveyToken(slug)) {
+        if (previewMode) {
+          setAuthenticated(true);
+        } else if (hasSurveyToken(slug)) {
           setAuthenticated(true);
         }
       })
       .catch((e) => setLoadError(e.message));
-  }, [slug]);
+  }, [slug, previewMode]);
 
-  // ---- once authenticated, hydrate answers ----
+  // ---- once authenticated, hydrate answers (skipped in preview) ----
   useEffect(() => {
     if (!authenticated || !slug) return;
+    if (previewMode) return; // no respondent in preview mode
     fetchMyResponses(slug)
       .then((data) => {
         const map: AnswerMap = {};
@@ -131,6 +152,8 @@ export default function SurveyRuntime(_props: RuntimeProps) {
   if (!authenticated) {
     return <OtpGate slug={slug} survey={survey} onAuthed={() => setAuthenticated(true)} />;
   }
+
+  const isPreview = previewMode || !!survey.preview_mode;
 
   if (submitted) {
     return <ThankYou survey={survey} />;
@@ -217,6 +240,7 @@ export default function SurveyRuntime(_props: RuntimeProps) {
   }
 
   async function persistSection(sec: SurveySection): Promise<boolean> {
+    if (isPreview) return true; // do not write anything from preview mode
     const responses: ResponseItem[] = [];
     const includeSkillRatings: SkillRating[] = [];
 
@@ -289,6 +313,15 @@ export default function SurveyRuntime(_props: RuntimeProps) {
       toast({ title: "Required answers missing", description: err, variant: "destructive" });
       return;
     }
+    if (isPreview) {
+      // In preview, simulate submit without hitting the API.
+      toast({
+        title: "Preview submit",
+        description: "Responses are not saved in preview mode.",
+      });
+      setSubmitted(true);
+      return;
+    }
     const ok = await persistSection(section);
     if (!ok) return;
     try {
@@ -306,6 +339,17 @@ export default function SurveyRuntime(_props: RuntimeProps) {
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-background to-muted/30">
+      {isPreview && (
+        <div className="bg-amber-500 text-amber-950 border-b border-amber-600">
+          <div className="max-w-3xl mx-auto px-4 py-2 flex items-center gap-2 text-sm font-medium">
+            <Eye className="h-4 w-4 shrink-0" />
+            <span>
+              Preview mode — this is a draft survey. Your answers will
+              <strong> NOT </strong>be saved.
+            </span>
+          </div>
+        </div>
+      )}
       <header className="sticky top-0 z-10 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
         <div className="max-w-3xl mx-auto px-4 py-4">
           <div className="flex items-center justify-between mb-2">

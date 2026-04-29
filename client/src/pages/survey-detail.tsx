@@ -8,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, ExternalLink, Loader2, Save } from "lucide-react";
+import { ArrowLeft, ExternalLink, Eye, Loader2, Save } from "lucide-react";
 import { getSurvey, updateSurvey, type AdminSurveyDetail } from "@/lib/admin-survey-api";
 import { OverviewTab } from "@/components/survey/overview-tab";
 import { InvitesTab } from "@/components/survey/invites-tab";
@@ -87,6 +87,7 @@ export default function SurveyDetail(_props: Props) {
   }
 
   const publicUrl = `${window.location.origin}/#/s/${survey.slug}`;
+  const previewUrl = `${window.location.origin}/#/s/${survey.slug}?preview=1`;
   const isOpen = ["published"].includes(survey.status);
 
   return (
@@ -142,6 +143,9 @@ export default function SurveyDetail(_props: Props) {
               </Button>
             </>
           )}
+          <Button variant="outline" size="sm" onClick={() => window.open(previewUrl, "_blank")}>
+            <Eye className="h-4 w-4 mr-2" /> Preview
+          </Button>
           <Button variant="outline" size="sm" onClick={() => window.open(publicUrl, "_blank")}>
             <ExternalLink className="h-4 w-4 mr-2" /> Public link
           </Button>
