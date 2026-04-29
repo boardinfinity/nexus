@@ -429,6 +429,45 @@ function applyCollegeScope(query: any, auth: AuthResult, surveyTable = "surveys"
   return query;
 }
 
+// SPOCs (college_rep) can view + invite only — block create/edit/clone/generate/parse-doc.
+function blockCollegeRep(auth: AuthResult, res: VercelResponse, action = "this action"): boolean {
+  if (auth.nexusUser?.role === "college_rep") {
+    res.status(403).json({ error: `College reps cannot perform ${action}. Contact an admin.` });
+    return true;
+  }
+  return false;
+}
+
+// Verify the given survey is in the caller's college scope. Returns the survey row
+// on success, or null if it sent a 403/404 response (caller should return).
+async function assertSurveyInScope(
+  surveyId: string,
+  auth: AuthResult,
+  res: VercelResponse,
+  selectCols = "id, college_id"
+): Promise<any | null> {
+  const { data, error } = await supabase
+    .from("surveys")
+    .select(selectCols)
+    .eq("id", surveyId)
+    .single();
+  if (error || !data) {
+    res.status(404).json({ error: "Survey not found" });
+    return null;
+  }
+  const survey = data as unknown as { id: string; college_id: string | null };
+  const u = auth.nexusUser;
+  if (
+    u?.role === "college_rep" &&
+    u.restricted_college_ids?.length &&
+    !u.restricted_college_ids.includes(survey.college_id || "")
+  ) {
+    res.status(403).json({ error: "Survey not in your scope" });
+    return null;
+  }
+  return survey;
+}
+
 export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   if (!auth.nexusUser) return res.status(401).json({ error: "Authentication required" });
 
@@ -477,6 +516,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   // ---- POST /api/admin/surveys (create a new survey) ----
   if (path === "/admin/surveys" && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
+    if (blockCollegeRep(auth, res, "survey creation")) return;
     const { title, slug, description, audience_type, college_id, schema, intro_markdown, thank_you_markdown, estimated_minutes } = req.body || {};
 
     if (!title || !audience_type) return res.status(400).json({ error: "title and audience_type are required" });
@@ -518,6 +558,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   // ---- PATCH /api/admin/surveys/:id ----
   if (m && req.method === "PATCH") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
+    if (blockCollegeRep(auth, res, "survey edits")) return;
     const surveyId = m[1];
 
     const { data: existing, error: loadErr } = await supabase.from("surveys").select("*").eq("id", surveyId).single();
@@ -547,6 +588,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   m = path.match(/^\/admin\/surveys\/([^/]+)\/clone$/);
   if (m && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
+    if (blockCollegeRep(auth, res, "survey cloning")) return;
     const { data: source } = await supabase.from("surveys").select("*").eq("id", m[1]).single();
     if (!source) return res.status(404).json({ error: "Source survey not found" });
 
@@ -579,6 +621,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "GET") {
     if (!requirePermission("surveys", "read")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
 
     const [{ data: survey }, { data: respondents }, { data: responses }, { data: ratings }, { data: invites }] = await Promise.all([
       supabase.from("surveys").select("id, schema, status").eq("id", surveyId).single(),
@@ -641,6 +684,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "GET") {
     if (!requirePermission("surveys", "read")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
     const { page = "1", limit = "20", status: filterStatus, search } = req.query as Record<string, string>;
     const pageNum = parseInt(page) || 1;
     const limitNum = Math.min(parseInt(limit) || 20, 100);
@@ -694,6 +738,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "GET") {
     if (!requirePermission("surveys", "read")(auth, res)) return;
     const [, surveyId, respondentId] = m;
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
     const [{ data: respondent }, { data: responses }, { data: ratings }] = await Promise.all([
       supabase.from("survey_respondents").select("*").eq("id", respondentId).eq("survey_id", surveyId).single(),
       supabase.from("survey_responses").select("*").eq("respondent_id", respondentId).eq("survey_id", surveyId).order("section_key"),
@@ -708,6 +753,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
     const { emails, send_now = true } = req.body || {};
     if (!Array.isArray(emails) || !emails.length) return res.status(400).json({ error: "emails array is required" });
 
@@ -770,6 +816,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "GET") {
     if (!requirePermission("surveys", "read")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
     const { data, error } = await supabase.from("survey_invites").select("*").eq("survey_id", surveyId).order("created_at", { ascending: false });
     if (error) return res.status(500).json({ error: error.message });
     return res.json({ invites: data || [] });
@@ -780,6 +827,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
     const { email } = req.body || {};
     if (!email) return res.status(400).json({ error: "email is required" });
 
@@ -817,6 +865,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   if (m && req.method === "GET") {
     if (!requirePermission("surveys", "read")(auth, res)) return;
     const surveyId = m[1];
+    if (!(await assertSurveyInScope(surveyId, auth, res))) return;
 
     const [{ data: responses }, { data: ratings }, { data: respondents }] = await Promise.all([
       supabase.from("survey_responses").select("*").eq("survey_id", surveyId),
@@ -869,6 +918,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   // The body is the raw multipart payload; we read it from the stream.
   if (path === "/admin/surveys/parse-doc" && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
+    if (blockCollegeRep(auth, res, "document parsing")) return;
     try {
       const text = await parseUploadedDocText(req);
       return res.json({ text, length: text.length });
@@ -882,6 +932,7 @@ export async function handleSurveyAdminRoutes(path: string, req: VercelRequest, 
   // Returns { schema, suggested_title, suggested_description, estimated_minutes }.
   if (path === "/admin/surveys/generate" && req.method === "POST") {
     if (!requirePermission("surveys", "write")(auth, res)) return;
+    if (blockCollegeRep(auth, res, "AI generation")) return;
 
     const { mode, brief, doc_text, source_survey_id, audience_type } = req.body || {};
     if (!mode || !audience_type) return res.status(400).json({ error: "mode and audience_type are required" });

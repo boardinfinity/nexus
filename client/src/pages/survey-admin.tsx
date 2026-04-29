@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -53,9 +54,13 @@ const STATUS_FILTERS = [
   { value: "archived", label: "Archived" },
 ];
 
+interface MeResponse { role: string }
+
 export default function SurveyAdmin() {
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const { data: me } = useQuery<MeResponse>({ queryKey: ["/api/users/me"], staleTime: 30000 });
+  const isCollegeRep = me?.role === "college_rep";
 
   const [surveys, setSurveys] = useState<AdminSurveyListItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,9 +129,11 @@ export default function SurveyAdmin() {
             <code className="bg-muted px-1.5 py-0.5 rounded text-xs">/#/s/&lt;slug&gt;</code>
           </p>
         </div>
-        <Button onClick={() => setWizardOpen(true)}>
-          <Plus className="h-4 w-4 mr-2" /> New survey
-        </Button>
+        {!isCollegeRep && (
+          <Button onClick={() => setWizardOpen(true)}>
+            <Plus className="h-4 w-4 mr-2" /> New survey
+          </Button>
+        )}
       </div>
 
       <Card className="p-4">
@@ -179,9 +186,11 @@ export default function SurveyAdmin() {
             <p className="text-sm text-muted-foreground mt-1 max-w-sm">
               Create your first survey from a brief, an uploaded document, or by cloning an existing one.
             </p>
-            <Button className="mt-4" onClick={() => setWizardOpen(true)}>
-              <Plus className="h-4 w-4 mr-2" /> New survey
-            </Button>
+            {!isCollegeRep && (
+              <Button className="mt-4" onClick={() => setWizardOpen(true)}>
+                <Plus className="h-4 w-4 mr-2" /> New survey
+              </Button>
+            )}
           </div>
         ) : (
           <Table>
@@ -245,14 +254,16 @@ export default function SurveyAdmin() {
                       >
                         <ExternalLink className="h-4 w-4" />
                       </Button>
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        title="Clone"
-                        onClick={() => handleClone(s)}
-                      >
-                        <Copy className="h-4 w-4" />
-                      </Button>
+                      {!isCollegeRep && (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          title="Clone"
+                          onClick={() => handleClone(s)}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                      )}
                       <Button
                         size="icon"
                         variant="ghost"

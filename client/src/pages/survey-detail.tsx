@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation, useRoute } from "wouter";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7,7 +8,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Separator } from "@/components/ui/separator";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { ArrowLeft, ExternalLink, Loader2, Save, Eye } from "lucide-react";
+import { ArrowLeft, ExternalLink, Loader2, Save } from "lucide-react";
 import { getSurvey, updateSurvey, type AdminSurveyDetail } from "@/lib/admin-survey-api";
 import { OverviewTab } from "@/components/survey/overview-tab";
 import { InvitesTab } from "@/components/survey/invites-tab";
@@ -26,11 +27,15 @@ interface Props {
   params?: { id: string };
 }
 
+interface MeResponse { role: string }
+
 export default function SurveyDetail(_props: Props) {
   const [, params] = useRoute<{ id: string }>("/survey-admin/:id");
   const id = params?.id || "";
   const [, navigate] = useLocation();
   const { toast } = useToast();
+  const { data: me } = useQuery<MeResponse>({ queryKey: ["/api/users/me"], staleTime: 30000 });
+  const isCollegeRep = me?.role === "college_rep";
 
   const [survey, setSurvey] = useState<AdminSurveyDetail | null>(null);
   const [loading, setLoading] = useState(true);
@@ -109,30 +114,34 @@ export default function SurveyDetail(_props: Props) {
         </div>
 
         <div className="flex items-center gap-2">
-          <Select value={pendingStatus} onValueChange={setPendingStatus}>
-            <SelectTrigger className="w-[140px]">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_OPTIONS.map((s) => (
-                <SelectItem key={s.value} value={s.value}>
-                  {s.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            size="sm"
-            disabled={pendingStatus === survey.status || saving}
-            onClick={saveStatus}
-          >
-            {saving ? (
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-            ) : (
-              <Save className="h-4 w-4 mr-2" />
-            )}
-            Update status
-          </Button>
+          {!isCollegeRep && (
+            <>
+              <Select value={pendingStatus} onValueChange={setPendingStatus}>
+                <SelectTrigger className="w-[140px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_OPTIONS.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                disabled={pendingStatus === survey.status || saving}
+                onClick={saveStatus}
+              >
+                {saving ? (
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4 mr-2" />
+                )}
+                Update status
+              </Button>
+            </>
+          )}
           <Button variant="outline" size="sm" onClick={() => window.open(publicUrl, "_blank")}>
             <ExternalLink className="h-4 w-4 mr-2" /> Public link
           </Button>

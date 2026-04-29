@@ -42,7 +42,7 @@ export const ROLE_DEFAULTS: Record<string, Record<string, string>> = {
   college_rep: {
     dashboard: "read", jobs: "none", companies: "none", people: "none",
     upload: "none", pipelines: "none", schedules: "none", taxonomy: "none",
-    jd_analyzer: "none", data_quality: "none", surveys: "none", colleges: "read",
+    jd_analyzer: "none", data_quality: "none", surveys: "write", colleges: "read",
     reports: "none", placeintel: "read", settings: "none", users: "none",
   },
 };
