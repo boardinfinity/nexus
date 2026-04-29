@@ -1,7 +1,8 @@
 // Admin-side Survey API (post-auth). All requests go through the existing
-// Nexus auth (cookies/session). Used by /survey-admin and the AI generator wizard.
+// Nexus auth (Supabase Bearer token). Used by /survey-admin and the AI generator wizard.
 
 import type { SurveySchema } from "./survey-api";
+import { authFetch } from "./queryClient";
 
 export interface AdminSurveyListItem {
   id: string;
@@ -33,14 +34,7 @@ export interface AdminSurveyDetail extends Omit<AdminSurveyListItem, "section_co
 }
 
 async function jsonFetch(url: string, init?: RequestInit) {
-  const res = await fetch(url, {
-    credentials: "include",
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
+  const res = await authFetch(url, init);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data?.error || `Request failed (${res.status})`);
   return data;
