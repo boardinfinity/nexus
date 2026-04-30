@@ -585,6 +585,11 @@ export default function CollegeDetail({ params }: { params: { id: string } }) {
             <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setEditCollegeOpen(true)}>
               <Pencil className="h-3.5 w-3.5" />
             </Button>
+            <Link href={`/colleges/${collegeId}/insights`}>
+              <Button variant="outline" size="sm">
+                <BarChart3 className="h-3.5 w-3.5 mr-1.5" /> Alumni insights
+              </Button>
+            </Link>
           </div>
           <div className="flex items-center gap-4 mt-1 text-sm text-muted-foreground">
             {(college.city || college.country) && (
