@@ -7,9 +7,16 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 300
+    },
+    "api/insights-share-card.tsx": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
+    {
+      "source": "/api/insights-share-card(.*)",
+      "destination": "/api/insights-share-card$1"
+    },
     {
       "source": "/api/(.*)",
       "destination": "/api/index.ts?path=$1"
