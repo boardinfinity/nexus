@@ -1642,10 +1642,26 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
 
 // Process Alumni results from Apify dataset (called by /poll endpoint)
 async function processAlumniResults(runId: string, datasetId: string, config: any) {
-  const resultsRes = await fetch(
-    `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=2500`
-  );
-  const profiles: any[] = await resultsRes.json();
+  // Paginate through ALL dataset items — Apify caps single-response size, so loop until empty page.
+  // Mirrors processLinkedInResults pattern. Previous hardcoded ?limit=2500 silently truncated
+  // large bulk uploads (e.g. 10K+ alumni) to the first 2500 results.
+  const profiles: any[] = [];
+  const PAGE_SIZE = 1000;
+  let dsOffset = 0;
+  while (true) {
+    const pageRes = await fetch(
+      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=${PAGE_SIZE}&offset=${dsOffset}`
+    );
+    if (!pageRes.ok) {
+      throw new Error(`[alumni] Apify dataset fetch failed at offset=${dsOffset}: ${pageRes.status} ${pageRes.statusText}`);
+    }
+    const page = await pageRes.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    profiles.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    dsOffset += PAGE_SIZE;
+  }
+  console.log(`[alumni] Fetched ${profiles.length} profiles from Apify dataset ${datasetId}`);
 
   let processed = 0;
   let failed = 0;
@@ -1664,37 +1680,75 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
   let filteredOut = 0;
   
   if (validationEnabled && collegeNames.length > 0) {
-    // Build match patterns from college names (case-insensitive partial match)
-    const patterns = collegeNames.flatMap((name: string) => {
-      const lower = name.toLowerCase().replace(/\s+(mba|engineering|medical|law)$/i, '').trim();
-      const parts: string[] = [lower];
-      // Add abbreviations: "Indian Institute of Management Ahmedabad" -> also match "iima", "iim ahmedabad"
+    // Normalize a string for matching: lowercase, strip punctuation, collapse whitespace.
+    // This is critical because LinkedIn schoolName values vary wildly:
+    //   "University of Wollongong, Dubai" vs "University of Wollongong in Dubai"
+    //   vs "University of Wollongong - Dubai" vs "University Of Wollongong (Dubai)"
+    const normalize = (s: string) =>
+      (s || '')
+        .toLowerCase()
+        .replace(/[\u2010-\u2015\-_,.()\[\]{}\/\\:;]/g, ' ') // strip punctuation
+        .replace(/\b(in|at|the|of)\b/g, ' ')                  // drop stopwords for matching
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    // Build match patterns from college names. Each pattern is a normalized token sequence;
+    // we match if a normalized schoolName CONTAINS any pattern (substring match on normalized text).
+    const patternSet = new Set<string>();
+    for (const rawName of collegeNames) {
+      const lower = (rawName || '').toLowerCase().replace(/\s+(mba|engineering|medical|law)$/i, '').trim();
+      if (!lower) continue;
+
+      // 1. Full normalized name (e.g. "university wollongong dubai")
+      patternSet.add(normalize(lower));
+
+      // 2. If name has a ", Qualifier" suffix (e.g. ", Dubai"), generate explicit variants
+      // so we still match "University of Wollongong in Dubai", "University of Wollongong - Dubai",
+      // "University Of Wollongong (Dubai)", etc. We keep the qualifier required — we do NOT add
+      // the bare base name alone, because that would let a different campus through (e.g. the
+      // Australia main campus). The normalize() step already strips punctuation/stopwords,
+      // so "university wollongong dubai" matches all comma/hyphen/"in" variants in one pattern.
+      // No additional patterns needed beyond #1 — left as a no-op for clarity.
+
+      // 3. IIM / IIT special abbreviations
       if (lower.includes('indian institute of management')) {
-        const city = lower.replace('indian institute of management', '').trim();
-        parts.push('iim ' + city);
-        parts.push('iim' + city.charAt(0)); // iima, iimb, iimc etc.
+        const city = lower.replace('indian institute of management', '').replace(/,/g, '').trim();
+        if (city) {
+          patternSet.add(normalize('iim ' + city));
+          patternSet.add('iim' + city.charAt(0)); // iima, iimb, iimc
+        }
       }
       if (lower.includes('indian institute of technology')) {
-        const city = lower.replace('indian institute of technology', '').trim();
-        parts.push('iit ' + city);
-        parts.push('iit' + city.charAt(0));
+        const city = lower.replace('indian institute of technology', '').replace(/,/g, '').trim();
+        if (city) {
+          patternSet.add(normalize('iit ' + city));
+          patternSet.add('iit' + city.charAt(0));
+        }
       }
-      // Add short_name from college config
-      const college = collegeConfig.find((c: any) => c.name?.toLowerCase().includes(lower) || lower.includes(c.name?.toLowerCase()));
-      if (college?.short_name) parts.push(college.short_name.toLowerCase());
-      return parts.filter(Boolean);
-    });
-    
+
+      // 4. short_name from college config — only if reasonably distinctive (>=3 chars)
+      // to avoid false positives from generic 2-char abbreviations.
+      const college = collegeConfig.find((c: any) =>
+        c.name?.toLowerCase().includes(lower) || lower.includes(c.name?.toLowerCase())
+      );
+      if (college?.short_name) {
+        const sn = (college.short_name as string).toLowerCase().trim();
+        if (sn.length >= 3) patternSet.add(sn);
+      }
+    }
+    const patterns = [...patternSet].filter(Boolean);
+    console.log(`[alumni] Validation patterns:`, patterns);
+
     validatedProfiles = profiles.filter((p: any) => {
       const edu = p.education || [];
-      const eduSchools = edu.map((e: any) => (e.schoolName || '').toLowerCase());
-      const match = patterns.some((pattern: string) => 
-        eduSchools.some((school: string) => school.includes(pattern) || pattern.includes(school))
+      const normalizedSchools: string[] = edu.map((e: any) => normalize(e.schoolName || ''));
+      const match = patterns.some((pattern: string) =>
+        normalizedSchools.some((school: string) => school.length > 0 && school.includes(pattern))
       );
       if (!match) filteredOut++;
       return match;
     });
-    
+
     console.log(`[alumni] Education validation: ${validatedProfiles.length}/${profiles.length} matched (${filteredOut} filtered out)`);
   }
   
