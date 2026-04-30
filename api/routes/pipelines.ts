@@ -1803,39 +1803,54 @@ async function processAlumniResults(
   // Use validated profiles for the rest of processing
   const profilesToProcess = validatedProfiles;
 
-  // Pre-fetch existing people by LinkedIn URL in batch
+  // Pre-fetch existing people by LinkedIn URL in batch.
+  // CRITICAL: PostgREST .in() builds the filter into the URL query string. With 9K+
+  // LinkedIn URLs averaging ~46 chars, batches of 500 produce ~23KB query strings
+  // that silently truncate or get rejected by upstream proxies (CloudFront, Vercel),
+  // returning EMPTY results instead of an error. Symptom: existingPeopleMap is empty,
+  // every insert collides with the unique index, every profile counted as failed.
+  // Use IN_BATCH_SIZE=80 → ~3.7KB per query, comfortably under all proxy limits.
+  const IN_BATCH_SIZE = 80;
   const linkedinUrls = profilesToProcess
     .map(p => p.linkedinUrl || p.profileUrl)
     .filter(Boolean) as string[];
   const existingPeopleMap = new Map<string, string>();
   if (linkedinUrls.length > 0) {
-    // Fetch in batches of 500 to avoid query limits
-    for (let i = 0; i < linkedinUrls.length; i += 500) {
-      const batch = linkedinUrls.slice(i, i + 500);
-      const { data: existingPeople } = await supabase
+    for (let i = 0; i < linkedinUrls.length; i += IN_BATCH_SIZE) {
+      const batch = linkedinUrls.slice(i, i + IN_BATCH_SIZE);
+      const { data: existingPeople, error: lookupErr } = await supabase
         .from("people")
         .select("id, linkedin_url")
         .in("linkedin_url", batch);
+      if (lookupErr) {
+        console.error(`[alumni] people lookup failed at batch ${i}:`, lookupErr.message);
+      }
       for (const p of existingPeople || []) {
         if (p.linkedin_url) existingPeopleMap.set(p.linkedin_url, p.id);
       }
     }
+    console.log(`[alumni] Pre-fetched ${existingPeopleMap.size}/${linkedinUrls.length} existing people`);
   }
 
-  // Pre-fetch existing alumni records for these people
+  // Pre-fetch existing alumni records for these people. UUIDs are 36 chars so
+  // we can use a slightly larger batch, but keep it conservative.
   const existingPersonIds = [...existingPeopleMap.values()];
   const existingAlumniSet = new Set<string>();
   if (existingPersonIds.length > 0) {
-    for (let i = 0; i < existingPersonIds.length; i += 500) {
-      const batch = existingPersonIds.slice(i, i + 500);
-      const { data: existingAlumni } = await supabase
+    for (let i = 0; i < existingPersonIds.length; i += 100) {
+      const batch = existingPersonIds.slice(i, i + 100);
+      const { data: existingAlumni, error: alErr } = await supabase
         .from("alumni")
         .select("person_id")
         .in("person_id", batch);
+      if (alErr) {
+        console.error(`[alumni] alumni lookup failed at batch ${i}:`, alErr.message);
+      }
       for (const a of existingAlumni || []) {
         existingAlumniSet.add(a.person_id);
       }
     }
+    console.log(`[alumni] Pre-fetched ${existingAlumniSet.size}/${existingPersonIds.length} existing alumni`);
   }
 
   // Pre-fetch existing companies by name in batch
@@ -1968,27 +1983,55 @@ async function processAlumniResults(
         .select("id")
         .maybeSingle();
 
-      if (personError || !newPerson) {
+      let resolvedPersonId: string | null = newPerson?.id || null;
+
+      // Recover from duplicate-key collisions. The pre-fetch can miss records when:
+      //   1. A previous chunk inserted them moments ago (race window across calls)
+      //   2. The PostgREST .in() filter silently dropped this URL from a prior batch
+      // In either case, the row already exists — fetch its id and continue as if pre-fetched.
+      if (personError && (personError.code === "23505" || /duplicate key/i.test(personError.message)) && linkedinUrl) {
+        const { data: existing } = await supabase
+          .from("people")
+          .select("id")
+          .eq("linkedin_url", linkedinUrl)
+          .maybeSingle();
+        if (existing?.id) {
+          resolvedPersonId = existing.id;
+          existingPeopleMap.set(linkedinUrl, existing.id);
+        }
+      }
+
+      if (!resolvedPersonId) {
         failed++;
         continue;
       }
 
-      // Track newly inserted person in maps
-      if (linkedinUrl) existingPeopleMap.set(linkedinUrl, newPerson.id);
+      // Track in-memory map so subsequent profiles in this chunk find it
+      if (linkedinUrl) existingPeopleMap.set(linkedinUrl, resolvedPersonId);
 
-      // Insert alumni record
-      const eduEntry = findEducationEntry(profile.education, universityName);
-      await supabase.from("alumni").insert({
-        person_id: newPerson.id,
-        university_name: eduEntry?.schoolName || formatUniversityName(universityName),
-        degree: eduEntry?.degree || null,
-        field_of_study: eduEntry?.fieldOfStudy || null,
-        graduation_year: eduEntry?.endYear || null,
-        start_year: eduEntry?.startYear || null,
-        current_status: profile.headline || "unknown",
-      });
-
-      processed++;
+      // Skip alumni insert if this person already has one (recovered duplicate path)
+      if (existingAlumniSet.has(resolvedPersonId)) {
+        skipped++;
+      } else {
+        // Insert alumni record
+        const eduEntry = findEducationEntry(profile.education, universityName);
+        const { error: alumniErr } = await supabase.from("alumni").insert({
+          person_id: resolvedPersonId,
+          university_name: eduEntry?.schoolName || formatUniversityName(universityName),
+          degree: eduEntry?.degree || null,
+          field_of_study: eduEntry?.fieldOfStudy || null,
+          graduation_year: eduEntry?.endYear || null,
+          start_year: eduEntry?.startYear || null,
+          current_status: profile.headline || "unknown",
+        });
+        if (alumniErr) {
+          // Treat alumni-insert failures as failed too, but don't count the person again.
+          failed++;
+          continue;
+        }
+        existingAlumniSet.add(resolvedPersonId);
+        processed++;
+      }
     } catch (e) {
       failed++;
     }
