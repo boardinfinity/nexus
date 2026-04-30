@@ -406,15 +406,30 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       }
       const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
 
-      // If the alumni chunk has more work remaining, fire-and-forget a self-call
-      // so the next chunk starts processing immediately without waiting for the
-      // client to poll again. The client will still observe progress on its own poll cadence.
+      // If the alumni chunk has more work remaining, kick off the next chunk
+      // before returning. We must AWAIT the dispatch (just not the response body)
+      // because Vercel suspends the function instance the moment we return —
+      // an unawaited fetch() never gets its TCP handshake out. Use AbortController
+      // with a short timeout so we wait only long enough for the next instance to
+      // accept the connection, not for it to finish processing.
       if (chunkResult && !chunkResult.done && req.headers.host) {
         const proto = (req.headers["x-forwarded-proto"] as string) || "https";
         const selfUrl = `${proto}://${req.headers.host}/api/pipelines/${id}/poll`;
         const authHeader = (req.headers.authorization as string) || "";
-        // Detached: do NOT await — let the current response return immediately.
-        fetch(selfUrl, { method: "POST", headers: authHeader ? { authorization: authHeader } : {} }).catch(() => {});
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 3000);
+        try {
+          await fetch(selfUrl, {
+            method: "POST",
+            headers: authHeader ? { authorization: authHeader } : {},
+            signal: ac.signal,
+          });
+        } catch {
+          // Expected: aborted after 3s. The downstream invocation has already
+          // accepted the request and is processing independently.
+        } finally {
+          clearTimeout(timer);
+        }
       }
       return res.json(updated);
     }
@@ -1906,12 +1921,20 @@ async function processAlumniResults(
   // budget so we don't get stuck retrying the same bad batch every call.
   let attemptedThisCall = 0;
 
+  // Wall-clock budget: yield back to the /poll handler after this many ms so
+  // that the caller has time to fire the self-chain before Vercel's 300s SIGKILL.
+  // Vercel maxDuration is 300s; pre-fetch eats some, dispatch eats some, leave
+  // 60s safety margin for both → budget the actual insert loop at 200s.
+  const CHUNK_WALL_MS = 200_000;
+  const chunkStart = Date.now();
+
   // Process validated profiles — sequential for person inserts (need IDs for alumni records)
   // but company and duplicate lookups are now O(1) via pre-fetched maps
   for (const profile of profilesToProcess) {
     // Stop if we've used our chunk budget; remaining profiles will be picked up
     // on the next /poll call (resumability via existingPeopleMap/existingAlumniSet).
     if (attemptedThisCall >= maxItemsThisCall) break;
+    if (Date.now() - chunkStart > CHUNK_WALL_MS) break;
 
     // Skip profiles already fully processed (person + alumni both exist).
     // This is the resumability mechanism — on the second/third/Nth chunk call we
