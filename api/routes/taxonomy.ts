@@ -1,15 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, OPENAI_API_KEY } from "../lib/supabase";
 import { type AuthResult, requireReader, requireEditor, requireAdmin } from "../lib/auth";
-
-function categoryToTier(cat: string): string {
-  if (["technology","tool","certification","methodology","language"].includes(cat)) return "hard_skill";
-  if (["knowledge","domain"].includes(cat)) return "knowledge";
-  return "competency";
-}
+import { resolveBucket } from "../lib/bucketResolver";
+import { type ClassificationResult, type ClassificationSkill, categoryToTier, confidenceBandToScore } from "../lib/bucketTypes";
 
 function confidenceToScore(c: string): number {
-  return c === "high" ? 0.90 : c === "medium" ? 0.70 : 0.50;
+  return confidenceBandToScore(c as any);
 }
 
 const JD_CLASSIFICATION_PROMPT = `You are an expert job market analyst specializing in Indian MBA/graduate placement intelligence. Classify the given job description into structured fields.
@@ -491,15 +487,60 @@ export async function handleTaxonomyRoutes(
 
       const confidenceScore = confidenceToScore(parsed.classification_confidence || "low");
 
+      // ── Build canonical ClassificationResult & run bucket resolver ──
+      const classification: ClassificationResult = {
+        job_function: parsed.job_function || null,
+        job_function_name: parsed.job_function_name || null,
+        job_family: parsed.job_family || null,
+        job_family_name: parsed.job_family_name || null,
+        job_industry: parsed.job_industry || null,
+        job_industry_name: parsed.job_industry_name || null,
+        seniority: parsed.seniority || null,
+        company_type: parsed.company_type || null,
+        geography: parsed.geography || null,
+        standardized_title: parsed.standardized_title || null,
+        sub_role: parsed.sub_role || null,
+        company_name: parsed.company_name || null,
+        ctc_min: parsed.ctc_min ?? null,
+        ctc_max: parsed.ctc_max ?? null,
+        experience_min: parsed.experience_min ?? null,
+        experience_max: parsed.experience_max ?? null,
+        min_education: parsed.min_education || null,
+        preferred_fields: parsed.preferred_fields || [],
+        bucket_label: parsed.bucket
+          ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim()
+          : null,
+        skills: processedSkills.map<ClassificationSkill>(s => ({
+          name: s.name,
+          category: s.category,
+          required: s.required,
+          taxonomy_skill_id: s.taxonomy_match?.id ?? null,
+        })),
+        jd_quality: parsed.jd_quality || null,
+        classification_confidence: (parsed.classification_confidence || "low") as any,
+        classification_confidence_score: confidenceScore,
+      };
+
+      let bucketMapping = null as Awaited<ReturnType<typeof resolveBucket>> | null;
+      try {
+        bucketMapping = await resolveBucket(classification);
+      } catch (e: any) {
+        // Resolver failure must not break the analyzer; log + continue.
+        console.error("[analyze-jd] bucket resolver failed:", e?.message);
+      }
+
       // If job_id was provided, write classification fields to the jobs table and upsert job_skills
+      // Mutation requires editor permission on jd_analyzer (or jobs).
       let saved = false;
       if (job_id) {
+        if (!requireEditor(auth, "jobs", res)) return;
+
         try {
           const updateFields: Record<string, any> = {
             job_function: parsed.job_function || null,
             job_family: parsed.job_family || null,
             job_industry: parsed.job_industry || null,
-            bucket: parsed.bucket ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim() : null,
+            bucket: classification.bucket_label,
             sub_role: parsed.sub_role || null,
             experience_min: parsed.experience_min ?? null,
             experience_max: parsed.experience_max ?? null,
@@ -515,7 +556,59 @@ export async function handleTaxonomyRoutes(
           if (parsed.company_type) updateFields.company_type = parsed.company_type;
           if (parsed.geography) updateFields.geography = parsed.geography;
 
-          await supabase.from("jobs").update(updateFields).eq("id", job_id);
+          // Persist structured classification evidence; harmless if column absent (jsonb).
+          updateFields.classification_raw = {
+            job_function: classification.job_function,
+            job_family: classification.job_family,
+            job_industry: classification.job_industry,
+            seniority: classification.seniority,
+            company_type: classification.company_type,
+            geography: classification.geography,
+            standardized_title: classification.standardized_title,
+            sub_role: classification.sub_role,
+            jd_quality: classification.jd_quality,
+            classification_confidence: classification.classification_confidence,
+          };
+
+          // Bucket linkage: only persist on auto_assign + validated bucket.
+          if (bucketMapping?.action === "auto_assign" && bucketMapping.selected) {
+            updateFields.bucket_id = bucketMapping.selected.bucket_id;
+            updateFields.bucket_match_confidence = bucketMapping.confidence;
+            updateFields.bucket_match_reason = {
+              action: bucketMapping.action,
+              top_candidates: bucketMapping.top_candidates,
+              mismatch_flags: bucketMapping.mismatch_flags,
+              reason_summary: bucketMapping.reason_summary,
+            };
+            updateFields.bucket_status_at_assignment = bucketMapping.selected.status;
+            updateFields.bucket_assigned_at = new Date().toISOString();
+          } else if (bucketMapping) {
+            // Record the attempted mapping for explainability without setting bucket_id.
+            updateFields.bucket_match_confidence = bucketMapping.confidence;
+            updateFields.bucket_match_reason = {
+              action: bucketMapping.action,
+              top_candidates: bucketMapping.top_candidates,
+              mismatch_flags: bucketMapping.mismatch_flags,
+              reason_summary: bucketMapping.reason_summary,
+            };
+          }
+
+          // Some classification columns may not exist if migration 031 hasn't run yet.
+          // Try the full update first; on PostgREST schema error, retry without the new fields.
+          const { error: updErr } = await supabase.from("jobs").update(updateFields).eq("id", job_id);
+          if (updErr) {
+            const fallback = { ...updateFields };
+            delete fallback.classification_raw;
+            delete fallback.bucket_id;
+            delete fallback.bucket_match_confidence;
+            delete fallback.bucket_match_reason;
+            delete fallback.bucket_status_at_assignment;
+            delete fallback.bucket_assigned_at;
+            delete fallback.standardized_title;
+            delete fallback.company_type;
+            delete fallback.geography;
+            await supabase.from("jobs").update(fallback).eq("id", job_id);
+          }
 
           // Upsert job_skills
           const skillRows = processedSkills
@@ -541,30 +634,34 @@ export async function handleTaxonomyRoutes(
       }
 
       return res.json({
-        bucket: parsed.bucket ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim() : null,
-        job_function: parsed.job_function || null,
-        job_function_name: parsed.job_function_name || null,
-        job_family: parsed.job_family || null,
-        job_family_name: parsed.job_family_name || null,
-        job_industry: parsed.job_industry || null,
-        job_industry_name: parsed.job_industry_name || null,
-        seniority: parsed.seniority || null,
-        company_type: parsed.company_type || null,
-        geography: parsed.geography || null,
-        sub_role: parsed.sub_role || null,
-        standardized_title: parsed.standardized_title || null,
-        company_name: parsed.company_name || null,
-        experience_min: parsed.experience_min ?? null,
-        experience_max: parsed.experience_max ?? null,
-        min_education: parsed.min_education || null,
-        preferred_fields: parsed.preferred_fields || [],
-        jd_quality: parsed.jd_quality || null,
+        // ── Legacy top-level fields (preserved for existing frontend) ──
+        bucket: classification.bucket_label,
+        job_function: classification.job_function,
+        job_function_name: classification.job_function_name,
+        job_family: classification.job_family,
+        job_family_name: classification.job_family_name,
+        job_industry: classification.job_industry,
+        job_industry_name: classification.job_industry_name,
+        seniority: classification.seniority,
+        company_type: classification.company_type,
+        geography: classification.geography,
+        sub_role: classification.sub_role,
+        standardized_title: classification.standardized_title,
+        company_name: classification.company_name,
+        experience_min: classification.experience_min,
+        experience_max: classification.experience_max,
+        min_education: classification.min_education,
+        preferred_fields: classification.preferred_fields,
+        jd_quality: classification.jd_quality,
         classification_confidence: confidenceScore,
-        ctc_min: parsed.ctc_min ?? null,
-        ctc_max: parsed.ctc_max ?? null,
+        ctc_min: classification.ctc_min,
+        ctc_max: classification.ctc_max,
         skills: processedSkills,
         total: processedSkills.length,
         saved,
+        // ── New structured payload ──
+        classification,
+        bucket_mapping: bucketMapping,
       });
     } catch (err: any) {
       return res.status(500).json({ error: err.message || "AI analysis failed" });

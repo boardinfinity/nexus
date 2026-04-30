@@ -1,0 +1,52 @@
+{
+  "_doc": "Tier-1 MBA seed buckets template. Source workbook (Tier1_MBA_Bucket_Framework.xlsx) requires manual curation — only a small high-confidence starter set is included here. Add more buckets to the `buckets` array following the same shape and rerun scripts/seed-job-buckets.ts.",
+  "source": "Tier1_MBA_Bucket_Framework.xlsx (TODO: complete extraction)",
+  "scope": "mba",
+  "buckets": [
+    {
+      "bucket_code": "MBA-T1-IN-MGT-CONSULTING-MBB-BIG4",
+      "name": "Management Consulting — MBB / Big 4 Strategy",
+      "function_id": "FN-CON",
+      "family_id": "JF-01",
+      "industry_id": "IND-05",
+      "seniority_level": "L2",
+      "standardized_title": "Associate Consultant",
+      "company_type": "Consulting Firm",
+      "geography_scope": "India",
+      "nature_of_work": "Top-tier strategy consulting; corporate strategy, M&A, growth, transformation; case-led problem solving; client engagement",
+      "aliases": ["Associate Consultant", "Business Analyst Consulting", "Strategy Consultant", "Senior Associate Consultant"],
+      "evidence_companies": ["McKinsey", "BCG", "Bain", "Deloitte S&O", "EY-Parthenon", "PwC Strategy&", "KPMG Strategy"]
+    },
+    {
+      "bucket_code": "MBA-T1-IN-INVESTMENT-BANKING",
+      "name": "Investment Banking — Front Office",
+      "function_id": "FN-FIN",
+      "family_id": "JF-02",
+      "industry_id": "IND-02",
+      "seniority_level": "L2",
+      "standardized_title": "Investment Banking Associate",
+      "company_type": "MNC",
+      "geography_scope": "India",
+      "nature_of_work": "M&A advisory; capital markets; financial modelling; pitch books; client coverage; deal execution",
+      "aliases": ["IB Associate", "Investment Banking Analyst", "M&A Associate", "Capital Markets Associate"],
+      "evidence_companies": ["Goldman Sachs", "Morgan Stanley", "JP Morgan", "Citi", "Kotak IB", "ICICI Securities"]
+    },
+    {
+      "bucket_code": "MBA-T1-IN-COMMERCIAL-EXCELLENCE-CHANNEL",
+      "name": "Commercial Excellence, Enterprise & Channel Sales",
+      "function_id": "FN-SAL",
+      "family_id": "JF-04",
+      "industry_id": "IND-04",
+      "seniority_level": "L2",
+      "standardized_title": "Area Sales Manager",
+      "company_type": "MNC",
+      "geography_scope": "India",
+      "nature_of_work": "Channel and distributor management; trade marketing; enterprise account management; commercial excellence; revenue growth",
+      "aliases": ["Area Sales Manager", "Key Account Manager", "Enterprise Sales Manager", "Commercial Excellence Manager", "Trade Marketing Manager"],
+      "evidence_companies": ["HUL", "P&G", "Nestle", "Mondelez", "Unilever", "Colgate-Palmolive", "Pernod Ricard"]
+    },
+    {
+      "_TODO": "Add 17+ remaining premium MBA India buckets from Tier1_MBA_Bucket_Framework.xlsx — IT/Tech consulting, Pharma sales, Brand management premium, Product marketing, BFSI risk, Treasury, Equity research, Corp dev, Operations leadership, etc."
+    }
+  ]
+}

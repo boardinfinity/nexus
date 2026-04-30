@@ -1,0 +1,36 @@
+{
+  "_doc": "UAE / GCC seed buckets — placeholder template. Replace these with curated UAE buckets when the source list is provided. Each entry uses geography_scope='UAE' so geography overlay matching prefers them for UAE-Dubai JDs.",
+  "source": "UAE bucket curation (TODO)",
+  "scope": "mba",
+  "buckets": [
+    {
+      "bucket_code": "MBA-GCC-UAE-KEY-ACCOUNT-BD",
+      "name": "UAE / GCC Key Account & Business Development",
+      "function_id": "FN-BDV",
+      "family_id": "JF-04",
+      "industry_id": "IND-15",
+      "seniority_level": "L2",
+      "standardized_title": "Key Account Executive",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Key account development across GCC markets; client relationship management; deal closures; account growth; cross-border sales",
+      "aliases": ["Key Account Executive", "Business Development Executive UAE", "Account Manager Dubai", "GCC Sales Manager"]
+    },
+    {
+      "bucket_code": "MBA-GCC-UAE-RETAIL-BANKING-WEALTH",
+      "name": "UAE Retail Banking & Wealth Advisory",
+      "function_id": "FN-SAL",
+      "family_id": "JF-02",
+      "industry_id": "IND-02",
+      "seniority_level": "L2",
+      "standardized_title": "Wealth Relationship Manager",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Wealth advisory for HNI/expat clients; portfolio management; insurance & investment products; DIFC/ADGM regulatory environment",
+      "aliases": ["Wealth Relationship Manager UAE", "Premier Banker", "Priority Banking RM"]
+    },
+    {
+      "_TODO": "Curate full UAE/GCC bucket list — sectors: Hospitality, Construction & Real Estate, Oil & Gas, Free-Zone Operations, Family Office, Logistics & Free-Zone Trade, Tech BD, Government Advisory, etc. Capture Arabic-language overlays and visa/work-authorization specifics in overlays table separately."
+    }
+  ]
+}
