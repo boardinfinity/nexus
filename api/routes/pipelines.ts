@@ -1660,7 +1660,11 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
 // within Vercel's 300s function budget (see vercel.json). At ~5-10 profiles/sec
 // (1 person insert + 1 alumni insert + occasional company upsert per profile),
 // 500 takes ~50-100s, leaving headroom for prefetch and dataset fetch.
-const ALUMNI_CHUNK_SIZE = 500;
+// Sized so the full chunk finishes in well under Vercel's 300s maxDuration,
+// leaving headroom for the fire-and-forget self-chain at line ~417 to actually fire.
+// Empirically: ~330 profiles take ~280s synchronously (88-115 inserts/min),
+// so 250 should land at ~210s, giving a 90s safety margin.
+const ALUMNI_CHUNK_SIZE = 250;
 
 // Process Alumni results from Apify dataset (called by /poll endpoint).
 // CHUNKED: processes at most `maxItemsThisCall` profiles per invocation, then returns.
