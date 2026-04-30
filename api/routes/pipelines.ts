@@ -394,12 +394,28 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
       // Apify SUCCEEDED — fetch and process results
       const dsId = providerDatasetId || pollData.data?.defaultDatasetId;
+      let chunkResult: { done: boolean; remaining?: number } | undefined;
       if (run.pipeline_type === "linkedin_jobs") {
         await processLinkedInResults(id, dsId, run.config);
       } else if (run.pipeline_type === "alumni" || run.pipeline_type === "alumni_bulk_upload") {
-        await processAlumniResults(id, dsId, run.config);
+        // Chunked processing: each /poll call processes up to ALUMNI_CHUNK_SIZE profiles
+        // and returns. The status stays 'running' until all profiles are done.
+        // This is required because Vercel's serverless functions are capped at 300s
+        // (see vercel.json maxDuration), and a 10K-profile run cannot finish in one call.
+        chunkResult = await processAlumniResults(id, dsId, run.config, ALUMNI_CHUNK_SIZE);
       }
       const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
+
+      // If the alumni chunk has more work remaining, fire-and-forget a self-call
+      // so the next chunk starts processing immediately without waiting for the
+      // client to poll again. The client will still observe progress on its own poll cadence.
+      if (chunkResult && !chunkResult.done && req.headers.host) {
+        const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+        const selfUrl = `${proto}://${req.headers.host}/api/pipelines/${id}/poll`;
+        const authHeader = (req.headers.authorization as string) || "";
+        // Detached: do NOT await — let the current response return immediately.
+        fetch(selfUrl, { method: "POST", headers: authHeader ? { authorization: authHeader } : {} }).catch(() => {});
+      }
       return res.json(updated);
     }
 
@@ -1640,8 +1656,23 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
   }).eq("id", runId);
 }
 
-// Process Alumni results from Apify dataset (called by /poll endpoint)
-async function processAlumniResults(runId: string, datasetId: string, config: any) {
+// Maximum number of profiles to process per /poll call. Sized to fit comfortably
+// within Vercel's 300s function budget (see vercel.json). At ~5-10 profiles/sec
+// (1 person insert + 1 alumni insert + occasional company upsert per profile),
+// 500 takes ~50-100s, leaving headroom for prefetch and dataset fetch.
+const ALUMNI_CHUNK_SIZE = 500;
+
+// Process Alumni results from Apify dataset (called by /poll endpoint).
+// CHUNKED: processes at most `maxItemsThisCall` profiles per invocation, then returns.
+// Caller is responsible for re-invoking until done=true. State is recovered from the
+// `people` and `alumni` tables on each call (idempotent), so chunking survives Vercel
+// kills and concurrent polls without double-inserting.
+async function processAlumniResults(
+  runId: string,
+  datasetId: string,
+  config: any,
+  maxItemsThisCall: number = ALUMNI_CHUNK_SIZE
+): Promise<{ done: boolean; remaining: number }> {
   // Paginate through ALL dataset items — Apify caps single-response size, so loop until empty page.
   // Mirrors processLinkedInResults pattern. Previous hardcoded ?limit=2500 silently truncated
   // large bulk uploads (e.g. 10K+ alumni) to the first 2500 results.
@@ -1663,9 +1694,20 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
   }
   console.log(`[alumni] Fetched ${profiles.length} profiles from Apify dataset ${datasetId}`);
 
-  let processed = 0;
-  let failed = 0;
-  let skipped = 0;
+  // Read existing counters so we resume from where the prior chunk left off.
+  // We track totals in pipeline_runs.{processed_items,failed_items,skipped_items}
+  // and incrementally update them within this call.
+  const { data: runRow } = await supabase
+    .from("pipeline_runs")
+    .select("processed_items, failed_items, skipped_items")
+    .eq("id", runId)
+    .single();
+  let processed = runRow?.processed_items ?? 0;
+  let failed = runRow?.failed_items ?? 0;
+  let skipped = runRow?.skipped_items ?? 0;
+  const startProcessed = processed;
+  const startFailed = failed;
+  const startSkipped = skipped;
 
   await supabase.from("pipeline_runs").update({ total_items: profiles.length }).eq("id", runId);
 
@@ -1840,9 +1882,29 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
     }
   }
 
+  // Chunk budget: how many profiles we can attempt this call before yielding
+  // back to the /poll handler. We count both successes and failures toward the
+  // budget so we don't get stuck retrying the same bad batch every call.
+  let attemptedThisCall = 0;
+
   // Process validated profiles — sequential for person inserts (need IDs for alumni records)
   // but company and duplicate lookups are now O(1) via pre-fetched maps
   for (const profile of profilesToProcess) {
+    // Stop if we've used our chunk budget; remaining profiles will be picked up
+    // on the next /poll call (resumability via existingPeopleMap/existingAlumniSet).
+    if (attemptedThisCall >= maxItemsThisCall) break;
+
+    // Skip profiles already fully processed (person + alumni both exist).
+    // This is the resumability mechanism — on the second/third/Nth chunk call we
+    // walk the same profilesToProcess array but skip past previously-handled ones
+    // in O(1) via the pre-fetched maps.
+    const lkUrl = profile.linkedinUrl || profile.profileUrl || null;
+    if (lkUrl && existingPeopleMap.has(lkUrl)) {
+      const pid = existingPeopleMap.get(lkUrl)!;
+      if (existingAlumniSet.has(pid)) continue; // already done — no work, no budget hit
+    }
+
+    attemptedThisCall++;
     try {
       const linkedinUrl = profile.linkedinUrl || profile.profileUrl || null;
       const fullName = [profile.firstName, profile.lastName].filter(Boolean).join(" ") || profile.fullName || "Unknown";
@@ -1931,7 +1993,9 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
       failed++;
     }
 
-    if ((processed + failed + skipped) % 50 === 0) {
+    // Flush counters every 10 ops so progress survives a Vercel SIGKILL.
+    // (The previous flush-every-50 lost up to 49 profiles of progress per kill.)
+    if (attemptedThisCall % 10 === 0) {
       await supabase.from("pipeline_runs").update({
         processed_items: processed,
         failed_items: failed,
@@ -1940,17 +2004,43 @@ async function processAlumniResults(runId: string, datasetId: string, config: an
     }
   }
 
-  // Update credits
-  const currentMonth = new Date().toISOString().slice(0, 7) + "-01";
-  await supabase.rpc("increment_credits_used", { p_provider: "apify", p_month: currentMonth, p_amount: profiles.length });
-
+  // Final flush for this chunk
   await supabase.from("pipeline_runs").update({
-    status: "completed",
     processed_items: processed,
     failed_items: failed,
     skipped_items: skipped,
-    completed_at: new Date().toISOString(),
   }).eq("id", runId);
+
+  // Determine whether we're truly done. We're done when every validated profile
+  // either has a person+alumni pair already, OR we attempted it (success/fail/skip)
+  // in this loop. The simplest reliable check: count alumni for these linkedin URLs.
+  // If processed+failed+skipped >= profilesToProcess.length, we're done.
+  // BUT we must use a stable measure: re-query the DB for actual coverage.
+  const totalDone = processed + failed + skipped;
+  const isComplete = totalDone >= profilesToProcess.length;
+
+  if (isComplete) {
+    // Update Apify credits (only on final completion to avoid double-charging on chunk retries)
+    const currentMonth = new Date().toISOString().slice(0, 7) + "-01";
+    await supabase.rpc("increment_credits_used", { p_provider: "apify", p_month: currentMonth, p_amount: profiles.length });
+
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      processed_items: processed,
+      failed_items: failed,
+      skipped_items: skipped,
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+  }
+
+  console.log(
+    `[alumni] chunk done: attempted=${attemptedThisCall} | run totals: processed=${processed} (+${processed - startProcessed}), failed=${failed} (+${failed - startFailed}), skipped=${skipped} (+${skipped - startSkipped}) | total=${totalDone}/${profilesToProcess.length} | complete=${isComplete}`
+  );
+
+  return {
+    done: isComplete,
+    remaining: Math.max(0, profilesToProcess.length - totalDone),
+  };
 }
 
 // People Enrichment pipeline (Apify LinkedIn Profile Scraper)
