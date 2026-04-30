@@ -314,6 +314,56 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       providerDatasetId = apifyData.data?.defaultDatasetId;
     }
 
+    // person_analysis: process alumni rows already in our DB through the analyzer.
+    // No external provider — we read alumni+people directly and write alumni_profile_snapshots.
+    if (pipeline_type === "person_analysis") {
+      if (!config?.college_id) {
+        return res.status(400).json({ error: "college_id is required" });
+      }
+
+      // Build the candidate pool count up front so progress tracking has a denominator.
+      let countQuery = supabase
+        .from("alumni")
+        .select("id", { count: "exact", head: true });
+      // We can only filter by university_name here because alumni.university_id is NULL
+      // in practice (see schema reality notes). The college's name(s) are matched in
+      // the chunk loop using ILIKE patterns (cheaper to do once at chunk time).
+      const { count: totalCount } = await countQuery;
+
+      // Resolve college name patterns once and cache in config.
+      const { data: college } = await supabase
+        .from("colleges")
+        .select("id, name, short_name")
+        .eq("id", config.college_id)
+        .single();
+      if (!college) return res.status(404).json({ error: "college not found" });
+      const namePatterns = Array.from(new Set([college.name, college.short_name].filter(Boolean)));
+
+      const { data: paRun, error: paErr } = await supabase
+        .from("pipeline_runs")
+        .insert({
+          pipeline_type,
+          trigger_type: "manual",
+          config: {
+            ...(config || {}),
+            _name_patterns: namePatterns,
+            _resume_offset: 0,
+          },
+          status: "running",
+          // total_items is best-effort; the chunk loop refines this once it sees the actual matched set.
+          total_items: totalCount || 0,
+          processed_items: 0,
+          failed_items: 0,
+          skipped_items: 0,
+          started_at: new Date().toISOString(),
+          triggered_by: "dashboard",
+        })
+        .select()
+        .single();
+      if (paErr) return res.status(500).json({ error: paErr.message });
+      return res.json(paRun);
+    }
+
     // Create pipeline run with provider tracking info
     const { data: run, error } = await supabase
       .from("pipeline_runs")
@@ -362,6 +412,33 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
     const providerRunId = run.config?._provider_run_id;
     const providerDatasetId = run.config?._provider_dataset_id;
+
+    // person_analysis: no provider, no Apify. Run a chunk of the analyzer over
+    // alumni rows for the configured college, then self-chain or complete.
+    if (run.pipeline_type === "person_analysis") {
+      const chunkResult = await processPersonAnalysisChunk(id, run.config, ANALYSIS_CHUNK_SIZE);
+      const { data: updated } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
+
+      if (chunkResult && !chunkResult.done && req.headers.host) {
+        const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+        const selfUrl = `${proto}://${req.headers.host}/api/pipelines/${id}/poll`;
+        const authHeader = (req.headers.authorization as string) || "";
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), 3000);
+        try {
+          await fetch(selfUrl, {
+            method: "POST",
+            headers: authHeader ? { authorization: authHeader } : {},
+            signal: ac.signal,
+          });
+        } catch {
+          // Aborted after 3s by design — next instance has accepted the request.
+        } finally {
+          clearTimeout(timer);
+        }
+      }
+      return res.json(updated);
+    }
 
     // Determine which Apify actor to poll based on pipeline type
     const actorMap: Record<string, string> = {
@@ -1680,6 +1757,214 @@ Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "Post
 // Empirically: ~330 profiles take ~280s synchronously (88-115 inserts/min),
 // so 250 should land at ~210s, giving a 90s safety margin.
 const ALUMNI_CHUNK_SIZE = 250;
+
+// person_analysis chunk size. Analyzer makes 2-3 LLM calls per profile (~3-5s each),
+// so we can only process ~30-50 profiles per 200s budget. Set conservatively to 30
+// per chunk so the wall-clock never approaches the 300s SIGKILL.
+const ANALYSIS_CHUNK_SIZE = 30;
+
+import { analyzePerson, CURRENT_SCHEMA_VERSION } from "../services/person-analyzer";
+
+// Process a chunk of person_analysis: read up to N alumni rows for the configured
+// college that don't yet have a current-schema-version snapshot, run them through
+// the analyzer, update progress counters. Returns {done} so the caller can self-chain.
+async function processPersonAnalysisChunk(
+  runId: string,
+  config: any,
+  maxItemsThisCall: number,
+): Promise<{ done: boolean; remaining?: number }> {
+  const wallStart = Date.now();
+  const WALL_BUDGET_MS = 220_000;
+
+  const collegeId: string = config?.college_id;
+  if (!collegeId) {
+    await supabase.from("pipeline_runs").update({
+      status: "failed",
+      error_message: "college_id missing from config",
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+    return { done: true };
+  }
+
+  const namePatterns: string[] = config?._name_patterns || [];
+  const targetSchemaVersion: number = config?.schema_version ?? CURRENT_SCHEMA_VERSION;
+  const skipHours: number = config?.skip_if_analyzed_within_hours ?? 24;
+  const model: string = config?.model || "gpt-4.1-mini";
+  const gradYearMin: number | null = config?.graduation_year_range?.[0] ?? config?.graduation_year ?? null;
+  const gradYearMax: number | null = config?.graduation_year_range?.[1] ?? config?.graduation_year ?? null;
+  const personIds: string[] | null = Array.isArray(config?.person_ids) ? config.person_ids : null;
+
+  // Build the alumni candidate query.
+  // Filter on university_name with ILIKE OR pattern (matches "University of Wollongong in Dubai",
+  // "UoW Dubai", etc.). If person_ids is given, we restrict to those instead.
+  let q = supabase
+    .from("alumni")
+    .select("id, person_id, degree, field_of_study, start_year, graduation_year, university_name")
+    .order("created_at", { ascending: true })
+    .limit(maxItemsThisCall * 4); // overfetch — some will be skipped (already analyzed, no person, etc.)
+
+  if (personIds && personIds.length > 0) {
+    q = q.in("person_id", personIds.slice(0, 500));
+  } else {
+    if (namePatterns.length > 0) {
+      // PostgREST or-pattern. Each pattern uses an ilike with %name%.
+      const orFilter = namePatterns.map(n => `university_name.ilike.%${escapeOrParam(n)}%`).join(",");
+      q = q.or(orFilter);
+    }
+  }
+  if (gradYearMin != null) q = q.gte("graduation_year", gradYearMin);
+  if (gradYearMax != null) q = q.lte("graduation_year", gradYearMax);
+
+  const { data: candidates, error: candErr } = await q;
+  if (candErr) {
+    console.error("processPersonAnalysisChunk candidate query failed:", candErr.message);
+    return { done: false };
+  }
+  if (!candidates || candidates.length === 0) {
+    await supabase.from("pipeline_runs").update({
+      status: "completed",
+      completed_at: new Date().toISOString(),
+    }).eq("id", runId);
+    return { done: true };
+  }
+
+  // Pre-fetch already-analyzed (current-schema) snapshot person_ids so we don't redo them.
+  const personIdsAll = candidates.map(c => c.person_id).filter(Boolean) as string[];
+  const alreadyAnalyzed = new Set<string>();
+  for (let i = 0; i < personIdsAll.length; i += 100) {
+    const batch = personIdsAll.slice(i, i + 100);
+    const { data: existing } = await supabase
+      .from("alumni_profile_snapshots")
+      .select("person_id, analyzed_at")
+      .eq("college_id", collegeId)
+      .eq("schema_version", targetSchemaVersion)
+      .in("person_id", batch);
+    if (existing) {
+      for (const e of existing) {
+        if (skipHours <= 0) continue; // 0 = never skip
+        if (e.analyzed_at) {
+          const ageH = (Date.now() - new Date(e.analyzed_at).getTime()) / 3_600_000;
+          if (ageH < skipHours) alreadyAnalyzed.add(e.person_id);
+        }
+      }
+    }
+  }
+
+  // Pre-fetch the people rows so we can analyze without N+1 lookups.
+  const peopleNeeded = personIdsAll.filter(pid => !alreadyAnalyzed.has(pid));
+  const peopleMap = new Map<string, any>();
+  for (let i = 0; i < peopleNeeded.length; i += 100) {
+    const batch = peopleNeeded.slice(i, i + 100);
+    const { data: peeps } = await supabase
+      .from("people")
+      .select("id, experience, education, career_transitions")
+      .in("id", batch);
+    if (peeps) for (const p of peeps) peopleMap.set(p.id, p);
+  }
+
+  let attempted = 0;
+  let processed = 0;
+  let failed = 0;
+  let skipped = 0;
+  let counterFlushTick = 0;
+
+  for (const alum of candidates) {
+    if (attempted >= maxItemsThisCall) break;
+    if (Date.now() - wallStart > WALL_BUDGET_MS) break;
+    if (!alum.person_id) { skipped++; continue; }
+    if (alreadyAnalyzed.has(alum.person_id)) { skipped++; continue; }
+    const person = peopleMap.get(alum.person_id);
+    if (!person) { skipped++; continue; }
+
+    attempted++;
+    try {
+      const result = await analyzePerson({
+        collegeId,
+        personId: alum.person_id,
+        alumniId: alum.id,
+        experience: person.experience,
+        education: person.education,
+        careerTransitions: person.career_transitions,
+        rawDegree: alum.degree,
+        rawField: alum.field_of_study,
+        startYear: alum.start_year,
+        graduationYear: alum.graduation_year,
+        runId,
+        schemaVersion: targetSchemaVersion,
+        model,
+        skipIfAnalyzedWithinHours: skipHours,
+      });
+      if (result.status === "analyzed") processed++;
+      else if (result.status === "failed") failed++;
+      else skipped++;
+    } catch (e: any) {
+      failed++;
+      console.error("analyzePerson threw:", e?.message);
+    }
+
+    counterFlushTick++;
+    if (counterFlushTick >= 5) {
+      counterFlushTick = 0;
+      await flushPersonAnalysisCounters(runId, processed, failed, skipped);
+    }
+  }
+
+  // Final flush this chunk
+  await flushPersonAnalysisCounters(runId, processed, failed, skipped);
+
+  // Did we consume the whole candidate list? If yes, mark done.
+  // candidates.length < overfetch * something means we likely ran out of work.
+  const ranOutOfCandidates = candidates.length < maxItemsThisCall * 4 && (alreadyAnalyzed.size + skipped + processed + failed) >= candidates.length;
+
+  if (ranOutOfCandidates) {
+    // Final reconciliation: check if any alumni still need analysis.
+    let finalCheck = supabase
+      .from("alumni")
+      .select("id", { count: "exact", head: true });
+    if (namePatterns.length > 0 && (!personIds || personIds.length === 0)) {
+      const orFilter = namePatterns.map(n => `university_name.ilike.%${escapeOrParam(n)}%`).join(",");
+      finalCheck = finalCheck.or(orFilter);
+    }
+    const { count: totalCohort } = await finalCheck;
+
+    const { count: alreadyDone } = await supabase
+      .from("alumni_profile_snapshots")
+      .select("id", { count: "exact", head: true })
+      .eq("college_id", collegeId)
+      .eq("schema_version", targetSchemaVersion);
+
+    if ((alreadyDone || 0) >= (totalCohort || 0)) {
+      await supabase.from("pipeline_runs").update({
+        status: "completed",
+        completed_at: new Date().toISOString(),
+      }).eq("id", runId);
+      return { done: true };
+    }
+  }
+
+  return { done: false };
+}
+
+async function flushPersonAnalysisCounters(runId: string, processed: number, failed: number, skipped: number): Promise<void> {
+  // Atomic increment via raw SQL would be nicer; we use read-modify-write since chunks are
+  // serialized by the self-chain (no concurrent writers in normal operation).
+  const { data: cur } = await supabase
+    .from("pipeline_runs")
+    .select("processed_items, failed_items, skipped_items")
+    .eq("id", runId)
+    .single();
+  if (!cur) return;
+  await supabase.from("pipeline_runs").update({
+    processed_items: (cur.processed_items || 0) + processed,
+    failed_items: (cur.failed_items || 0) + failed,
+    skipped_items: (cur.skipped_items || 0) + skipped,
+  }).eq("id", runId);
+}
+
+function escapeOrParam(s: string): string {
+  // PostgREST or-filter values can't contain unescaped commas or parentheses.
+  return String(s).replace(/[(),]/g, " ");
+}
 
 // Process Alumni results from Apify dataset (called by /poll endpoint).
 // CHUNKED: processes at most `maxItemsThisCall` profiles per invocation, then returns.
