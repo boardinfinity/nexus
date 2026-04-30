@@ -1,6 +1,8 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, OPENAI_API_KEY } from "../lib/supabase";
-import { type AuthResult, requireSuperAdmin } from "../lib/auth";
+import { type AuthResult, requireSuperAdmin, requireAdmin } from "../lib/auth";
+import { resolveBucket } from "../lib/bucketResolver";
+import { type ClassificationResult, confidenceBandToScore } from "../lib/bucketTypes";
 
 const CLASSIFICATION_SYSTEM_PROMPT = `You are an expert job market analyst specializing in Indian MBA/graduate placement intelligence. Classify each job description into structured buckets.
 
@@ -129,6 +131,62 @@ CRITICAL RULES:
 - Cap skills at 15 most important per JD
 - Return null for any field you genuinely cannot determine`;
 
+function normalizeClassification(raw: any): ClassificationResult {
+  return {
+    job_function: raw.job_function ?? null,
+    job_function_name: raw.job_function_name ?? null,
+    job_family: raw.job_family ?? null,
+    job_family_name: raw.job_family_name ?? null,
+    job_industry: raw.job_industry ?? raw.industry ?? null,
+    job_industry_name: raw.job_industry_name ?? raw.industry_name ?? null,
+    seniority: raw.seniority ?? null,
+    company_type: raw.company_type ?? null,
+    geography: raw.geography ?? null,
+    standardized_title: raw.standardized_title ?? null,
+    sub_role: raw.sub_role ?? null,
+    company_name: raw.company_name ?? null,
+    ctc_min: raw.ctc_min ?? null,
+    ctc_max: raw.ctc_max ?? null,
+    experience_min: raw.experience_min ?? raw.experience_min_years ?? null,
+    experience_max: raw.experience_max ?? raw.experience_max_years ?? null,
+    min_education: raw.min_education ?? null,
+    preferred_fields: raw.preferred_fields ?? [],
+    bucket_label: raw.bucket_label ?? raw.bucket ?? null,
+    skills: Array.isArray(raw.skills) ? raw.skills : [],
+    jd_quality: raw.jd_quality ?? null,
+    classification_confidence: (raw.classification_confidence as any) ?? "low",
+    classification_confidence_score: confidenceBandToScore(raw.classification_confidence),
+  };
+}
+
+function classificationFromJobRow(job: any): ClassificationResult {
+  return normalizeClassification({
+    job_function: job.job_function,
+    job_family: job.job_family,
+    job_industry: job.job_industry,
+    seniority: job.seniority_level,
+    company_type: job.company_type,
+    geography: job.geography,
+    standardized_title: job.standardized_title || job.title,
+    sub_role: job.sub_role,
+    company_name: job.company_name,
+    bucket_label: job.bucket,
+    jd_quality: job.jd_quality,
+    classification_confidence: typeof job.classification_confidence === "number"
+      ? scoreToBand(job.classification_confidence)
+      : (job.classification_confidence ?? "medium"),
+    experience_min: job.experience_min,
+    experience_max: job.experience_max,
+    min_education: job.education_req,
+  });
+}
+
+function scoreToBand(score: number): "high" | "medium" | "low" {
+  if (score >= 0.85) return "high";
+  if (score >= 0.6) return "medium";
+  return "low";
+}
+
 async function callGPTForBuckets(systemPrompt: string, userPrompt: string): Promise<string> {
   for (let attempt = 0; attempt <= 2; attempt++) {
     try {
@@ -177,6 +235,128 @@ export async function handleBucketTestRoutes(
   res: VercelResponse,
   auth: AuthResult
 ): Promise<VercelResponse | undefined> {
+  // ── POST /admin/bucket-test/dry-run ─────────────────────────────────
+  // Dry-run the bucket resolver against:
+  //   - { text: string, classification?: ClassificationResult }   -> classify if needed, then resolve
+  //   - { job_id: string }                                         -> reuse stored classification fields, resolve
+  //   - { sample_size: number }                                    -> N most recent JD-bearing jobs
+  //   - { classification: ClassificationResult }                   -> resolver only
+  //
+  // Returns per-input: classification used + resolver result. Never writes to `jobs`.
+  if (path.match(/^\/admin\/bucket-test\/dry-run\/?$/) && req.method === "POST") {
+    if (!requireAdmin(auth, res)) return;
+
+    const body = req.body || {};
+    const sampleSize = Math.min(parseInt(body.sample_size) || 0, 50);
+    const persist = Boolean(body.persist);
+
+    type DryRunInput = { source: string; classification: ClassificationResult; jdText?: string; jobId?: string | null };
+    const inputs: DryRunInput[] = [];
+
+    // Direct classification provided
+    if (body.classification && typeof body.classification === "object") {
+      inputs.push({
+        source: "inline_classification",
+        classification: normalizeClassification(body.classification),
+        jobId: body.job_id || null,
+      });
+    }
+
+    // job_id provided — pull stored fields
+    if (body.job_id && !body.classification) {
+      const { data: job } = await supabase
+        .from("jobs")
+        .select("id, title, company_name, description, job_function, job_family, job_industry, seniority_level, company_type, geography, standardized_title, sub_role, jd_quality, classification_confidence, experience_min, experience_max, education_req, bucket")
+        .eq("id", body.job_id)
+        .single();
+      if (job) {
+        inputs.push({
+          source: `job:${job.id}`,
+          jobId: job.id,
+          jdText: job.description ?? undefined,
+          classification: classificationFromJobRow(job),
+        });
+      }
+    }
+
+    // sample of recent jobs
+    if (sampleSize > 0) {
+      const { data: rows } = await supabase
+        .from("jobs")
+        .select("id, title, company_name, description, job_function, job_family, job_industry, seniority_level, company_type, geography, standardized_title, sub_role, jd_quality, classification_confidence, experience_min, experience_max, education_req, bucket")
+        .not("job_function", "is", null)
+        .order("analyzed_at", { ascending: false, nullsFirst: false })
+        .limit(sampleSize);
+      for (const job of rows || []) {
+        inputs.push({
+          source: `job:${job.id}`,
+          jobId: job.id,
+          jdText: job.description ?? undefined,
+          classification: classificationFromJobRow(job),
+        });
+      }
+    }
+
+    if (inputs.length === 0) {
+      return res.status(400).json({
+        error: "Provide one of: classification, job_id, or sample_size > 0",
+      });
+    }
+
+    const results = [] as any[];
+    for (const input of inputs) {
+      try {
+        const mapping = await resolveBucket(input.classification);
+        const item = {
+          source: input.source,
+          job_id: input.jobId ?? null,
+          classification: input.classification,
+          bucket_mapping: mapping,
+          mismatch_flags: mapping.mismatch_flags,
+          candidate_needed: mapping.candidate_needed,
+        };
+        results.push(item);
+
+        if (persist) {
+          await supabase.from("jd_bucket_test").insert({
+            job_id: input.jobId ?? null,
+            job_function: input.classification.job_function,
+            job_family: input.classification.job_family,
+            industry: input.classification.job_industry,
+            seniority: input.classification.seniority,
+            company_type: input.classification.company_type,
+            geography: input.classification.geography,
+            standardized_title: input.classification.standardized_title,
+            bucket_label: mapping.selected?.name ?? input.classification.bucket_label,
+            jd_quality: input.classification.jd_quality,
+            classification_confidence: input.classification.classification_confidence,
+            sub_role: input.classification.sub_role,
+            prompt_version: "resolver_dry_run_v1",
+            raw_response: { resolver: mapping },
+          });
+        }
+      } catch (err: any) {
+        results.push({
+          source: input.source,
+          job_id: input.jobId ?? null,
+          error: err?.message || String(err),
+        });
+      }
+    }
+
+    const summary = {
+      total: results.length,
+      auto_assign: results.filter(r => r.bucket_mapping?.action === "auto_assign").length,
+      tentative: results.filter(r => r.bucket_mapping?.action === "tentative").length,
+      show_candidates: results.filter(r => r.bucket_mapping?.action === "show_candidates").length,
+      needs_candidate: results.filter(r => r.bucket_mapping?.action === "needs_candidate").length,
+      unclassified: results.filter(r => r.bucket_mapping?.action === "unclassified").length,
+      errors: results.filter(r => r.error).length,
+    };
+
+    return res.json({ summary, results });
+  }
+
   // POST /admin/bucket-test
   if (path.match(/^\/admin\/bucket-test\/?$/) && req.method === "POST") {
     if (!requireSuperAdmin(auth, res)) return;

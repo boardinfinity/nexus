@@ -23,6 +23,30 @@ interface AnalyzeSkill {
   is_new: boolean;
 }
 
+interface BucketCandidate {
+  bucket_id: string;
+  bucket_code: string;
+  name: string;
+  status: "candidate" | "validated" | "deprecated" | "merged";
+  score: number;
+  reasons: Array<{ signal: string; weight: number; contribution: number; detail?: string }>;
+  function_id: string | null;
+  family_id: string | null;
+  industry_id: string | null;
+  seniority_level: string | null;
+  geography_scope: string | null;
+}
+
+interface BucketMapping {
+  selected: BucketCandidate | null;
+  confidence: number;
+  action: "auto_assign" | "tentative" | "show_candidates" | "needs_candidate" | "unclassified";
+  top_candidates: BucketCandidate[];
+  candidate_needed: boolean;
+  mismatch_flags: string[];
+  reason_summary: string;
+}
+
 interface AnalyzeResult {
   bucket: string | null;
   job_function: string | null;
@@ -48,6 +72,8 @@ interface AnalyzeResult {
   skills: AnalyzeSkill[];
   total: number;
   saved: boolean;
+  classification?: any;
+  bucket_mapping?: BucketMapping | null;
 }
 
 interface Job {
@@ -547,6 +573,56 @@ export default function JDAnalyzer() {
                   </Badge>
                 )}
               </div>
+
+              {/* Bucket mapping (resolver result) */}
+              {result.bucket_mapping && (
+                <div className="border rounded-md p-3 bg-muted/30 space-y-2" data-testid="bucket-mapping">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-semibold uppercase text-muted-foreground">Bucket mapping</span>
+                    <Badge variant="outline" className="text-[10px]">
+                      {result.bucket_mapping.action.replace("_", " ")}
+                    </Badge>
+                    <Badge variant="outline" className="text-[10px]">
+                      {Math.round(result.bucket_mapping.confidence * 100)}% match
+                    </Badge>
+                    {result.bucket_mapping.candidate_needed && (
+                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">
+                        candidate suggested
+                      </Badge>
+                    )}
+                  </div>
+                  {result.bucket_mapping.selected ? (
+                    <div className="text-sm">
+                      <span className="font-medium">{result.bucket_mapping.selected.name}</span>
+                      <span className="ml-2 text-muted-foreground text-xs">{result.bucket_mapping.selected.bucket_code}</span>
+                    </div>
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">{result.bucket_mapping.reason_summary}</p>
+                  )}
+                  {result.bucket_mapping.top_candidates.length > 0 && (
+                    <details className="text-xs">
+                      <summary className="cursor-pointer text-muted-foreground">
+                        Top {result.bucket_mapping.top_candidates.length} candidate{result.bucket_mapping.top_candidates.length === 1 ? "" : "s"}
+                      </summary>
+                      <ul className="mt-1 space-y-1">
+                        {result.bucket_mapping.top_candidates.map(c => (
+                          <li key={c.bucket_id} className="flex items-center justify-between gap-2">
+                            <span className="truncate">{c.name}</span>
+                            <span className="font-mono text-[10px] text-muted-foreground">
+                              {Math.round(c.score * 100)}%{c.status !== "validated" ? ` · ${c.status}` : ""}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                  {result.bucket_mapping.mismatch_flags.length > 0 && (
+                    <div className="text-[10px] text-red-700 dark:text-red-400">
+                      ⚠ {result.bucket_mapping.mismatch_flags.join(", ")}
+                    </div>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 

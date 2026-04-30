@@ -7,6 +7,8 @@
 
 import { OPENAI_API_KEY } from "./supabase";
 import { supabase } from "./supabase";
+import { resolveBucket } from "./bucketResolver";
+import { type ClassificationResult, type ClassificationSkill, confidenceBandToScore, categoryToTier as sharedCategoryToTier } from "./bucketTypes";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 const JD_BATCH_MODEL = "gpt-4.1-mini";
@@ -184,16 +186,53 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
         const cleaned = content.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
         const parsed = JSON.parse(cleaned);
 
-        const confidenceToScore = (c: string) => c === "high" ? 0.90 : c === "medium" ? 0.70 : 0.50;
-        const categoryToTier = (cat: string) => {
-          if (["technology","tool","certification","methodology","language"].includes(cat)) return "hard_skill";
-          if (["knowledge","domain"].includes(cat)) return "knowledge";
-          return "competency";
-        };
+        const confidenceToScore = (c: string) => confidenceBandToScore(c as any);
+        const categoryToTier = (cat: string) => sharedCategoryToTier(cat);
 
         // Update job record
         const bucket = (parsed.bucket_label || "").replace(/\s*\|\s*null\b/g, "").trim() || null;
-        const { error: jobUpdateErr } = await supabase.from("jobs").update({
+
+        // Resolver runs over structured fields. Resolver is best-effort
+        // here: it issues a few extra reads per chunk, but the catalog
+        // is small (a few hundred buckets max).
+        let bucketMapping = null as Awaited<ReturnType<typeof resolveBucket>> | null;
+        try {
+          const classification: ClassificationResult = {
+            job_function: parsed.job_function || null,
+            job_function_name: parsed.job_function_name || null,
+            job_family: parsed.job_family || null,
+            job_family_name: parsed.job_family_name || null,
+            job_industry: parsed.job_industry || null,
+            job_industry_name: parsed.job_industry_name || null,
+            seniority: parsed.seniority || null,
+            company_type: parsed.company_type || null,
+            geography: parsed.geography || null,
+            standardized_title: parsed.standardized_title || null,
+            sub_role: parsed.sub_role || null,
+            company_name: parsed.company_name || null,
+            ctc_min: parsed.ctc_min ?? null,
+            ctc_max: parsed.ctc_max ?? null,
+            experience_min: parsed.experience_min_years ?? null,
+            experience_max: parsed.experience_max_years ?? null,
+            min_education: parsed.min_education || null,
+            preferred_fields: parsed.preferred_fields || [],
+            bucket_label: bucket,
+            skills: ((parsed.skills || []) as any[]).slice(0, 15).map<ClassificationSkill>(s => ({
+              name: s.name,
+              category: s.category || "skill",
+              required: s.required !== false,
+              taxonomy_skill_id: null,
+            })),
+            jd_quality: parsed.jd_quality || null,
+            classification_confidence: (parsed.classification_confidence || "medium") as any,
+            classification_confidence_score: confidenceToScore(parsed.classification_confidence || "medium"),
+          };
+          bucketMapping = await resolveBucket(classification);
+        } catch (e: any) {
+          console.error(`[batch] resolver failed for ${jobId}:`, e?.message);
+        }
+
+        const updateFields: Record<string, any> = {
           job_function: parsed.job_function || null,
           job_family: parsed.job_family || null,
           job_industry: parsed.job_industry || null,
@@ -208,7 +247,45 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           analyzed_at: new Date().toISOString(),
           enrichment_status: "complete",
           seniority_level: parsed.seniority || null,
-        }).eq("id", jobId);
+          standardized_title: parsed.standardized_title || null,
+          company_type: parsed.company_type || null,
+          geography: parsed.geography || null,
+        };
+        if (bucketMapping?.action === "auto_assign" && bucketMapping.selected) {
+          updateFields.bucket_id = bucketMapping.selected.bucket_id;
+          updateFields.bucket_match_confidence = bucketMapping.confidence;
+          updateFields.bucket_match_reason = {
+            action: bucketMapping.action,
+            top_candidates: bucketMapping.top_candidates,
+            mismatch_flags: bucketMapping.mismatch_flags,
+            reason_summary: bucketMapping.reason_summary,
+          };
+          updateFields.bucket_status_at_assignment = bucketMapping.selected.status;
+          updateFields.bucket_assigned_at = new Date().toISOString();
+        } else if (bucketMapping) {
+          updateFields.bucket_match_confidence = bucketMapping.confidence;
+          updateFields.bucket_match_reason = {
+            action: bucketMapping.action,
+            top_candidates: bucketMapping.top_candidates,
+            mismatch_flags: bucketMapping.mismatch_flags,
+            reason_summary: bucketMapping.reason_summary,
+          };
+        }
+
+        let { error: jobUpdateErr } = await supabase.from("jobs").update(updateFields).eq("id", jobId);
+        if (jobUpdateErr) {
+          // Schema may not yet include the new columns — retry with just the legacy fields.
+          const legacyOnly = { ...updateFields };
+          delete legacyOnly.standardized_title;
+          delete legacyOnly.company_type;
+          delete legacyOnly.geography;
+          delete legacyOnly.bucket_id;
+          delete legacyOnly.bucket_match_confidence;
+          delete legacyOnly.bucket_match_reason;
+          delete legacyOnly.bucket_status_at_assignment;
+          delete legacyOnly.bucket_assigned_at;
+          ({ error: jobUpdateErr } = await supabase.from("jobs").update(legacyOnly).eq("id", jobId));
+        }
 
         if (jobUpdateErr) {
           console.error(`[batch] Job update FAILED for ${jobId}: ${jobUpdateErr.message} | code: ${jobUpdateErr.code}`);

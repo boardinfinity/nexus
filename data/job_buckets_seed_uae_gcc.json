@@ -1,0 +1,75 @@
+{
+  "_doc": "UAE / GCC seed buckets — STARTER SET requiring local UAE curation. Each entry uses geography_scope='UAE' so geography overlay matching prefers them for UAE / Dubai / Abu Dhabi JDs. Buckets here cover the highest-confidence cross-sector hiring patterns visible from MBA-grade UAE/GCC postings (key account / BD, retail-banking & wealth, real estate sales, supply chain, hospitality / customer success). DO NOT treat this as a final taxonomy: salary bands, % batch, and selectivity are intentionally omitted because we lack a sourced UAE workbook equivalent to Tier-1 / Tier-2 India. Replace / extend when the curated UAE source list is provided.",
+  "source": "Starter set — requires UAE curation (no sourced workbook yet)",
+  "scope": "mba",
+  "buckets": [
+    {
+      "bucket_code": "MBA-GCC-UAE-KEY-ACCOUNT-BD",
+      "name": "UAE / GCC Key Account & Business Development",
+      "function_id": "FN-BDV",
+      "family_id": "JF-04",
+      "industry_id": "IND-15",
+      "seniority_level": "L2",
+      "standardized_title": "Key Account Manager",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Key account development across UAE and broader GCC markets; client relationship management; deal closures; cross-border account growth. Generic cross-sector pattern — sectoral specialisation typically follows Tier-2 onboarding.",
+      "aliases": ["Key Account Manager UAE", "Business Development Manager Dubai", "Account Manager GCC", "Senior BD Executive UAE", "Sales Manager Middle East"]
+    },
+    {
+      "bucket_code": "MBA-GCC-UAE-RETAIL-BANKING-WEALTH-RM",
+      "name": "UAE Retail Banking & Wealth Relationship Management",
+      "function_id": "FN-SAL",
+      "family_id": "JF-02",
+      "industry_id": "IND-02",
+      "seniority_level": "L2",
+      "standardized_title": "Wealth Relationship Manager",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Priority / premier banking and wealth advisory for HNI / expat clients in UAE; portfolio coverage across deposits, mortgages, insurance, and investment products. DIFC / ADGM-regulated entities are common employers. TODO: validate against actual UAE bank job descriptions before promotion.",
+      "aliases": ["Wealth Relationship Manager UAE", "Premier Banker Dubai", "Priority Banking RM UAE", "Private Banking Associate Middle East", "HNI Relationship Manager UAE"]
+    },
+    {
+      "bucket_code": "MBA-GCC-UAE-REAL-ESTATE-SALES-ADVISORY",
+      "name": "UAE Real Estate Sales & Property Advisory",
+      "function_id": "FN-SAL",
+      "family_id": "JF-15",
+      "industry_id": "IND-09",
+      "seniority_level": "L1",
+      "standardized_title": "Property Consultant",
+      "company_type": "Indian Enterprise",
+      "geography_scope": "UAE",
+      "nature_of_work": "Residential and commercial property sales in Dubai / Abu Dhabi; client acquisition; freehold and off-plan transaction support; brokerage and developer side roles. TODO: confirm RERA / DLD licensing language and split developer-direct vs brokerage roles in a follow-up curation pass.",
+      "aliases": ["Property Consultant Dubai", "Real Estate Advisor UAE", "Property Sales Executive UAE", "Senior Property Consultant Dubai", "Real Estate Broker UAE"]
+    },
+    {
+      "bucket_code": "MBA-GCC-UAE-OPS-SUPPLY-CHAIN-LOGISTICS",
+      "name": "UAE / GCC Operations, Supply Chain & Free-Zone Logistics",
+      "function_id": "FN-OPS",
+      "family_id": "JF-05",
+      "industry_id": "IND-06",
+      "seniority_level": "L2",
+      "standardized_title": "Supply Chain Manager",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Regional supply chain, procurement, warehousing, and 3PL coordination across GCC, leveraging Jebel Ali / DAFZA free-zone logistics infrastructure. Cross-sector pattern; sector-specific specialisations to be split out in a subsequent curation pass.",
+      "aliases": ["Supply Chain Manager UAE", "Operations Manager Dubai", "Logistics Manager Middle East", "Procurement Manager GCC", "Regional SCM Manager UAE"]
+    },
+    {
+      "bucket_code": "MBA-GCC-UAE-HOSPITALITY-CUSTOMER-SUCCESS",
+      "name": "UAE Hospitality, Guest Experience & Customer Success",
+      "function_id": "FN-OPS",
+      "family_id": "JF-06",
+      "industry_id": "IND-15",
+      "seniority_level": "L1",
+      "standardized_title": "Guest Experience Manager",
+      "company_type": "MNC",
+      "geography_scope": "UAE",
+      "nature_of_work": "Hotel and hospitality operations, guest experience, and customer success roles across UAE flag-carrier hotels and large F&B / retail operators; rotational management trainee paths are common. TODO: split pure-hospitality vs SaaS customer success in next curation iteration.",
+      "aliases": ["Guest Experience Manager UAE", "Hotel Management Trainee Dubai", "Customer Success Manager UAE", "Hospitality Operations Manager Dubai", "Front Office Manager UAE"]
+    },
+    {
+      "_TODO": "Curate full UAE/GCC bucket list with locally sourced data — sectors still uncovered: Oil & Gas (ADNOC / Aramco / QatarEnergy MT programs), Construction & Project Management, Free-Zone Operations (DMCC / DAFZA / DIFC), Family Office & Sovereign Wealth, Tech B2B BD (regional SaaS), Government Advisory (Tashkeel / strategic advisors), Aviation & Airline Commercial (Emirates / Etihad / Qatar Airways MT). Capture Arabic-language overlays and visa/work-authorization nuances in the overlays table separately rather than in this seed."
+    }
+  ]
+}
