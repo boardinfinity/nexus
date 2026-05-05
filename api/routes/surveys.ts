@@ -93,12 +93,17 @@ function canPreviewSurvey(auth: AuthResult, survey: any): boolean {
 // Old /api/survey/auth/send-otp is replaced by /api/survey/:slug/auth/send-otp.
 
 export async function handleSurveyRoutes(path: string, req: VercelRequest, res: VercelResponse): Promise<VercelResponse> {
+  // Reserved slugs: paths under /survey/ that are NOT surveys but utility
+  // endpoints (catalogs, masters, skill list). The slug catch-all below
+  // would otherwise swallow them and reply 404 "Survey not found".
+  const RESERVED_SLUGS = new Set(["skill-list", "masters"]);
+
   // ---- GET /api/survey/:slug ----
   // Public meta + schema (only for surveys that are open for responses).
   // Special case: if ?preview=1 and caller is an authenticated admin/SPOC with
   // scope over this survey, bypass status gating and return preview_mode=true.
   let m = path.match(/^\/survey\/([^/]+)$/);
-  if (m && req.method === "GET") {
+  if (m && req.method === "GET" && !RESERVED_SLUGS.has(m[1])) {
     const survey = await loadSurveyBySlug(m[1]);
     if (!survey) return res.status(404).json({ error: "Survey not found" });
 
