@@ -10,6 +10,15 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Progress } from "@/components/ui/progress";
 import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import { useToast } from "@/hooks/use-toast";
 import { StarRating } from "@/components/star-rating";
 import {
@@ -23,6 +32,8 @@ import {
   Plus,
   X,
   Eye,
+  Check,
+  ChevronsUpDown,
 } from "lucide-react";
 import {
   fetchSurveyMeta,
@@ -32,6 +43,7 @@ import {
   submitSurvey,
   fetchMyResponses,
   fetchSkillList,
+  fetchMasterList,
   hasSurveyToken,
   clearSurveyToken,
   type SurveyMeta,
@@ -39,6 +51,7 @@ import {
   type SurveyQuestion,
   type ResponseItem,
   type SkillRating,
+  type MasterOption,
 } from "@/lib/survey-api";
 
 // ============================================================================
@@ -226,6 +239,12 @@ export default function SurveyRuntime(_props: RuntimeProps) {
       const v = answers[sec.key]?.[q.key];
       if (q.type === "multi_choice") {
         if (!Array.isArray(v) || v.length === 0) return `Please answer "${q.label}"`;
+      } else if (q.type === "master_select") {
+        if (q.master_multi) {
+          if (!Array.isArray(v) || v.length === 0) return `Please answer "${q.label}"`;
+        } else {
+          if (!v) return `Please answer "${q.label}"`;
+        }
       } else if (q.type === "matrix_rating") {
         const rows = q.rows || [];
         if (!v || typeof v !== "object") return `Please complete "${q.label}"`;
@@ -855,6 +874,18 @@ function QuestionRenderer({
         </div>
       );
 
+    case "master_select":
+      return wrap(
+        <MasterSelect
+          master={question.master ?? "skills"}
+          multi={!!question.master_multi}
+          max={question.master_max}
+          categories={question.master_categories}
+          value={value}
+          onChange={onChange}
+        />,
+      );
+
     default:
       return wrap(
         <div className="text-sm text-muted-foreground italic">
@@ -862,6 +893,165 @@ function QuestionRenderer({
         </div>
       );
   }
+}
+
+// ============================================================================
+// Master Select — searchable dropdown sourced from a platform master list
+// Supports single (string) and multi (string[]) modes. Skills auto-group by
+// taxonomy category. Up to 2000 options come down per type — UI search-filters.
+// ============================================================================
+
+function MasterSelect({
+  master,
+  multi,
+  max,
+  categories,
+  value,
+  onChange,
+}: {
+  master: "skills" | "industries" | "functions" | "families" | "colleges";
+  multi: boolean;
+  max?: number;
+  categories?: string[];
+  value: any;
+  onChange: (v: any) => void;
+}) {
+  const [options, setOptions] = useState<MasterOption[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetchMasterList(master, master === "skills" ? { categories } : undefined)
+      .then(setOptions)
+      .catch(() => setOptions([]))
+      .finally(() => setLoading(false));
+  }, [master, JSON.stringify(categories || [])]);
+
+  const byValue = useMemo(() => {
+    const m: Record<string, MasterOption> = {};
+    for (const o of options) m[o.value] = o;
+    return m;
+  }, [options]);
+
+  const selectedArr: string[] = multi
+    ? Array.isArray(value) ? value : []
+    : value ? [value] : [];
+
+  const groups = useMemo(() => {
+    const g: Record<string, MasterOption[]> = {};
+    for (const o of options) {
+      const key = o.group || "";
+      if (!g[key]) g[key] = [];
+      g[key].push(o);
+    }
+    return g;
+  }, [options]);
+
+  const toggle = (val: string) => {
+    if (multi) {
+      const arr = selectedArr.slice();
+      const idx = arr.indexOf(val);
+      if (idx >= 0) {
+        arr.splice(idx, 1);
+      } else {
+        if (max && arr.length >= max) return; // capped
+        arr.push(val);
+      }
+      onChange(arr);
+    } else {
+      onChange(val);
+      setOpen(false);
+    }
+  };
+
+  const removeChip = (val: string) => {
+    if (multi) onChange(selectedArr.filter((v) => v !== val));
+    else onChange("");
+  };
+
+  const triggerLabel = !multi
+    ? (value && byValue[value]?.label) || (loading ? "Loading…" : `Select ${master.replace(/s$/, "")}…`)
+    : selectedArr.length === 0
+      ? loading ? "Loading…" : `Select ${master}…`
+      : `${selectedArr.length} selected${max ? ` / ${max}` : ""}`;
+
+  return (
+    <div className="space-y-2">
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={open}
+            className="w-full justify-between font-normal"
+            disabled={loading}
+          >
+            <span className="truncate">{triggerLabel}</span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          className="w-[--radix-popover-trigger-width] p-0"
+          align="start"
+        >
+          <Command>
+            <CommandInput placeholder={`Search ${master}…`} />
+            <CommandList className="max-h-72">
+              <CommandEmpty>No matches.</CommandEmpty>
+              {Object.entries(groups).map(([groupName, items]) => (
+                <CommandGroup key={groupName || "_"} heading={groupName || undefined}>
+                  {items.map((opt) => {
+                    const checked = selectedArr.includes(opt.value);
+                    const disabled =
+                      multi && !checked && max != null && selectedArr.length >= max;
+                    return (
+                      <CommandItem
+                        key={opt.value}
+                        value={`${opt.label} ${opt.value}`}
+                        onSelect={() => !disabled && toggle(opt.value)}
+                        className={disabled ? "opacity-40 pointer-events-none" : ""}
+                      >
+                        <Check
+                          className={`mr-2 h-4 w-4 ${checked ? "opacity-100" : "opacity-0"}`}
+                        />
+                        {opt.label}
+                      </CommandItem>
+                    );
+                  })}
+                </CommandGroup>
+              ))}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
+
+      {multi && selectedArr.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {selectedArr.map((v) => (
+            <Badge key={v} variant="secondary" className="pl-2 pr-1 py-1 gap-1">
+              {byValue[v]?.label || v}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-4 w-4 ml-1 hover:bg-transparent"
+                onClick={() => removeChip(v)}
+              >
+                <X className="h-3 w-3" />
+              </Button>
+            </Badge>
+          ))}
+        </div>
+      )}
+      {multi && max != null && (
+        <p className="text-xs text-muted-foreground">
+          {selectedArr.length} of {max} selected
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ============================================================================

@@ -53,6 +53,27 @@ export interface SurveyMeta {
   preview_mode?: boolean;
 }
 
+export interface MasterOption {
+  value: string;
+  label: string;
+  group?: string;
+}
+
+export async function fetchMasterList(
+  type: "skills" | "industries" | "functions" | "families" | "colleges",
+  opts?: { categories?: string[]; q?: string },
+): Promise<MasterOption[]> {
+  const params = new URLSearchParams();
+  if (opts?.categories?.length) params.set("categories", opts.categories.join(","));
+  if (opts?.q) params.set("q", opts.q);
+  const qs = params.toString();
+  const url = `${API_BASE}/api/survey/masters/${type}${qs ? "?" + qs : ""}`;
+  const res = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "Failed to load master list");
+  return data;
+}
+
 export interface SurveySchema {
   sections: SurveySection[];
   settings?: Record<string, any>;
@@ -77,11 +98,17 @@ export interface SurveyQuestion {
     | "date"
     | "skill_matrix"
     | "matrix_rating"
-    | "ranked_list";
+    | "ranked_list"
+    | "master_select";
   label: string;
   description?: string;
   required?: boolean;
   options?: { value: string; label: string }[];
+  // master_select: searchable dropdown sourced from a platform master list
+  master?: "skills" | "industries" | "functions" | "families" | "colleges";
+  master_multi?: boolean;
+  master_categories?: string[];
+  master_max?: number;
   scale_min?: number;
   scale_max?: number;
   scale_min_label?: string;

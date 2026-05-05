@@ -219,6 +219,60 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
     return res.json({ token, respondent_id: respondent.id, survey_id: survey.id });
   }
 
+  // ---- GET /api/survey/masters/:type (public, used by master_select questions) ----
+  // Returns flat option list [{ value, label, group? }] for use in any dropdown.
+  // Supported types: skills, industries, functions, families, colleges.
+  // Skills accepts ?categories=cat1,cat2 to filter; result includes group=category.
+  m = path.match(/^\/survey\/masters\/([a-z_]+)$/);
+  if (m && req.method === "GET") {
+    const type = m[1];
+    res.setHeader("Cache-Control", "public, max-age=300"); // 5 min CDN cache
+    if (type === "skills") {
+      const { categories, q: search } = req.query as Record<string, string>;
+      let query = supabase
+        .from("taxonomy_skills")
+        .select("id, name, category")
+        .order("category")
+        .order("name")
+        .limit(2000); // skills table is ~9k; cap response and let UI search
+      if (categories) {
+        const list = categories.split(",").map((s) => s.trim()).filter(Boolean);
+        if (list.length) query = query.in("category", list);
+      }
+      if (search) query = query.ilike("name", `%${search}%`);
+      const { data, error } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(
+        (data || []).map((row: any) => ({ value: row.id, label: row.name, group: row.category || "Other" })),
+      );
+    }
+    if (type === "industries" || type === "functions" || type === "families") {
+      const table = type === "industries" ? "job_industries" : type === "functions" ? "job_functions" : "job_families";
+      const { data, error } = await supabase.from(table).select("id, name").order("name");
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json((data || []).map((row: any) => ({ value: row.id, label: row.name })));
+    }
+    if (type === "colleges") {
+      const { q: search } = req.query as Record<string, string>;
+      let query = supabase
+        .from("colleges")
+        .select("id, name, short_name, city, country")
+        .order("name")
+        .limit(2000);
+      if (search) query = query.ilike("name", `%${search}%`);
+      const { data, error } = await query;
+      if (error) return res.status(500).json({ error: error.message });
+      return res.json(
+        (data || []).map((row: any) => ({
+          value: row.id,
+          label: row.short_name ? `${row.name} (${row.short_name})` : row.name,
+          group: row.country || undefined,
+        })),
+      );
+    }
+    return res.status(404).json({ error: `Unknown master list: ${type}` });
+  }
+
   // ---- GET /api/survey/skill-list (public, used by skill_matrix questions) ----
   // Optionally filter by category list via query param
   if (path === "/survey/skill-list" && req.method === "GET") {
@@ -1056,7 +1110,7 @@ const SURVEY_SCHEMA_TOOL_INPUT = {
                 key: { type: "string", description: "snake_case slug, unique within section" },
                 type: {
                   type: "string",
-                  enum: ["text", "long_text", "single_choice", "multi_choice", "scale", "email", "date", "skill_matrix", "matrix_rating", "ranked_list"],
+                  enum: ["text", "long_text", "single_choice", "multi_choice", "scale", "email", "date", "skill_matrix", "matrix_rating", "ranked_list", "master_select"],
                 },
                 label: { type: "string" },
                 description: { type: "string" },
@@ -1088,6 +1142,24 @@ const SURVEY_SCHEMA_TOOL_INPUT = {
                   items: { type: "string" },
                 },
                 min_skills: { type: "integer", description: "For skill_matrix: minimum number of skills the respondent must rate" },
+                master: {
+                  type: "string",
+                  enum: ["skills", "industries", "functions", "families", "colleges"],
+                  description: "For master_select: which master list to source options from",
+                },
+                master_multi: {
+                  type: "boolean",
+                  description: "For master_select: allow multiple selections (default false)",
+                },
+                master_categories: {
+                  type: "array",
+                  items: { type: "string" },
+                  description: "For master_select with master='skills': filter to these categories",
+                },
+                master_max: {
+                  type: "integer",
+                  description: "For master_select with master_multi=true: maximum number of selections allowed",
+                },
                 rows: {
                   type: "array",
                   description: "For matrix_rating: row labels (e.g. attributes being rated)",
@@ -1142,6 +1214,7 @@ ${source}
 4. Prefer "single_choice" / "multi_choice" with concrete options over open text whenever the source enumerates choices.
 5. "scale" is for 1–5, 1–10, or NPS-style ratings. Always set scale_min, scale_max, scale_min_label, scale_max_label.
 6. "skill_matrix" is special: it pulls from the master skill taxonomy and asks for both Importance and Demonstration ratings (1–5 stars each). Use it ONLY when the source explicitly asks about skills relevant to a role. Set min_skills (default 5) and optionally skill_categories to filter the catalog. There should be AT MOST one skill_matrix question per survey.
+6a. "master_select" is a searchable dropdown sourced from one of the platform master lists. Use it whenever the source mentions picking from a known reference set instead of a custom list. Set master to one of: "skills" (the skills taxonomy, ~9000 entries), "industries" (~15), "functions" (~26 LinkedIn-aligned), "families" (~20 job families), "colleges" (~1000 colleges in the platform). Set master_multi: true if the question allows multiple picks; optionally master_max to cap selections. For master='skills' you may also pass master_categories to narrow the catalog. Prefer master_select over hand-coded options whenever the source asks about industry, function, family, college, or a free "list your skills" question (use master_select with master='skills', master_multi=true, master_max=5–10 instead of long_text).
 7. "matrix_rating" is a generic rows × cols rating grid (e.g. "Rate each attribute on a 5-point scale").
 8. "ranked_list" asks the respondent to drag-rank a fixed set of items.
 9. "date" produces a calendar picker (use for graduation date, joining date, etc).
