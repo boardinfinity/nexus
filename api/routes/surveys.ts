@@ -234,12 +234,13 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
     res.setHeader("Cache-Control", "public, max-age=300"); // 5 min CDN cache
     if (type === "skills") {
       const { categories, q: search } = req.query as Record<string, string>;
+      // Return the full taxonomy (~9k); UI search-filters client-side.
       let query = supabase
         .from("taxonomy_skills")
         .select("id, name, category")
         .order("category")
         .order("name")
-        .limit(2000); // skills table is ~9k; cap response and let UI search
+        .limit(10000);
       if (categories) {
         const list = categories.split(",").map((s) => s.trim()).filter(Boolean);
         if (list.length) query = query.in("category", list);
@@ -282,7 +283,9 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
   // Optionally filter by category list via query param
   if (path === "/survey/skill-list" && req.method === "GET") {
     const { categories } = req.query as Record<string, string>;
-    let q = supabase.from("taxonomy_skills").select("id, name, category").order("category").order("name");
+    res.setHeader("Cache-Control", "public, max-age=300");
+    // Return up to 10k rows so the full taxonomy comes down (~9k skills today).
+    let q = supabase.from("taxonomy_skills").select("id, name, category").order("category").order("name").limit(10000);
     if (categories) {
       const list = categories.split(",").map(s => s.trim()).filter(Boolean);
       if (list.length) q = q.in("category", list);

@@ -938,15 +938,36 @@ function MasterSelect({
     ? Array.isArray(value) ? value : []
     : value ? [value] : [];
 
-  const groups = useMemo(() => {
-    const g: Record<string, MasterOption[]> = {};
+  // Pre-filter + group for perf with large lists (skills ~9k, colleges ~1k).
+  // Show all options when small; otherwise require a search query and cap matches.
+  const LARGE_LIST = options.length > 200;
+  const MAX_VISIBLE = 200;
+  const [search, setSearch] = useState("");
+  const trimmedSearch = search.trim().toLowerCase();
+
+  const visible = useMemo(() => {
+    if (!LARGE_LIST) return options;
+    if (!trimmedSearch) return null; // null = empty state for large lists
+    const out: MasterOption[] = [];
     for (const o of options) {
+      if (o.label.toLowerCase().includes(trimmedSearch)) {
+        out.push(o);
+        if (out.length >= MAX_VISIBLE) break;
+      }
+    }
+    return out;
+  }, [options, LARGE_LIST, trimmedSearch]);
+
+  const groups = useMemo(() => {
+    const src = visible || [];
+    const g: Record<string, MasterOption[]> = {};
+    for (const o of src) {
       const key = o.group || "";
       if (!g[key]) g[key] = [];
       g[key].push(o);
     }
     return g;
-  }, [options]);
+  }, [visible]);
 
   const toggle = (val: string) => {
     if (multi) {
@@ -996,11 +1017,22 @@ function MasterSelect({
           className="w-[--radix-popover-trigger-width] p-0"
           align="start"
         >
-          <Command>
-            <CommandInput placeholder={`Search ${master}…`} />
+          <Command shouldFilter={!LARGE_LIST}>
+            <CommandInput
+              placeholder={`Search ${master}…`}
+              value={search}
+              onValueChange={setSearch}
+            />
             <CommandList className="max-h-72">
-              <CommandEmpty>No matches.</CommandEmpty>
-              {Object.entries(groups).map(([groupName, items]) => (
+              {LARGE_LIST && visible === null && (
+                <div className="px-3 py-3 text-sm text-muted-foreground">
+                  Type to search the {options.length} {master} in our catalog.
+                </div>
+              )}
+              {visible && visible.length === 0 && (
+                <CommandEmpty>No matches.</CommandEmpty>
+              )}
+              {visible && visible.length > 0 && Object.entries(groups).map(([groupName, items]) => (
                 <CommandGroup key={groupName || "_"} heading={groupName || undefined}>
                   {items.map((opt) => {
                     const checked = selectedArr.includes(opt.value);
@@ -1022,6 +1054,11 @@ function MasterSelect({
                   })}
                 </CommandGroup>
               ))}
+              {LARGE_LIST && visible && visible.length >= MAX_VISIBLE && (
+                <div className="px-3 py-2 text-xs text-muted-foreground">
+                  Showing first {MAX_VISIBLE}—keep typing to narrow down.
+                </div>
+              )}
             </CommandList>
           </Command>
         </PopoverContent>
@@ -1075,7 +1112,8 @@ function SkillMatrix({
 }) {
   const [list, setList] = useState<Record<string, { id: string; name: string }[]>>({});
   const [loading, setLoading] = useState(true);
-  const [customInput, setCustomInput] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
 
   useEffect(() => {
     fetchSkillList(categories)
@@ -1092,15 +1130,70 @@ function SkillMatrix({
     [ratings]
   );
 
-  function addCustom() {
-    const name = customInput.trim();
-    if (!name) return;
-    if (ratings[name]) {
-      setCustomInput("");
+  // Flatten taxonomy with category metadata for searching/grouping inside the popover
+  const flatTaxonomy = useMemo(
+    () =>
+      Object.entries(list).flatMap(([cat, skills]) =>
+        skills.map((s) => ({ ...s, category: cat }))
+      ),
+    [list]
+  );
+
+  // Build a lowercased lookup so "already exists" custom-add detection is
+  // case-insensitive and matches the catalog.
+  const taxonomyByLower = useMemo(() => {
+    const m: Record<string, { id: string; name: string; category: string }> = {};
+    for (const s of flatTaxonomy) m[s.name.toLowerCase()] = s;
+    return m;
+  }, [flatTaxonomy]);
+
+  const trimmed = searchInput.trim();
+  const trimmedLower = trimmed.toLowerCase();
+  const exactCatalogMatch = trimmed ? taxonomyByLower[trimmedLower] : undefined;
+  const alreadyRated = trimmed && !!ratings[trimmed];
+
+  // Custom substring filter — the taxonomy is up to ~9k entries; rendering
+  // all CommandItems even with cmdk's filter causes a noticeable input lag.
+  // We pre-filter to <=200 matches and group them by category before rendering.
+  const MAX_RESULTS = 200;
+  const filteredByCategory = useMemo(() => {
+    if (!trimmedLower) return null; // null = empty state, not zero matches
+    const out: Record<string, { id: string; name: string }[]> = {};
+    let count = 0;
+    for (const s of flatTaxonomy) {
+      if (s.name.toLowerCase().includes(trimmedLower)) {
+        if (!out[s.category]) out[s.category] = [];
+        out[s.category].push({ id: s.id, name: s.name });
+        count++;
+        if (count >= MAX_RESULTS) break;
+      }
+    }
+    return { groups: out, count };
+  }, [flatTaxonomy, trimmedLower]);
+
+  function addFromCatalog(s: { id: string; name: string }) {
+    if (!ratings[s.name]) {
+      onChange(s.name, { skill_name: s.name, taxonomy_skill_id: s.id });
+    }
+    setSearchInput("");
+    setSearchOpen(false);
+  }
+
+  function addCustom(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    // If the typed name happens to match the catalog (case-insensitive),
+    // prefer the canonical catalog entry over a custom add.
+    const hit = taxonomyByLower[trimmed.toLowerCase()];
+    if (hit) return addFromCatalog(hit);
+    if (ratings[trimmed]) {
+      setSearchInput("");
+      setSearchOpen(false);
       return;
     }
-    onChange(name, { skill_name: name, is_custom_skill: true });
-    setCustomInput("");
+    onChange(trimmed, { skill_name: trimmed, is_custom_skill: true });
+    setSearchInput("");
+    setSearchOpen(false);
   }
 
   if (loading) {
@@ -1111,8 +1204,6 @@ function SkillMatrix({
     );
   }
 
-  const flatTaxonomy = Object.values(list).flat();
-
   return (
     <div className="space-y-4">
       <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
@@ -1121,55 +1212,115 @@ function SkillMatrix({
         it). Currently rated: <strong>{ratedCount}</strong>
       </div>
 
-      {/* Picker grouped by category */}
-      <div className="space-y-3">
-        {Object.entries(list).map(([cat, skills]) => (
-          <details key={cat} className="rounded-md border">
-            <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium hover:bg-muted/50">
-              {cat} ({skills.length})
-            </summary>
-            <div className="px-3 py-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {skills.map((s) => {
-                const sel = !!ratings[s.name];
-                return (
-                  <button
-                    type="button"
-                    key={s.id}
-                    onClick={() => {
-                      if (sel) onRemove(s.name);
-                      else onChange(s.name, { skill_name: s.name, taxonomy_skill_id: s.id });
-                    }}
-                    className={`text-left text-sm rounded-md border px-2 py-1.5 transition ${
-                      sel ? "bg-primary/10 border-primary" : "bg-background hover:bg-muted"
-                    }`}
-                  >
-                    {sel ? "✓ " : "+ "}
-                    {s.name}
-                  </button>
-                );
-              })}
-            </div>
-          </details>
-        ))}
-      </div>
-
-      {/* Custom skill input */}
-      <div className="flex gap-2">
-        <Input
-          value={customInput}
-          onChange={(e) => setCustomInput(e.target.value)}
-          placeholder="Add a custom skill (not in catalog)"
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              addCustom();
-            }
-          }}
-        />
-        <Button type="button" variant="outline" onClick={addCustom}>
-          <Plus className="h-4 w-4 mr-1" /> Add
-        </Button>
-      </div>
+      {/* Searchable picker — catalog match preferred, custom-add fallback */}
+      <Popover open={searchOpen} onOpenChange={setSearchOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            type="button"
+            variant="outline"
+            role="combobox"
+            aria-expanded={searchOpen}
+            className="w-full justify-between font-normal"
+          >
+            <span className="text-muted-foreground">
+              Search and add a skill… <span className="text-xs">({flatTaxonomy.length} in catalog)</span>
+            </span>
+            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          className="w-[--radix-popover-trigger-width] p-0"
+          align="start"
+        >
+          <Command
+            // We do our own substring filtering for perf with ~9k items;
+            // disable cmdk's internal scoring/filter pipeline.
+            shouldFilter={false}
+          >
+            <CommandInput
+              placeholder="Type a skill name…"
+              value={searchInput}
+              onValueChange={setSearchInput}
+              onKeyDown={(e) => {
+                // Enter on a non-matching custom name => add as custom.
+                if (e.key === "Enter" && trimmed && !exactCatalogMatch) {
+                  e.preventDefault();
+                  addCustom(trimmed);
+                }
+              }}
+            />
+            <CommandList className="max-h-72">
+              {/* Empty state when nothing typed yet — avoids rendering ~9k rows. */}
+              {!trimmed && (
+                <div className="px-3 py-3 text-sm text-muted-foreground">
+                  Start typing to search the {flatTaxonomy.length} skills in our catalog. If yours
+                  isn’t listed, you can add it as a custom skill.
+                </div>
+              )}
+              {filteredByCategory && filteredByCategory.count === 0 && (
+                <CommandEmpty>
+                  {!alreadyRated ? (
+                    <button
+                      type="button"
+                      onClick={() => addCustom(trimmed)}
+                      className="w-full text-left px-3 py-2 text-sm hover:bg-muted"
+                    >
+                      <Plus className="inline h-3.5 w-3.5 mr-1" />
+                      Add &ldquo;{trimmed}&rdquo; as custom skill
+                    </button>
+                  ) : (
+                    <div className="px-3 py-2 text-sm text-muted-foreground">
+                      &ldquo;{trimmed}&rdquo; is already added below.
+                    </div>
+                  )}
+                </CommandEmpty>
+              )}
+              {filteredByCategory && filteredByCategory.count > 0 && (
+                <>
+                  {Object.entries(filteredByCategory.groups).map(([cat, skills]) => (
+                    <CommandGroup key={cat} heading={cat}>
+                      {skills.map((s) => {
+                        const sel = !!ratings[s.name];
+                        return (
+                          <CommandItem
+                            key={s.id}
+                            value={s.name}
+                            onSelect={() => {
+                              if (sel) onRemove(s.name);
+                              else addFromCatalog(s);
+                            }}
+                          >
+                            <Check
+                              className={`mr-2 h-4 w-4 ${sel ? "opacity-100" : "opacity-0"}`}
+                            />
+                            {s.name}
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  ))}
+                  {filteredByCategory.count >= MAX_RESULTS && (
+                    <div className="px-3 py-2 text-xs text-muted-foreground">
+                      Showing first {MAX_RESULTS}—keep typing to narrow down.
+                    </div>
+                  )}
+                  {!exactCatalogMatch && !alreadyRated && (
+                    <CommandGroup heading="Not in catalog">
+                      <CommandItem
+                        value={`__custom__${trimmed}`}
+                        onSelect={() => addCustom(trimmed)}
+                      >
+                        <Plus className="mr-2 h-4 w-4" />
+                        Add &ldquo;{trimmed}&rdquo; as custom skill
+                      </CommandItem>
+                    </CommandGroup>
+                  )}
+                </>
+              )}
+            </CommandList>
+          </Command>
+        </PopoverContent>
+      </Popover>
 
       {/* Selected skills with rating UI */}
       {Object.values(ratings).length > 0 && (
