@@ -234,22 +234,32 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
     res.setHeader("Cache-Control", "public, max-age=300"); // 5 min CDN cache
     if (type === "skills") {
       const { categories, q: search } = req.query as Record<string, string>;
-      // Return the full taxonomy (~9k); UI search-filters client-side.
-      let query = supabase
-        .from("taxonomy_skills")
-        .select("id, name, category")
-        .order("category")
-        .order("name")
-        .limit(10000);
-      if (categories) {
-        const list = categories.split(",").map((s) => s.trim()).filter(Boolean);
-        if (list.length) query = query.in("category", list);
+      const categoryFilter = categories
+        ? categories.split(",").map((s) => s.trim()).filter(Boolean)
+        : null;
+      // Page through PostgREST 1000-row cap to fetch the full taxonomy (~9k).
+      const PAGE = 1000;
+      let from = 0;
+      const all: any[] = [];
+      while (true) {
+        let query = supabase
+          .from("taxonomy_skills")
+          .select("id, name, category")
+          .order("category")
+          .order("name")
+          .range(from, from + PAGE - 1);
+        if (categoryFilter && categoryFilter.length) query = query.in("category", categoryFilter);
+        if (search) query = query.ilike("name", `%${search}%`);
+        const { data, error } = await query;
+        if (error) return res.status(500).json({ error: error.message });
+        if (!data || data.length === 0) break;
+        all.push(...data);
+        if (data.length < PAGE) break;
+        from += PAGE;
+        if (from > 50000) break;
       }
-      if (search) query = query.ilike("name", `%${search}%`);
-      const { data, error } = await query;
-      if (error) return res.status(500).json({ error: error.message });
       return res.json(
-        (data || []).map((row: any) => ({ value: row.id, label: row.name, group: row.category || "Other" })),
+        all.map((row: any) => ({ value: row.id, label: row.name, group: row.category || "Other" })),
       );
     }
     if (type === "industries" || type === "functions" || type === "families") {
@@ -280,21 +290,36 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
   }
 
   // ---- GET /api/survey/skill-list (public, used by skill_matrix questions) ----
-  // Optionally filter by category list via query param
+  // Optionally filter by category list via query param.
+  // Pages through Supabase REST in 1000-row chunks (PostgREST hard cap on Pro tier).
   if (path === "/survey/skill-list" && req.method === "GET") {
     const { categories } = req.query as Record<string, string>;
     res.setHeader("Cache-Control", "public, max-age=300");
-    // Return up to 10k rows so the full taxonomy comes down (~9k skills today).
-    let q = supabase.from("taxonomy_skills").select("id, name, category").order("category").order("name").limit(10000);
-    if (categories) {
-      const list = categories.split(",").map(s => s.trim()).filter(Boolean);
-      if (list.length) q = q.in("category", list);
+    const categoryFilter = categories
+      ? categories.split(",").map(s => s.trim()).filter(Boolean)
+      : null;
+    const PAGE = 1000;
+    let from = 0;
+    const allSkills: Array<{ id: string; name: string; category: string | null }> = [];
+    while (true) {
+      let q = supabase
+        .from("taxonomy_skills")
+        .select("id, name, category")
+        .order("category")
+        .order("name")
+        .range(from, from + PAGE - 1);
+      if (categoryFilter && categoryFilter.length) q = q.in("category", categoryFilter);
+      const { data, error } = await q;
+      if (error) return res.status(500).json({ error: error.message });
+      if (!data || data.length === 0) break;
+      allSkills.push(...(data as any));
+      if (data.length < PAGE) break;
+      from += PAGE;
+      if (from > 50000) break; // safety stop
     }
-    const { data: skills, error } = await q;
-    if (error) return res.status(500).json({ error: error.message });
 
     const grouped: Record<string, { id: string; name: string }[]> = {};
-    for (const skill of skills || []) {
+    for (const skill of allSkills) {
       const cat = skill.category || "Other";
       if (!grouped[cat]) grouped[cat] = [];
       grouped[cat].push({ id: skill.id, name: skill.name });
