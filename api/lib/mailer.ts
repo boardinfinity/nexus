@@ -1,12 +1,9 @@
-// Unified mailer with Mandrill (primary) + Resend (fallback).
-// Add MANDRILL_API_KEY, MANDRILL_FROM_EMAIL, MANDRILL_FROM_NAME in Vercel env.
-// Falls back to RESEND_API_KEY if Mandrill unavailable or fails.
+// Mandrill mailer (single provider).
+// Configure MANDRILL_API_KEY, MANDRILL_FROM_EMAIL, MANDRILL_FROM_NAME in Vercel env.
 
-export const MANDRILL_API_KEY   = process.env.MANDRILL_API_KEY   || "";
-export const MANDRILL_FROM_EMAIL = process.env.MANDRILL_FROM_EMAIL || "surveys@boardinfinity.com";
-export const MANDRILL_FROM_NAME  = process.env.MANDRILL_FROM_NAME  || "Board Infinity Surveys";
-export const RESEND_API_KEY     = process.env.RESEND_API_KEY     || "";
-export const RESEND_FROM_EMAIL  = process.env.RESEND_FROM_EMAIL  || "Nexus Survey <onboarding@resend.dev>";
+export const MANDRILL_API_KEY    = process.env.MANDRILL_API_KEY    || "";
+export const MANDRILL_FROM_EMAIL = process.env.MANDRILL_FROM_EMAIL || "connect@boardinfinity.com";
+export const MANDRILL_FROM_NAME  = process.env.MANDRILL_FROM_NAME  || "Board Infinity";
 
 export interface SendEmailInput {
   to:        string;
@@ -22,7 +19,7 @@ export interface SendEmailInput {
 
 export interface SendEmailResult {
   ok:           boolean;
-  provider:     "mandrill" | "resend" | "none";
+  provider:     "mandrill" | "none";
   message_id?:  string;
   error?:       string;
   status_code?: number;
@@ -78,68 +75,23 @@ async function sendViaMandrill(input: SendEmailInput): Promise<SendEmailResult> 
   }
 }
 
-// ----------------- Resend (fallback) -----------------
-async function sendViaResend(input: SendEmailInput): Promise<SendEmailResult> {
-  if (!RESEND_API_KEY) return { ok: false, provider: "resend", error: "RESEND_API_KEY not configured" };
-
-  const from = input.from_email
-    ? `${input.from_name || "Nexus"} <${input.from_email}>`
-    : RESEND_FROM_EMAIL;
-
-  try {
-    const res = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${RESEND_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to: [input.to],
-        subject: input.subject,
-        text: input.text,
-        html: input.html,
-      }),
-    });
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      return { ok: false, provider: "resend", status_code: res.status, error: typeof body === "object" ? JSON.stringify(body) : String(body) };
-    }
-    return { ok: true, provider: "resend", message_id: body?.id };
-  } catch (err: any) {
-    return { ok: false, provider: "resend", error: err.message };
-  }
-}
-
 // ----------------- Public API -----------------
 /**
- * Send a single email. Tries Mandrill first, falls back to Resend.
- * Logs both attempts. Never throws — returns a result object.
+ * Send a single email via Mandrill.
+ * Logs the attempt. Never throws — returns a result object.
  */
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
-  // Try Mandrill first
-  if (MANDRILL_API_KEY) {
-    const m = await sendViaMandrill(input);
-    if (m.ok) {
-      console.log(`[MAILER] mandrill sent to=${input.to} subject="${input.subject}" id=${m.message_id}`);
-      return m;
-    }
+  if (!MANDRILL_API_KEY) {
+    console.warn(`[MAILER] MANDRILL_API_KEY not configured. Email NOT sent. to=${input.to} subject="${input.subject}"`);
+    return { ok: false, provider: "none", error: "MANDRILL_API_KEY not configured" };
+  }
+  const m = await sendViaMandrill(input);
+  if (m.ok) {
+    console.log(`[MAILER] mandrill sent to=${input.to} subject="${input.subject}" id=${m.message_id}`);
+  } else {
     console.error(`[MAILER] mandrill failed to=${input.to}: ${m.error}`);
-    // fall through to Resend
   }
-
-  if (RESEND_API_KEY) {
-    const r = await sendViaResend(input);
-    if (r.ok) {
-      console.log(`[MAILER] resend sent (fallback) to=${input.to} subject="${input.subject}" id=${r.message_id}`);
-      return r;
-    }
-    console.error(`[MAILER] resend failed to=${input.to}: ${r.error}`);
-    return r;
-  }
-
-  console.warn(`[MAILER] no provider configured. Email NOT sent. to=${input.to} subject="${input.subject}"`);
-  return { ok: false, provider: "none", error: "No email provider configured" };
+  return m;
 }
 
 /**

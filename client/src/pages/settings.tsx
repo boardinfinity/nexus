@@ -9,13 +9,15 @@ type ProviderInfo = {
   configured: boolean;
   key_preview: string | null;
   usage?: { used?: number; limit?: number; plan?: string };
+  from_email?: string;
+  from_name?: string;
 };
 
 type ProvidersResponse = {
   apify: ProviderInfo;
   openai: ProviderInfo;
   anthropic: ProviderInfo;
-  resend: ProviderInfo;
+  mandrill: ProviderInfo;
 };
 
 function ProviderRow({
@@ -170,11 +172,11 @@ export default function Settings() {
               />
 
               <ProviderRow
-                name="Resend"
-                description="Transactional email (OTP verification)"
-                usedFor="Survey OTP emails, PlaceIntel email verification"
-                data={providers?.resend}
-                docsUrl="https://resend.com/api-keys"
+                name="Mandrill"
+                description={`Transactional email${providers?.mandrill?.from_email ? ` — sender: ${providers.mandrill.from_name || "Board Infinity"} <${providers.mandrill.from_email}>` : ""}`}
+                usedFor="Survey invites, reminders, OTP emails, PlaceIntel verification"
+                data={providers?.mandrill}
+                docsUrl="https://mandrillapp.com/settings"
               />
             </>
           )}

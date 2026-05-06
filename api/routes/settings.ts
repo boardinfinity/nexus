@@ -1,6 +1,6 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, APIFY_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY } from "../lib/supabase";
-import { MANDRILL_API_KEY, MANDRILL_FROM_EMAIL, MANDRILL_FROM_NAME, RESEND_API_KEY } from "../lib/mailer";
+import { MANDRILL_API_KEY, MANDRILL_FROM_EMAIL, MANDRILL_FROM_NAME } from "../lib/mailer";
 import { type AuthResult, requireAdmin } from "../lib/auth";
 
 export async function handleSettingsRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
@@ -71,11 +71,6 @@ export async function handleSettingsRoutes(path: string, req: VercelRequest, res
         key_preview: MANDRILL_API_KEY ? `${MANDRILL_API_KEY.slice(0, 6)}…${MANDRILL_API_KEY.slice(-4)}` : null,
         from_email: MANDRILL_FROM_EMAIL,
         from_name: MANDRILL_FROM_NAME,
-      },
-      resend: {
-        configured: !!RESEND_API_KEY,
-        key_preview: RESEND_API_KEY ? `${RESEND_API_KEY.slice(0, 6)}…${RESEND_API_KEY.slice(-4)}` : null,
-        role: "fallback",
       },
     });
   }
