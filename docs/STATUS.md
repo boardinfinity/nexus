@@ -7,6 +7,7 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 
 ## 2026
 
+- 2026-05-06 · taxonomy · 6237894 · Taxonomy admin UI v2: replaced category tabs with L1 chips (4) + smart L2 dropdown (valid pairs only) + multi-region filter + Source filter (v2/legacy). API `/taxonomy` accepts `l1`, `l2`, `regions`, `source_filter`; `/taxonomy/stats` returns `by_l1`, `by_l2`, `by_region`. Migration 037: adds `regions text[]` (GIN), backfills l1/l2 for 8,887 legacy rows (technology→Tool, skill→Skill, ability→Ability, knowledge→Knowledge), seeds regions from `india_relevance`, extends `get_taxonomy_stats()`. Final L1 distribution: TECHNICAL SKILLS 9,574 / COMPETENCIES 334 / KNOWLEDGE 288 / CREDENTIAL 111 = 10,307.
 - 2026-05-06 · taxonomy · 4b48c9c · Migration 033: 4-category L1/L2 model on `taxonomy_skills` (l1+l2+domain_tag+india_relevance cols + CHECK constraints + indexes) and bulk insert of 1,419 net-new modern skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged). Existing 8,887 legacy rows untouched.
 - 2026-05-06 · setup · 5c8faee · Created /docs/ folder with STATUS.md, FEATURE_TRACKER.md, MIGRATIONS.md, ENV.md, RLS.md, MODELS.md. Established Notion+/docs hybrid coordination model, seeded Notion Feature Tracker DB (60 rows), refreshed universal thread context template.
 - 2026-05-05 · job-role-master · — · Replaced public.job_roles from May-2026 75-row CSV; restored 15 legacy entries; deduped synonyms → 90 distinct records.
