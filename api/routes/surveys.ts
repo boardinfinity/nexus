@@ -234,9 +234,12 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
     res.setHeader("Cache-Control", "public, max-age=300"); // 5 min CDN cache
     if (type === "skills") {
       const { categories, q: search } = req.query as Record<string, string>;
-      const categoryFilter = categories
+      const requested = categories
         ? categories.split(",").map((s) => s.trim()).filter(Boolean)
         : null;
+      const VALID_CATEGORIES = new Set(["ability", "knowledge", "skill", "technology"]);
+      const validRequested = requested?.filter(c => VALID_CATEGORIES.has(c)) || [];
+      const categoryFilter = (requested && validRequested.length > 0) ? validRequested : null;
       // Page through PostgREST 1000-row cap to fetch the full taxonomy (~9k).
       const PAGE = 1000;
       let from = 0;
@@ -295,9 +298,15 @@ export async function handleSurveyRoutes(path: string, req: VercelRequest, res: 
   if (path === "/survey/skill-list" && req.method === "GET") {
     const { categories } = req.query as Record<string, string>;
     res.setHeader("Cache-Control", "public, max-age=300");
-    const categoryFilter = categories
+    const requested = categories
       ? categories.split(",").map(s => s.trim()).filter(Boolean)
       : null;
+    // The taxonomy uses O*NET-style categories: ability|knowledge|skill|technology.
+    // Older AI-generated surveys may pass semantic labels ("technical","soft_skills")
+    // that match nothing — in that case return the full catalog instead of 0.
+    const VALID_CATEGORIES = new Set(["ability", "knowledge", "skill", "technology"]);
+    const validRequested = requested?.filter(c => VALID_CATEGORIES.has(c)) || [];
+    const categoryFilter = (requested && validRequested.length > 0) ? validRequested : null;
     const PAGE = 1000;
     let from = 0;
     const allSkills: Array<{ id: string; name: string; category: string | null }> = [];
@@ -1171,8 +1180,8 @@ const SURVEY_SCHEMA_TOOL_INPUT = {
                 scale_max_label: { type: "string" },
                 skill_categories: {
                   type: "array",
-                  description: "For skill_matrix only: filter the master taxonomy to these categories",
-                  items: { type: "string" },
+                  description: "For skill_matrix only: filter the master taxonomy. ONLY these four values are valid: 'ability', 'knowledge', 'skill', 'technology'. Omit this field entirely to include the full taxonomy (recommended for most surveys).",
+                  items: { type: "string", enum: ["ability", "knowledge", "skill", "technology"] },
                 },
                 min_skills: { type: "integer", description: "For skill_matrix: minimum number of skills the respondent must rate" },
                 master: {
