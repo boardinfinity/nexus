@@ -1,6 +1,6 @@
 # Nexus — Migration Log
 
-**The next migration number is: `032`** (reserve before writing SQL).
+**The next migration number is: `034`** (reserve before writing SQL).
 
 | # | File | Date | Author | Summary |
 |---|---|---|---|---|
@@ -11,6 +11,8 @@
 | 029 | `029_colleges_extension.sql` | 2026-04-15 | abhay | `degree_level`, `ranking_source`, `ranking_year`, `ranking_score`, `linkedin_slug` on colleges + NIRF MBA Top 50 seed. |
 | 030 | `030_survey_admin_v2.sql` | 2026-04-29 | abhay | New tables: `surveys`, `survey_invites`, `email_queue`. FK-bind `survey_respondents.survey_id`, `survey_responses.survey_id`, `survey_skill_ratings.survey_id` (NOT NULL). Unique on `(survey_id, lower(email))` for invites + respondents. Legacy v1 archived row preserved (`00000000-0000-0000-0000-00000000beef`). |
 | 031 | `031_job_buckets_phase1.sql` | 2026-04-30 | abhay | Bucketization Phase 0/1. Adds `jobs.standardized_title`, `jobs.company_type`, `jobs.geography`, `jobs.bucket_id`, `jobs.bucket_match_confidence`, `jobs.bucket_match_reason`, `jobs.bucket_status_at_assignment`. New tables: `job_buckets`, `job_bucket_aliases`, `job_bucket_evidence`, `job_bucket_skill_map`, `job_bucket_overlays`, `job_bucket_review_queue`, `job_bucket_merge_history`. RLS hides candidate buckets from non-admin users. |
+| 032 | `032_survey_status_published.sql` | — | — | (already in repo — backfill summary when known) |
+| 033 | `033_taxonomy_4category_model.sql` | 2026-05-06 | abhay | Taxonomy 4-category L1/L2 model. Adds `l1`, `l2`, `domain_tag`, `india_relevance` cols on `taxonomy_skills` with CHECK constraints (4-value l1 enum, 10-value l2 enum, valid l1+l2 pair, domain enum, india enum). 5 indexes + 1 partial unique index for v2 batch. Bulk-inserts 1,419 net-new contemporary skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged). Existing 8,887 legacy rows untouched. source=`nexus_taxonomy_v2_2026_05`. |
 
 ---
 
@@ -18,9 +20,10 @@
 
 | # | Reserved For | Reserved By | Status |
 |---|---|---|---|
-| 032 | Alumni Insights core | TBD | available |
-| 033 | Alumni Insights seed | TBD | available |
-| 034 | Bucket validation cycle audit columns | TBD | available |
+| 034 | Alumni Insights core (re-reserve) | TBD | available |
+| 035 | Alumni Insights seed (re-reserve) | TBD | available |
+| 036 | Bucket validation cycle audit columns | TBD | available |
+| 037 | Taxonomy legacy backfill (l1/l2 for existing 8,887) | abhay | reserved |
 
 > Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
 
