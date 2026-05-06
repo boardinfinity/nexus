@@ -1236,16 +1236,9 @@ function SkillMatrix({
     setSearchOpen(false);
   }
 
-  if (loading) {
-    return (
-      <div className="text-sm text-muted-foreground flex items-center gap-2">
-        <Loader2 className="h-4 w-4 animate-spin" /> Loading skill catalog…
-      </div>
-    );
-  }
-
   // Order rows: locked presets first (in the original preset order), then any
   // additional taxonomy/custom adds in insertion order.
+  // Must be declared BEFORE any early return so the hook count is stable across renders.
   const orderedRatings = useMemo(() => {
     if (!presetMode) return Object.values(ratings);
     const presetOrdered = (presetSkills || [])
@@ -1254,6 +1247,14 @@ function SkillMatrix({
     const extras = Object.values(ratings).filter((r) => !presetSet.has(r.skill_name));
     return [...presetOrdered, ...extras];
   }, [ratings, presetSkills, presetMode, presetSet]);
+
+  if (loading) {
+    return (
+      <div className="text-sm text-muted-foreground flex items-center gap-2">
+        <Loader2 className="h-4 w-4 animate-spin" /> Loading skill catalog…
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4">
