@@ -116,6 +116,12 @@ export interface SurveyQuestion {
   // skill_matrix: pulls from /api/survey/skill-list, optionally filtered to categories
   skill_categories?: string[];
   min_skills?: number;
+  // skill_matrix preset mode: a fixed list of skill names rendered as locked rows
+  // (no remove). When present, min_skills is ignored — respondents must rate every preset.
+  preset_skills?: string[];
+  // skill_matrix: when preset_skills is set, controls whether the searchable taxonomy
+  // picker is also shown so respondents can optionally add more skills from the master.
+  allow_add_more?: boolean;
   // matrix_rating: rows × cols, each cell receives a rating per scale
   rows?: { key: string; label: string }[];
   cols?: { key: string; label: string }[];

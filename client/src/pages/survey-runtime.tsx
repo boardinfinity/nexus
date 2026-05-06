@@ -229,6 +229,17 @@ export default function SurveyRuntime(_props: RuntimeProps) {
         continue;
       }
       if (q.type === "skill_matrix") {
+        // Preset mode: every preset row must be rated on both dimensions.
+        if (Array.isArray(q.preset_skills) && q.preset_skills.length > 0) {
+          for (const name of q.preset_skills) {
+            const r = skillRatings[name];
+            if (!r || r.importance_rating == null || r.demonstration_rating == null) {
+              return `Please rate "${name}" on both Importance and Demonstration`;
+            }
+          }
+          continue;
+        }
+        // Open mode: rate at least min_skills (default 5).
         const min = q.min_skills ?? 5;
         const count = Object.values(skillRatings).filter(
           (r) => r.importance_rating != null && r.demonstration_rating != null
@@ -870,6 +881,8 @@ function QuestionRenderer({
             onChange={onSkillChange}
             onRemove={onSkillRemove}
             minSkills={question.min_skills ?? 5}
+            presetSkills={question.preset_skills}
+            allowAddMore={question.allow_add_more}
           />
         </div>
       );
@@ -1103,13 +1116,40 @@ function SkillMatrix({
   onChange,
   onRemove,
   minSkills,
+  presetSkills,
+  allowAddMore,
 }: {
   categories?: string[];
   ratings: Record<string, SkillRating>;
   onChange: (name: string, patch: Partial<SkillRating>) => void;
   onRemove: (name: string) => void;
   minSkills: number;
+  presetSkills?: string[];
+  allowAddMore?: boolean;
 }) {
+  // Preset mode: a fixed list of skill names is shown as locked rows; respondents
+  // can't remove them. The taxonomy picker is hidden unless allowAddMore is true.
+  const presetMode = Array.isArray(presetSkills) && presetSkills.length > 0;
+  const presetSet = useMemo(
+    () => new Set((presetSkills || []).map((s) => s)),
+    [presetSkills]
+  );
+  const showPicker = !presetMode || !!allowAddMore;
+
+  // Seed preset rows once so they render even before the user starts rating.
+  useEffect(() => {
+    if (!presetMode) return;
+    for (const name of presetSkills || []) {
+      if (!ratings[name]) {
+        // is_preset_skill marks the row as text-only (no taxonomy_skill_id),
+        // not as a free-form custom add. Backend treats it like is_custom_skill
+        // since there is no taxonomy linkage.
+        onChange(name, { skill_name: name, is_custom_skill: true });
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetMode, presetSkills?.join("|")]);
+
   const [list, setList] = useState<Record<string, { id: string; name: string }[]>>({});
   const [loading, setLoading] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -1204,15 +1244,37 @@ function SkillMatrix({
     );
   }
 
+  // Order rows: locked presets first (in the original preset order), then any
+  // additional taxonomy/custom adds in insertion order.
+  const orderedRatings = useMemo(() => {
+    if (!presetMode) return Object.values(ratings);
+    const presetOrdered = (presetSkills || [])
+      .map((n) => ratings[n])
+      .filter(Boolean) as SkillRating[];
+    const extras = Object.values(ratings).filter((r) => !presetSet.has(r.skill_name));
+    return [...presetOrdered, ...extras];
+  }, [ratings, presetSkills, presetMode, presetSet]);
+
   return (
     <div className="space-y-4">
       <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
-        Rate at least {minSkills} skills on both <strong>Importance</strong> (how critical for
-        the role) and <strong>Demonstration</strong> (how well candidates typically demonstrate
-        it). Currently rated: <strong>{ratedCount}</strong>
+        {presetMode ? (
+          <>
+            Rate every skill below on both <strong>Importance</strong> (how critical for the role)
+            and <strong>Demonstration</strong> (how well candidates typically demonstrate it).
+            {allowAddMore ? " You may optionally add more skills from our catalog." : ""}
+          </>
+        ) : (
+          <>
+            Rate at least {minSkills} skills on both <strong>Importance</strong> (how critical for
+            the role) and <strong>Demonstration</strong> (how well candidates typically demonstrate
+            it). Currently rated: <strong>{ratedCount}</strong>
+          </>
+        )}
       </div>
 
       {/* Searchable picker — catalog match preferred, custom-add fallback */}
+      {showPicker && (
       <Popover open={searchOpen} onOpenChange={setSearchOpen}>
         <PopoverTrigger asChild>
           <Button
@@ -1321,9 +1383,10 @@ function SkillMatrix({
           </Command>
         </PopoverContent>
       </Popover>
+      )}
 
       {/* Selected skills with rating UI */}
-      {Object.values(ratings).length > 0 && (
+      {orderedRatings.length > 0 && (
         <div className="rounded-md border">
           <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs font-medium text-muted-foreground border-b bg-muted/30">
             <div className="col-span-5">Skill</div>
@@ -1331,11 +1394,13 @@ function SkillMatrix({
             <div className="col-span-3 text-center">Demonstration</div>
             <div className="col-span-1"></div>
           </div>
-          {Object.values(ratings).map((r) => (
+          {orderedRatings.map((r) => {
+            const isLocked = presetMode && presetSet.has(r.skill_name);
+            return (
             <div key={r.skill_name} className="grid grid-cols-12 gap-2 px-3 py-2 items-center border-b last:border-0">
               <div className="col-span-5 text-sm">
                 {r.skill_name}
-                {r.is_custom_skill && (
+                {!isLocked && r.is_custom_skill && (
                   <Badge variant="outline" className="ml-2 text-[10px]">
                     custom
                   </Badge>
@@ -1356,12 +1421,15 @@ function SkillMatrix({
                 />
               </div>
               <div className="col-span-1 flex justify-end">
-                <Button type="button" size="icon" variant="ghost" onClick={() => onRemove(r.skill_name)}>
-                  <X className="h-4 w-4" />
-                </Button>
+                {!isLocked && (
+                  <Button type="button" size="icon" variant="ghost" onClick={() => onRemove(r.skill_name)}>
+                    <X className="h-4 w-4" />
+                  </Button>
+                )}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
