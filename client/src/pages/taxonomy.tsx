@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { authFetch, apiRequest } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -7,8 +7,14 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/data-table";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap, FileText, ArrowUpDown, ArrowUp, ArrowDown, Info, ChevronDown } from "lucide-react";
+import {
+  Flame, TrendingUp, Search, Pencil, Check, X, Briefcase, GraduationCap,
+  FileText, ArrowUpDown, ArrowUp, ArrowDown, Info, ChevronDown, Globe,
+} from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 
 interface TaxonomySkill {
@@ -17,6 +23,11 @@ interface TaxonomySkill {
   name: string;
   category: string;
   subcategory: string | null;
+  l1: string | null;
+  l2: string | null;
+  domain_tag: string | null;
+  india_relevance: string | null;
+  regions: string[] | null;
   description: string | null;
   source: string;
   is_hot_technology: boolean;
@@ -29,6 +40,9 @@ interface TaxonomySkill {
 interface TaxonomyStats {
   total: number;
   by_category: Record<string, number>;
+  by_l1: Record<string, number>;
+  by_l2: Record<string, Record<string, number>>;
+  by_region: Record<string, number>;
   hot_technologies: number;
   top_skills: Array<{ name: string; job_count: number }>;
 }
@@ -39,25 +53,53 @@ interface LinkedData {
   reports: Array<{ id: string; title: string; report_type: string; created_at: string }>;
 }
 
-const categoryColors: Record<string, string> = {
-  skill: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
-  knowledge: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
-  ability: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  technology: "bg-orange-100 text-orange-800 dark:bg-orange-900 dark:text-orange-200",
-  soft_skill: "bg-pink-100 text-pink-800 dark:bg-pink-900 dark:text-pink-200",
+// ── L1 / L2 model definitions ────────────────────────────────────────────────
+const L1_VALUES = ["TECHNICAL SKILLS", "KNOWLEDGE", "COMPETENCIES", "CREDENTIAL"] as const;
+type L1 = typeof L1_VALUES[number];
+
+const L1_TO_L2: Record<L1, string[]> = {
+  "TECHNICAL SKILLS": ["Methodology", "Technology", "Tool"],
+  "KNOWLEDGE": ["Domain", "Knowledge"],
+  "COMPETENCIES": ["Ability", "Competency", "Skill"],
+  "CREDENTIAL": ["Certification", "Language"],
 };
 
-const categoryTabs = [
-  { value: "all", label: "All" },
-  { value: "skill", label: "Skill" },
-  { value: "knowledge", label: "Knowledge" },
-  { value: "ability", label: "Ability" },
-  { value: "technology", label: "Technology" },
+const L1_LABELS: Record<L1, string> = {
+  "TECHNICAL SKILLS": "Technical",
+  "KNOWLEDGE": "Knowledge",
+  "COMPETENCIES": "Competencies",
+  "CREDENTIAL": "Credential",
+};
+
+const L1_COLORS: Record<L1, string> = {
+  "TECHNICAL SKILLS": "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200 border-blue-300 dark:border-blue-700",
+  "KNOWLEDGE": "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200 border-purple-300 dark:border-purple-700",
+  "COMPETENCIES": "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border-green-300 dark:border-green-700",
+  "CREDENTIAL": "bg-amber-100 text-amber-800 dark:bg-amber-900 dark:text-amber-200 border-amber-300 dark:border-amber-700",
+};
+
+// Legacy O*NET color fallback (used until backfill completes)
+const LEGACY_CATEGORY_COLORS: Record<string, string> = {
+  skill: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
+  knowledge: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200",
+  ability: "bg-emerald-100 text-emerald-800 dark:bg-emerald-900 dark:text-emerald-200",
+  technology: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200",
+};
+
+const REGION_OPTIONS = ["India", "Global", "UAE/GCC", "SEA", "US", "EU"] as const;
+
+const SOURCE_FILTER_OPTIONS = [
+  { value: "all", label: "All sources" },
+  { value: "v2", label: "v2 Modern (1,419)" },
+  { value: "legacy", label: "Legacy O*NET (8,888)" },
 ];
 
 export default function Taxonomy() {
   const [search, setSearch] = useState("");
-  const [category, setCategory] = useState("all");
+  const [l1Filter, setL1Filter] = useState<L1 | "all">("all");
+  const [l2Filter, setL2Filter] = useState<string>("all");
+  const [regionFilter, setRegionFilter] = useState<string[]>([]);
+  const [sourceFilter, setSourceFilter] = useState<string>("all");
   const [page, setPage] = useState(1);
   const [selectedSkill, setSelectedSkill] = useState<TaxonomySkill | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -66,6 +108,12 @@ export default function Taxonomy() {
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("asc");
   const queryClient = useQueryClient();
   const { toast } = useToast();
+
+  // L2 options depend on L1 selection
+  const l2Options = useMemo(() => {
+    if (l1Filter === "all") return [];
+    return L1_TO_L2[l1Filter];
+  }, [l1Filter]);
 
   function toggleSort(col: string) {
     if (sortCol === col) {
@@ -82,6 +130,22 @@ export default function Taxonomy() {
     return sortOrder === "asc" ? <ArrowUp className="h-3 w-3" /> : <ArrowDown className="h-3 w-3" />;
   }
 
+  function toggleRegion(region: string) {
+    setRegionFilter(prev =>
+      prev.includes(region) ? prev.filter(r => r !== region) : [...prev, region]
+    );
+    setPage(1);
+  }
+
+  function clearFilters() {
+    setL1Filter("all");
+    setL2Filter("all");
+    setRegionFilter([]);
+    setSourceFilter("all");
+    setSearch("");
+    setPage(1);
+  }
+
   const { data: stats } = useQuery<TaxonomyStats>({
     queryKey: ["/api/taxonomy/stats"],
     queryFn: async () => {
@@ -92,10 +156,13 @@ export default function Taxonomy() {
   });
 
   const { data, isLoading } = useQuery<{ data: TaxonomySkill[]; total: number }>({
-    queryKey: ["/api/taxonomy", page, category, search, sortCol, sortOrder],
+    queryKey: ["/api/taxonomy", page, l1Filter, l2Filter, regionFilter, sourceFilter, search, sortCol, sortOrder],
     queryFn: async () => {
       const params = new URLSearchParams({ page: String(page), limit: "50", sort: sortCol, order: sortOrder });
-      if (category && category !== "all") params.set("category", category);
+      if (l1Filter !== "all") params.set("l1", l1Filter);
+      if (l2Filter !== "all" && l1Filter !== "all") params.set("l2", l2Filter);
+      if (regionFilter.length > 0) params.set("regions", regionFilter.join(","));
+      if (sourceFilter !== "all") params.set("source_filter", sourceFilter);
       if (search) params.set("search", search);
       const res = await authFetch(`/api/taxonomy?${params}`);
       if (!res.ok) throw new Error("Failed to fetch taxonomy");
@@ -149,11 +216,17 @@ export default function Taxonomy() {
     setEditName("");
   }
 
+  const filtersActive =
+    l1Filter !== "all" || l2Filter !== "all" || regionFilter.length > 0 ||
+    sourceFilter !== "all" || search !== "";
+
   return (
     <div className="space-y-6" data-testid="taxonomy-page">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Skill Taxonomy</h1>
-        <p className="text-sm text-muted-foreground">Browse and search the O*NET skill taxonomy</p>
+        <p className="text-sm text-muted-foreground">
+          Browse and search the unified skill taxonomy — 4-category model (L1 / L2) with multi-region tagging.
+        </p>
       </div>
 
       <Collapsible>
@@ -164,60 +237,180 @@ export default function Taxonomy() {
         </CollapsibleTrigger>
         <CollapsibleContent className="mt-3">
           <div className="rounded-lg border bg-muted/30 p-4 text-sm text-muted-foreground space-y-2">
-            <p><strong>How this works:</strong></p>
-            <p>• The taxonomy is your skill dictionary — 8,888 skills from O*NET, plus auto-created skills from JD analysis</p>
-            <p>• Categories: Technology (software/tools), Skill (transferable abilities), Knowledge (domain areas), Ability (cognitive/physical)</p>
-            <p>• "Hot Technology" flag marks in-demand tools and platforms</p>
-            <p>• "Jobs" count shows how many job descriptions mention each skill</p>
-            <p>• Click any skill to see linked jobs, courses, and reports</p>
-            <p className="pt-1"><strong>How skills grow:</strong></p>
-            <p>• O*NET provides the base taxonomy (8,888 skills)</p>
-            <p>• When JD Analysis extracts a new skill not in the taxonomy, it's auto-created</p>
-            <p>• Skills are auto-validated after appearing in 10+ JDs from 3+ different companies</p>
-            <p>• Unvalidated skills show as "unverified" and can be manually reviewed</p>
-            <p className="pt-1"><strong>Limitations:</strong></p>
-            <p>• "Jobs" count is 0 for all skills until the JD Analysis pipeline has been run</p>
-            <p>• Search matches skill name only (not category or subcategory)</p>
-            <p>• Loading may take 3-5 seconds due to the large dataset (8,888 rows)</p>
+            <p><strong>4-category model:</strong></p>
+            <p>• <strong>L1</strong> (parent): TECHNICAL SKILLS · KNOWLEDGE · COMPETENCIES · CREDENTIAL</p>
+            <p>• <strong>L2</strong> (sub-type): Methodology / Technology / Tool · Domain / Knowledge · Ability / Competency / Skill · Certification / Language</p>
+            <p>• <strong>Regions</strong>: India, Global, UAE/GCC, SEA, US, EU (multi-select)</p>
+            <p className="pt-1"><strong>Sources:</strong></p>
+            <p>• <strong>Legacy O*NET</strong> — 8,888 skills imported from O*NET, mapped via deterministic rules</p>
+            <p>• <strong>v2 Modern</strong> — 1,419 contemporary skills (AI/ML, Modern SWE, Business/Ops, EdTech) classified into the 4-category model</p>
+            <p>• Auto-created from JD Analyzer — new skills appear with status "unverified" until 10+ mentions across 3+ companies</p>
+            <p className="pt-1"><strong>Tips:</strong></p>
+            <p>• Pick an L1 to unlock the matching L2 dropdown</p>
+            <p>• Region filter is OR (skill has ANY of the picked regions)</p>
+            <p>• Click any row to see linked jobs, courses, and reports</p>
           </div>
         </CollapsibleContent>
       </Collapsible>
 
-      {/* Stats Cards */}
+      {/* Stats Cards: 4 cards, one per L1 */}
       <div className="grid gap-4 md:grid-cols-4">
-        <Card>
-          <CardContent className="pt-4">
-            <div className="text-2xl font-bold">{stats?.total != null ? stats.total.toLocaleString() : "—"}</div>
-            <p className="text-xs text-muted-foreground">Total Skills</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2">
-              <Flame className="h-5 w-5 text-orange-500" />
-              <div>
-                <div className="text-2xl font-bold">{stats?.hot_technologies != null ? stats.hot_technologies.toLocaleString() : "—"}</div>
-                <p className="text-xs text-muted-foreground">Hot Technologies</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        {stats?.by_category && Object.entries(stats.by_category).slice(0, 2).map(([cat, count]) => (
-          <Card key={cat}>
-            <CardContent className="pt-4">
-              <div className="flex items-center justify-between">
-                <div>
-                  <div className="text-2xl font-bold">{count.toLocaleString()}</div>
-                  <p className="text-xs text-muted-foreground capitalize">{cat.replace("_", " ")}</p>
+        {L1_VALUES.map((l1) => {
+          const count = stats?.by_l1?.[l1] ?? 0;
+          const isActive = l1Filter === l1;
+          return (
+            <Card
+              key={l1}
+              className={`cursor-pointer transition-colors ${isActive ? "ring-2 ring-primary" : "hover:bg-muted/50"}`}
+              onClick={() => {
+                setL1Filter(isActive ? "all" : l1);
+                setL2Filter("all");
+                setPage(1);
+              }}
+            >
+              <CardContent className="pt-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="text-2xl font-bold">{count.toLocaleString()}</div>
+                    <p className="text-xs text-muted-foreground">{L1_LABELS[l1]}</p>
+                  </div>
+                  <Badge className={`text-[10px] border ${L1_COLORS[l1]}`}>{l1}</Badge>
                 </div>
-                <Badge className={categoryColors[cat] || ""}>{cat}</Badge>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
 
-      {/* Top Skills */}
+      {/* Filter Bar */}
+      <div className="rounded-lg border bg-card p-4 space-y-3">
+        {/* Row 1: L1 chips + L2 select */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+            <button
+              onClick={() => { setL1Filter("all"); setL2Filter("all"); setPage(1); }}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                l1Filter === "all"
+                  ? "bg-background text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              All L1
+              {stats?.total != null && (
+                <span className="ml-1 text-[10px] opacity-70">({stats.total.toLocaleString()})</span>
+              )}
+            </button>
+            {L1_VALUES.map((l1) => {
+              const count = stats?.by_l1?.[l1];
+              return (
+                <button
+                  key={l1}
+                  onClick={() => { setL1Filter(l1); setL2Filter("all"); setPage(1); }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                    l1Filter === l1
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {L1_LABELS[l1]}
+                  {count !== undefined && (
+                    <span className="ml-1 text-[10px] opacity-70">({count.toLocaleString()})</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* L2 dropdown — only enabled when L1 is set */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">L2:</span>
+            <Select
+              value={l2Filter}
+              onValueChange={(v) => { setL2Filter(v); setPage(1); }}
+              disabled={l1Filter === "all"}
+            >
+              <SelectTrigger className="h-8 w-[160px] text-xs">
+                <SelectValue placeholder="All L2" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All L2</SelectItem>
+                {l2Options.map((l2) => {
+                  const count = l1Filter !== "all" ? stats?.by_l2?.[l1Filter]?.[l2] : undefined;
+                  return (
+                    <SelectItem key={l2} value={l2}>
+                      {l2}{count !== undefined && ` (${count.toLocaleString()})`}
+                    </SelectItem>
+                  );
+                })}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {/* Source filter */}
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">Source:</span>
+            <Select value={sourceFilter} onValueChange={(v) => { setSourceFilter(v); setPage(1); }}>
+              <SelectTrigger className="h-8 w-[180px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {SOURCE_FILTER_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          {filtersActive && (
+            <Button variant="ghost" size="sm" className="h-8 text-xs ml-auto" onClick={clearFilters}>
+              <X className="h-3 w-3 mr-1" /> Clear filters
+            </Button>
+          )}
+        </div>
+
+        {/* Row 2: Region multi-select + search */}
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Globe className="h-3.5 w-3.5 text-muted-foreground" />
+            <span className="text-xs text-muted-foreground">Regions:</span>
+            <div className="flex flex-wrap gap-1">
+              {REGION_OPTIONS.map((region) => {
+                const isActive = regionFilter.includes(region);
+                const count = stats?.by_region?.[region];
+                return (
+                  <button
+                    key={region}
+                    onClick={() => toggleRegion(region)}
+                    className={`px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors ${
+                      isActive
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground hover:text-foreground border-border"
+                    }`}
+                  >
+                    {region}
+                    {count !== undefined && (
+                      <span className="ml-1 opacity-70">({count.toLocaleString()})</span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+            <Input
+              placeholder="Search skills by name..."
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+              className="pl-9 h-8 text-sm"
+              data-testid="taxonomy-search"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Top Skills (unchanged) */}
       {stats?.top_skills && stats.top_skills.length > 0 && (
         <Card>
           <CardHeader className="pb-2">
@@ -236,43 +429,6 @@ export default function Taxonomy() {
           </CardContent>
         </Card>
       )}
-
-      {/* Category Filter Tabs */}
-      <div className="flex items-center gap-4">
-        <div className="flex gap-1 bg-muted rounded-lg p-1">
-          {categoryTabs.map((tab) => {
-            const count = tab.value === "all"
-              ? stats?.total
-              : stats?.by_category?.[tab.value];
-            return (
-              <button
-                key={tab.value}
-                onClick={() => { setCategory(tab.value); setPage(1); }}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
-                  category === tab.value
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {tab.label}
-                {count !== undefined && (
-                  <span className="ml-1 text-[10px] opacity-70">({count.toLocaleString()})</span>
-                )}
-              </button>
-            );
-          })}
-        </div>
-        <div className="relative flex-1">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-          <Input
-            placeholder="Search skills..."
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="pl-9"
-            data-testid="taxonomy-search"
-          />
-        </div>
-      </div>
 
       {/* Skills Table */}
       <Card>
@@ -327,15 +483,32 @@ export default function Taxonomy() {
               },
               {
                 header: () => (
-                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("category")}>
-                    Category <SortIcon col="category" />
+                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("l1")}>
+                    L1 / L2 <SortIcon col="l1" />
                   </button>
                 ),
-                accessor: (r: TaxonomySkill) => (
-                  <Badge className={`text-xs ${categoryColors[r.category] || ""}`}>
-                    {r.category.replace("_", " ")}
-                  </Badge>
-                ),
+                accessor: (r: TaxonomySkill) => {
+                  if (r.l1 && L1_VALUES.includes(r.l1 as L1)) {
+                    return (
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Badge className={`text-[10px] border ${L1_COLORS[r.l1 as L1]}`}>
+                          {L1_LABELS[r.l1 as L1]}
+                        </Badge>
+                        {r.l2 && (
+                          <Badge variant="outline" className="text-[10px]">
+                            {r.l2}
+                          </Badge>
+                        )}
+                      </div>
+                    );
+                  }
+                  // Fallback: legacy category if l1 not yet backfilled
+                  return (
+                    <Badge className={`text-[10px] ${LEGACY_CATEGORY_COLORS[r.category] || ""}`}>
+                      {r.category} (legacy)
+                    </Badge>
+                  );
+                },
               },
               {
                 header: () => (
@@ -350,13 +523,21 @@ export default function Taxonomy() {
                 ),
               },
               {
-                header: () => (
-                  <button className="flex items-center gap-1 hover:text-foreground" onClick={() => toggleSort("subcategory")}>
-                    Subcategory <SortIcon col="subcategory" />
-                  </button>
-                ),
-                accessor: (r: TaxonomySkill) => r.subcategory || "—",
-                className: "text-muted-foreground text-sm",
+                header: () => <span>Regions</span>,
+                accessor: (r: TaxonomySkill) => {
+                  const regions = r.regions || [];
+                  if (regions.length === 0) return <span className="text-muted-foreground text-xs">—</span>;
+                  return (
+                    <div className="flex flex-wrap gap-1">
+                      {regions.slice(0, 3).map((region) => (
+                        <Badge key={region} variant="secondary" className="text-[10px]">{region}</Badge>
+                      ))}
+                      {regions.length > 3 && (
+                        <span className="text-[10px] text-muted-foreground">+{regions.length - 3}</span>
+                      )}
+                    </div>
+                  );
+                },
               },
               {
                 header: () => (
@@ -364,14 +545,20 @@ export default function Taxonomy() {
                     Source <SortIcon col="source" />
                   </button>
                 ),
-                accessor: (r: TaxonomySkill) => r.source.toUpperCase(),
-                className: "text-xs font-mono",
+                accessor: (r: TaxonomySkill) => {
+                  const isV2 = r.source === "nexus_taxonomy_v2_2026_05";
+                  return (
+                    <Badge variant={isV2 ? "default" : "outline"} className="text-[10px] font-mono">
+                      {isV2 ? "v2" : (r.source || "—").toUpperCase().slice(0, 12)}
+                    </Badge>
+                  );
+                },
               },
             ]}
             data={data?.data ?? []}
             isLoading={isLoading}
             onRowClick={(row) => setSelectedSkill(row)}
-            emptyMessage="No taxonomy skills found. Run the data loader to populate."
+            emptyMessage="No taxonomy skills match these filters."
           />
 
           {totalPages > 1 && (
@@ -399,14 +586,42 @@ export default function Taxonomy() {
                   <CardTitle className="text-xs text-muted-foreground uppercase">Skill Info</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-2 text-sm">
-                  <div className="flex justify-between">
-                    <span className="text-muted-foreground">Category</span>
-                    <Badge className={categoryColors[selectedSkill.category] || ""}>{selectedSkill.category}</Badge>
-                  </div>
-                  {selectedSkill.subcategory && (
+                  {selectedSkill.l1 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">L1</span>
+                      <Badge className={`text-[10px] border ${L1_COLORS[selectedSkill.l1 as L1] || ""}`}>
+                        {selectedSkill.l1}
+                      </Badge>
+                    </div>
+                  )}
+                  {selectedSkill.l2 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">L2</span>
+                      <Badge variant="outline" className="text-[10px]">{selectedSkill.l2}</Badge>
+                    </div>
+                  )}
+                  {!selectedSkill.l1 && (
+                    <div className="flex justify-between items-center">
+                      <span className="text-muted-foreground">Legacy category</span>
+                      <Badge className={`text-[10px] ${LEGACY_CATEGORY_COLORS[selectedSkill.category] || ""}`}>
+                        {selectedSkill.category}
+                      </Badge>
+                    </div>
+                  )}
+                  {selectedSkill.domain_tag && (
                     <div className="flex justify-between">
-                      <span className="text-muted-foreground">Subcategory</span>
-                      <span>{selectedSkill.subcategory}</span>
+                      <span className="text-muted-foreground">Domain</span>
+                      <span className="text-xs">{selectedSkill.domain_tag}</span>
+                    </div>
+                  )}
+                  {selectedSkill.regions && selectedSkill.regions.length > 0 && (
+                    <div className="flex justify-between items-start">
+                      <span className="text-muted-foreground">Regions</span>
+                      <div className="flex flex-wrap gap-1 justify-end max-w-[60%]">
+                        {selectedSkill.regions.map((r) => (
+                          <Badge key={r} variant="secondary" className="text-[10px]">{r}</Badge>
+                        ))}
+                      </div>
                     </div>
                   )}
                   <div className="flex justify-between">
@@ -417,6 +632,16 @@ export default function Taxonomy() {
                     <span className="text-muted-foreground">Jobs</span>
                     <span className="font-bold">{selectedSkill.job_count || 0}</span>
                   </div>
+                  {selectedSkill.aliases && selectedSkill.aliases.length > 0 && (
+                    <div className="flex justify-between items-start">
+                      <span className="text-muted-foreground">Aliases</span>
+                      <div className="flex flex-wrap gap-1 justify-end max-w-[60%]">
+                        {selectedSkill.aliases.map((a) => (
+                          <Badge key={a} variant="outline" className="text-[10px]">{a}</Badge>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                   {selectedSkill.description && (
                     <div className="pt-2 border-t">
                       <p className="text-xs text-muted-foreground">{selectedSkill.description}</p>
@@ -425,7 +650,6 @@ export default function Taxonomy() {
                 </CardContent>
               </Card>
 
-              {/* Linked Jobs */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
@@ -448,7 +672,6 @@ export default function Taxonomy() {
                 </CardContent>
               </Card>
 
-              {/* Linked Courses */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
@@ -471,7 +694,6 @@ export default function Taxonomy() {
                 </CardContent>
               </Card>
 
-              {/* Linked Reports */}
               <Card>
                 <CardHeader className="pb-2">
                   <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">

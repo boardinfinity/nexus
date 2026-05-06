@@ -152,10 +152,14 @@ export async function handleTaxonomyRoutes(
   }
 
   if (path === "/taxonomy" && req.method === "GET") {
-    const { category, source, search, page = "1", limit = "50", sort = "name", order = "asc" } = req.query as Record<string, string>;
+    const {
+      category, source, search,
+      l1, l2, regions, source_filter,
+      page = "1", limit = "50", sort = "name", order = "asc",
+    } = req.query as Record<string, string>;
     const offset = (parseInt(page) - 1) * parseInt(limit);
     const ascending = order !== "desc";
-    const allowedSortCols = ["name", "category", "subcategory", "source", "created_at"];
+    const allowedSortCols = ["name", "category", "subcategory", "l1", "l2", "source", "created_at"];
     const sortByJobCount = sort === "job_count";
     const sortCol = allowedSortCols.includes(sort) ? sort : "name";
 
@@ -166,6 +170,20 @@ export async function handleTaxonomyRoutes(
     if (category) query = query.eq("category", category);
     if (source) query = query.eq("source", source);
     if (search) query = query.ilike("name", `%${search}%`);
+    // ── New 4-category filters ──
+    if (l1) query = query.eq("l1", l1);
+    if (l2) query = query.eq("l2", l2);
+    // regions: comma-separated list -> array overlap match (skill has ANY of the requested regions)
+    if (regions) {
+      const arr = regions.split(",").map(s => s.trim()).filter(Boolean);
+      if (arr.length > 0) query = query.overlaps("regions", arr);
+    }
+    // source_filter: 'v2' = nexus_taxonomy_v2_2026_05; 'legacy' = anything else
+    if (source_filter === "v2") {
+      query = query.eq("source", "nexus_taxonomy_v2_2026_05");
+    } else if (source_filter === "legacy") {
+      query = query.neq("source", "nexus_taxonomy_v2_2026_05");
+    }
 
     // Apply ordering — job_count sorting is done in-memory after enrichment
     if (!sortByJobCount) {
@@ -224,6 +242,9 @@ export async function handleTaxonomyRoutes(
     return res.json({
       total: data?.total || 0,
       by_category: data?.by_category || {},
+      by_l1: data?.by_l1 || {},
+      by_l2: data?.by_l2 || {},
+      by_region: data?.by_region || {},
       hot_technologies: data?.hot_technologies || 0,
       top_skills: (data?.top_skills || []).map((s: any) => ({ name: s.name, job_count: Number(s.job_count) })),
       unverified_count: unverifiedRes.count || 0,
