@@ -7,7 +7,7 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 
 ## 2026
 
-- 2026-05-06 · setup · /docs scaffolded · Created /docs/ folder with STATUS.md, FEATURE_TRACKER.md, MIGRATIONS.md, ENV.md, RLS.md, MODELS.md. Established Notion+/docs hybrid coordination model, seeded Notion Feature Tracker DB (60 rows), refreshed universal thread context template.
+- 2026-05-06 · setup · 5c8faee · Created /docs/ folder with STATUS.md, FEATURE_TRACKER.md, MIGRATIONS.md, ENV.md, RLS.md, MODELS.md. Established Notion+/docs hybrid coordination model, seeded Notion Feature Tracker DB (60 rows), refreshed universal thread context template.
 - 2026-05-05 · job-role-master · — · Replaced public.job_roles from May-2026 75-row CSV; restored 15 legacy entries; deduped synonyms → 90 distinct records.
 - 2026-04-30 · bucketization · PR #7 · Phase 0/1 merged. Migration 031, 7 bucket tables, deterministic resolver, dry-run endpoint, JD Analyzer Bucket Mapping panel. Seeded 41 candidate buckets.
 - 2026-04-30 · alumni-insights · — · Spec finalized; migrations 0001_alumni_insights_core.sql + 0002_alumni_insights_seed.sql ready for application.
