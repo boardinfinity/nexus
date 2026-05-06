@@ -23,3 +23,4 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 - 2026-04-14 · masters-ui · — · /masters page with Job Roles + Colleges tabs.
 - 2026-04-09 · intelligence-framework · — · Migration 025: P1 schema for Intelligence Framework. 26 functions, 20 families, 15 industries seeded. upsert_skill() + validate_skills() functions.
 - 2026-04-03 · marketing · — · Nexus product marketing wireframe + Nexus University one-pager.
+2026-05-06 · bd929ff · UOWD survey: 25 preset skill rows (text-only) + optional taxonomy add-more picker
