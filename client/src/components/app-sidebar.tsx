@@ -23,6 +23,7 @@ const navItems = [
   { title: "Companies", href: "/companies", icon: Building2, section: "companies" },
   { title: "People", href: "/people", icon: Users, section: "people" },
   { title: "Upload", href: "/upload", icon: Upload, section: "upload" },
+  { title: "Campus JD Upload", href: "/upload/campus", icon: Building2, section: "upload" },
   { title: "Pipelines", href: "/pipelines", icon: GitBranch, section: "pipelines" },
   { title: "Schedules", href: "/schedules", icon: CalendarClock, section: "schedules" },
   { title: "Taxonomy", href: "/taxonomy", icon: BookOpen, section: "taxonomy" },
