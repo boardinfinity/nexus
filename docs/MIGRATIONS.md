@@ -24,7 +24,9 @@
 | 034 | Alumni Insights core (re-reserve) | TBD | available |
 | 035 | Alumni Insights seed (re-reserve) | TBD | available |
 | 036 | Bucket validation cycle audit columns | TBD | available |
-| 038 | _(open)_ | TBD | available |
+| 038 | analyze_jd_runs (logging table for all 3 Analyze JD entry points) + l2_to_l1 lookup table | jdenh001 | reserved (in progress) |
+| 039 | campus_upload_batches + jobs.upload_batch_id FK | jdenh001 | reserved (in progress) |
+| 040 | _(open)_ | TBD | available |
 
 > Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
 
