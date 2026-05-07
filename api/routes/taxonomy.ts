@@ -3,6 +3,7 @@ import { supabase, OPENAI_API_KEY } from "../lib/supabase";
 import { type AuthResult, requireReader, requireEditor, requireAdmin } from "../lib/auth";
 import { resolveBucket } from "../lib/bucketResolver";
 import { type ClassificationResult, type ClassificationSkill, categoryToTier, confidenceBandToScore } from "../lib/bucketTypes";
+import { runAnalyzeJd } from "../lib/analyze-jd";
 
 function confidenceToScore(c: string): number {
   return confidenceBandToScore(c as any);
@@ -388,10 +389,43 @@ export async function handleTaxonomyRoutes(
     });
   }
 
+  // ── GET /api/analyze-jd/runs — recent runs with filters (Track E dashboard) ──
+  if (path === "/analyze-jd/runs" && req.method === "GET") {
+    if (!requireReader(auth, "jobs", res)) return;
+
+    const source = req.query.source as string | undefined;
+    const status = req.query.status as string | undefined;
+    const dateFrom = req.query.date_from as string | undefined;
+    const dateTo = req.query.date_to as string | undefined;
+    const limitRaw = req.query.limit as string | undefined;
+    const pageRaw = req.query.page as string | undefined;
+    const limit = Math.min(parseInt(limitRaw || "50", 10), 200);
+    const page = Math.max(parseInt(pageRaw || "1", 10), 1);
+    const offset = (page - 1) * limit;
+
+    let query = supabase
+      .from("analyze_jd_runs")
+      .select("*", { count: "exact" })
+      .order("created_at", { ascending: false })
+      .range(offset, offset + limit - 1);
+
+    if (source) query = query.eq("source", source);
+    if (status) query = query.eq("status", status);
+    if (dateFrom) query = query.gte("created_at", dateFrom);
+    if (dateTo) query = query.lte("created_at", dateTo);
+
+    const { data, error, count } = await query;
+    if (error) return res.status(500).json({ error: error.message });
+
+    return res.json({ data: data || [], total: count ?? 0, page, limit });
+  }
+
+  // ── POST /api/analyze-jd — unified single JD analysis ──────────────────────
   if (path === "/analyze-jd" && req.method === "POST") {
     const { text, job_id, filename } = req.body || {};
     let jdText = text;
 
+    // If no text but job_id provided, hydrate from jobs table
     if (!jdText && job_id) {
       const { data: job } = await supabase
         .from("jobs")
@@ -422,271 +456,81 @@ export async function handleTaxonomyRoutes(
     }
 
     if (!jdText) {
-      return res.status(400).json({ error: job_id ? "This job has no description data. Please paste the JD text manually instead." : "Provide 'text' or 'job_id'" });
+      return res.status(400).json({
+        error: job_id
+          ? "This job has no description data. Please paste the JD text manually instead."
+          : "Provide \'text\' or \'job_id\'",
+      });
     }
 
     if (!OPENAI_API_KEY) {
       return res.status(500).json({ error: "OPENAI_API_KEY not configured" });
     }
 
-    try {
-      // Call GPT with v2 classification prompt
-      const gptResponse = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${OPENAI_API_KEY}`,
-        },
-        body: JSON.stringify({
-          model: "gpt-4.1",
-          messages: [
-            { role: "system", content: JD_CLASSIFICATION_PROMPT },
-            { role: "user", content: filename ? `Filename: ${filename}\n\nIMPORTANT: If the company name is NOT in the JD text below, extract it from the filename above.\n\nClassify the following job description:\n\n${jdText.slice(0, 4000)}` : `Classify the following job description:\n\n${jdText.slice(0, 4000)}` },
-          ],
-          temperature: 0.2,
-          max_completion_tokens: 4000,
-          response_format: { type: "json_object" },
-        }),
-      });
-
-      if (!gptResponse.ok) {
-        const errText = await gptResponse.text().catch(() => "unknown");
-        throw new Error(`OpenAI API error ${gptResponse.status}: ${errText.slice(0, 200)}`);
-      }
-
-      const gptData = await gptResponse.json();
-      const content = gptData.choices?.[0]?.message?.content || "{}";
-      const parsed = JSON.parse(content);
-
-      // Process skills: taxonomy lookup + auto-create
-      const rawSkills: any[] = parsed.skills || [];
-      const processedSkills = [];
-
-      for (const skill of rawSkills.slice(0, 15)) {
-        const skillName = (skill.name || "").trim();
-        if (!skillName) continue;
-
-        // Try taxonomy lookup by name (ilike exact match)
-        const { data: match } = await supabase
-          .from("taxonomy_skills")
-          .select("id, name")
-          .ilike("name", skillName)
-          .limit(1)
-          .maybeSingle();
-
-        let taxonomyMatch: { id: string; name: string } | null = null;
-        let isNew = false;
-
-        if (match) {
-          taxonomyMatch = { id: match.id, name: match.name };
-        } else {
-          // Auto-create via upsert_skill RPC
-          try {
-            const { data: newId } = await supabase.rpc("upsert_skill", {
-              p_name: skillName,
-              p_category: skill.category || "skill",
-              p_tier: categoryToTier(skill.category || "skill"),
-            });
-            if (newId) {
-              taxonomyMatch = { id: newId, name: skillName };
-              isNew = true;
-            }
-          } catch {
-            // RPC may not exist yet — skip auto-create
-          }
-        }
-
-        processedSkills.push({
-          name: skillName,
-          category: skill.category || "skill",
-          skill_tier: categoryToTier(skill.category || "skill"),
-          required: skill.required ?? false,
-          taxonomy_match: taxonomyMatch,
-          is_new: isNew,
-        });
-      }
-
-      const confidenceScore = confidenceToScore(parsed.classification_confidence || "low");
-
-      // ── Build canonical ClassificationResult & run bucket resolver ──
-      const classification: ClassificationResult = {
-        job_function: parsed.job_function || null,
-        job_function_name: parsed.job_function_name || null,
-        job_family: parsed.job_family || null,
-        job_family_name: parsed.job_family_name || null,
-        job_industry: parsed.job_industry || null,
-        job_industry_name: parsed.job_industry_name || null,
-        seniority: parsed.seniority || null,
-        company_type: parsed.company_type || null,
-        geography: parsed.geography || null,
-        standardized_title: parsed.standardized_title || null,
-        sub_role: parsed.sub_role || null,
-        company_name: parsed.company_name || null,
-        ctc_min: parsed.ctc_min ?? null,
-        ctc_max: parsed.ctc_max ?? null,
-        experience_min: parsed.experience_min ?? null,
-        experience_max: parsed.experience_max ?? null,
-        min_education: parsed.min_education || null,
-        preferred_fields: parsed.preferred_fields || [],
-        bucket_label: parsed.bucket
-          ? parsed.bucket.replace(/\s*\|\s*null\b/g, "").trim()
-          : null,
-        skills: processedSkills.map<ClassificationSkill>(s => ({
-          name: s.name,
-          category: s.category,
-          required: s.required,
-          taxonomy_skill_id: s.taxonomy_match?.id ?? null,
-        })),
-        jd_quality: parsed.jd_quality || null,
-        classification_confidence: (parsed.classification_confidence || "low") as any,
-        classification_confidence_score: confidenceScore,
-      };
-
-      let bucketMapping = null as Awaited<ReturnType<typeof resolveBucket>> | null;
-      try {
-        bucketMapping = await resolveBucket(classification);
-      } catch (e: any) {
-        // Resolver failure must not break the analyzer; log + continue.
-        console.error("[analyze-jd] bucket resolver failed:", e?.message);
-      }
-
-      // If job_id was provided, write classification fields to the jobs table and upsert job_skills
-      // Mutation requires editor permission on jd_analyzer (or jobs).
-      let saved = false;
-      if (job_id) {
-        if (!requireEditor(auth, "jobs", res)) return;
-
-        try {
-          const updateFields: Record<string, any> = {
-            job_function: parsed.job_function || null,
-            job_family: parsed.job_family || null,
-            job_industry: parsed.job_industry || null,
-            bucket: classification.bucket_label,
-            sub_role: parsed.sub_role || null,
-            experience_min: parsed.experience_min ?? null,
-            experience_max: parsed.experience_max ?? null,
-            education_req: parsed.min_education || null,
-            jd_quality: parsed.jd_quality || null,
-            classification_confidence: confidenceScore,
-            analysis_version: "v2",
-            analyzed_at: new Date().toISOString(),
-            enrichment_status: "complete",
-          };
-          if (parsed.standardized_title) updateFields.standardized_title = parsed.standardized_title;
-          if (parsed.seniority) updateFields.seniority_level = parsed.seniority;
-          if (parsed.company_type) updateFields.company_type = parsed.company_type;
-          if (parsed.geography) updateFields.geography = parsed.geography;
-
-          // Persist structured classification evidence; harmless if column absent (jsonb).
-          updateFields.classification_raw = {
-            job_function: classification.job_function,
-            job_family: classification.job_family,
-            job_industry: classification.job_industry,
-            seniority: classification.seniority,
-            company_type: classification.company_type,
-            geography: classification.geography,
-            standardized_title: classification.standardized_title,
-            sub_role: classification.sub_role,
-            jd_quality: classification.jd_quality,
-            classification_confidence: classification.classification_confidence,
-          };
-
-          // Bucket linkage: only persist on auto_assign + validated bucket.
-          if (bucketMapping?.action === "auto_assign" && bucketMapping.selected) {
-            updateFields.bucket_id = bucketMapping.selected.bucket_id;
-            updateFields.bucket_match_confidence = bucketMapping.confidence;
-            updateFields.bucket_match_reason = {
-              action: bucketMapping.action,
-              top_candidates: bucketMapping.top_candidates,
-              mismatch_flags: bucketMapping.mismatch_flags,
-              reason_summary: bucketMapping.reason_summary,
-            };
-            updateFields.bucket_status_at_assignment = bucketMapping.selected.status;
-            updateFields.bucket_assigned_at = new Date().toISOString();
-          } else if (bucketMapping) {
-            // Record the attempted mapping for explainability without setting bucket_id.
-            updateFields.bucket_match_confidence = bucketMapping.confidence;
-            updateFields.bucket_match_reason = {
-              action: bucketMapping.action,
-              top_candidates: bucketMapping.top_candidates,
-              mismatch_flags: bucketMapping.mismatch_flags,
-              reason_summary: bucketMapping.reason_summary,
-            };
-          }
-
-          // Some classification columns may not exist if migration 031 hasn't run yet.
-          // Try the full update first; on PostgREST schema error, retry without the new fields.
-          const { error: updErr } = await supabase.from("jobs").update(updateFields).eq("id", job_id);
-          if (updErr) {
-            const fallback = { ...updateFields };
-            delete fallback.classification_raw;
-            delete fallback.bucket_id;
-            delete fallback.bucket_match_confidence;
-            delete fallback.bucket_match_reason;
-            delete fallback.bucket_status_at_assignment;
-            delete fallback.bucket_assigned_at;
-            delete fallback.standardized_title;
-            delete fallback.company_type;
-            delete fallback.geography;
-            await supabase.from("jobs").update(fallback).eq("id", job_id);
-          }
-
-          // Upsert job_skills
-          const skillRows = processedSkills
-            .filter(s => s.taxonomy_match)
-            .map(s => ({
-              job_id,
-              skill_name: s.name,
-              skill_category: s.category,
-              confidence_score: confidenceScore,
-              extraction_method: "ai_v2_analyzer",
-              taxonomy_skill_id: s.taxonomy_match!.id,
-              is_required: s.required,
-            }));
-
-          if (skillRows.length > 0) {
-            await supabase.from("job_skills").upsert(skillRows, { onConflict: "job_id,skill_name" });
-          }
-
-          saved = true;
-        } catch {
-          // Save failed — non-fatal, still return analysis
-        }
-      }
-
-      return res.json({
-        // ── Legacy top-level fields (preserved for existing frontend) ──
-        bucket: classification.bucket_label,
-        job_function: classification.job_function,
-        job_function_name: classification.job_function_name,
-        job_family: classification.job_family,
-        job_family_name: classification.job_family_name,
-        job_industry: classification.job_industry,
-        job_industry_name: classification.job_industry_name,
-        seniority: classification.seniority,
-        company_type: classification.company_type,
-        geography: classification.geography,
-        sub_role: classification.sub_role,
-        standardized_title: classification.standardized_title,
-        company_name: classification.company_name,
-        experience_min: classification.experience_min,
-        experience_max: classification.experience_max,
-        min_education: classification.min_education,
-        preferred_fields: classification.preferred_fields,
-        jd_quality: classification.jd_quality,
-        classification_confidence: confidenceScore,
-        ctc_min: classification.ctc_min,
-        ctc_max: classification.ctc_max,
-        skills: processedSkills,
-        total: processedSkills.length,
-        saved,
-        // ── New structured payload ──
-        classification,
-        bucket_mapping: bucketMapping,
-      });
-    } catch (err: any) {
-      return res.status(500).json({ error: err.message || "AI analysis failed" });
+    // Editor permission required when saving back to a job
+    if (job_id) {
+      if (!requireEditor(auth, "jobs", res)) return;
     }
+
+    // Determine the calling user
+    const callingUserId = auth?.userId ?? undefined;
+
+    // Route through unified pipeline
+    const result = await runAnalyzeJd({
+      text: jdText,
+      filename: filename ?? undefined,
+      job_id: job_id ?? undefined,
+      source: "manual_single",
+      created_by: callingUserId,
+    });
+
+    if (result.status === "failed") {
+      return res.status(500).json({ error: result.error || "AI analysis failed" });
+    }
+
+    // Shape skills array to match legacy frontend contract
+    const legacySkills = result.skills.map(s => ({
+      name: s.name,
+      category: s.category,
+      skill_tier: s.skill_tier,
+      required: s.required,
+      taxonomy_match: s.taxonomy_match,
+      is_new: s.is_new,
+    }));
+
+    return res.json({
+      // ── Legacy flat fields (preserved for existing frontend) ──
+      bucket: result.bucket,
+      job_function: result.job_function,
+      job_function_name: result.job_function_name,
+      job_family: result.job_family,
+      job_family_name: result.job_family_name,
+      job_industry: result.job_industry,
+      job_industry_name: result.job_industry_name,
+      seniority: result.seniority,
+      company_type: result.company_type,
+      geography: result.geography,
+      sub_role: result.sub_role,
+      standardized_title: result.standardized_title,
+      company_name: result.company_name,
+      experience_min: result.experience_min,
+      experience_max: result.experience_max,
+      min_education: result.min_education,
+      preferred_fields: result.preferred_fields,
+      jd_quality: result.jd_quality,
+      classification_confidence: result.classification_confidence,
+      ctc_min: result.ctc_min,
+      ctc_max: result.ctc_max,
+      skills: legacySkills,
+      total: result.total,
+      saved: result.saved,
+      // ── New structured payload ──
+      classification: result.classification,
+      bucket_mapping: result.bucket_mapping,
+      // ── Instrumentation ──
+      run_id: result.run_id,
+      was_partial: result.was_partial,
+    });
   }
 
   // ── Extract text from uploaded file (PDF, DOCX, TXT) ────────────────────────
