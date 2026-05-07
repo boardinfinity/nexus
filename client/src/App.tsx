@@ -23,6 +23,7 @@ import Monitoring from "@/pages/monitoring";
 import Settings from "@/pages/settings";
 import Taxonomy from "@/pages/taxonomy";
 import JDAnalyzer from "@/pages/jd-analyzer";
+import JDAnalyzerRuns from "@/pages/jd-analyzer-runs";
 import UploadPage from "@/pages/upload";
 import { Redirect } from "wouter";
 import SurveyAdmin from "@/pages/survey-admin";
@@ -61,6 +62,7 @@ function AppRouter() {
       <Route path="/monitoring" component={Monitoring} />
       <Route path="/settings" component={Settings} />
       <Route path="/taxonomy" component={Taxonomy} />
+      <Route path="/jd-analyzer/runs" component={JDAnalyzerRuns} />
       <Route path="/jd-analyzer" component={JDAnalyzer} />
       <Route path="/survey-admin" component={SurveyAdmin} />
       <Route path="/survey-admin/:id">{(params) => <SurveyDetail params={params} />}</Route>
