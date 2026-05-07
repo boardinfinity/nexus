@@ -1,5 +1,6 @@
 /**
  * OpenAI Batch API integration for nightly JD enrichment
+ * Instrumented: writes rows to analyze_jd_runs (source = 'async_batch') per job.
  * - 50% cheaper than real-time API
  * - No timeout exposure (async, up to 24h SLA, typically 2-4h)
  * - Submits all JDs in one JSONL file at midnight
@@ -9,6 +10,7 @@ import { OPENAI_API_KEY } from "./supabase";
 import { supabase } from "./supabase";
 import { resolveBucket } from "./bucketResolver";
 import { type ClassificationResult, type ClassificationSkill, confidenceBandToScore, categoryToTier as sharedCategoryToTier } from "./bucketTypes";
+import { L2_TO_L1 } from "./analyze-jd";
 
 const OPENAI_BASE = "https://api.openai.com/v1";
 const JD_BATCH_MODEL = "gpt-4.1-mini";
@@ -340,11 +342,51 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           }
         }
 
+        // ── analyze_jd_runs instrumentation (async_batch source) ──
+        try {
+          const batchSkillCount = (parsed.skills || []).slice(0, 15).length;
+          const wasPartial = !parsed.job_function || !parsed.job_family || !parsed.job_industry || !parsed.bucket_label || batchSkillCount < 3;
+          await supabase.from("analyze_jd_runs").insert({
+            source: "async_batch",
+            job_id: jobId,
+            batch_id: batchRunId,
+            status: wasPartial ? "partial" : "succeeded",
+            model: JD_BATCH_MODEL,
+            prompt_version: "v2.0",
+            skills_extracted: batchSkillCount,
+            skills_new: 0, // bulk path doesn't track individually
+            bucket_match: (parsed.bucket_label || "").replace(/\s*\|\s*null\b/g, "").trim() || null,
+            bucket_confidence: bucketMapping?.confidence ?? null,
+            was_partial: wasPartial,
+            created_at: new Date().toISOString(),
+            finished_at: new Date().toISOString(),
+          });
+        } catch (instrErr: any) {
+          console.error("[batch] analyze_jd_runs insert failed:", instrErr?.message);
+        }
+
         processed++;
       } catch (e: any) {
         const errMsg = `job=${jobId}: ${e.message?.slice(0, 150) || String(e)}`;
         console.error(`[batch] Failed:`, errMsg);
         debugInfo._errors.push(errMsg);
+        // Log failure to analyze_jd_runs
+        try {
+          await supabase.from("analyze_jd_runs").insert({
+            source: "async_batch",
+            job_id: jobId,
+            batch_id: batchRunId,
+            status: "failed",
+            model: JD_BATCH_MODEL,
+            prompt_version: "v2.0",
+            was_partial: true,
+            error_message: e.message?.slice(0, 500) || String(e),
+            created_at: new Date().toISOString(),
+            finished_at: new Date().toISOString(),
+          });
+        } catch (instrErr: any) {
+          console.error("[batch] analyze_jd_runs insert (fail) error:", instrErr?.message);
+        }
         failed++;
       }
     }
