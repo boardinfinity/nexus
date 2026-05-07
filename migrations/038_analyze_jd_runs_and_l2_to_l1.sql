@@ -130,14 +130,14 @@ CREATE POLICY "admin_write_analyze_jd_runs"
   TO authenticated
   USING (
     EXISTS (
-      SELECT 1 FROM public.user_roles ur
-      WHERE ur.user_id = auth.uid() AND ur.role IN ('admin', 'super_admin')
+      SELECT 1 FROM public.nexus_users nu
+      WHERE nu.id = auth.uid() AND nu.role IN ('admin', 'super_admin')
     )
   )
   WITH CHECK (
     EXISTS (
-      SELECT 1 FROM public.user_roles ur
-      WHERE ur.user_id = auth.uid() AND ur.role IN ('admin', 'super_admin')
+      SELECT 1 FROM public.nexus_users nu
+      WHERE nu.id = auth.uid() AND nu.role IN ('admin', 'super_admin')
     )
   );
 
@@ -158,13 +158,13 @@ CREATE POLICY "admin_write_l2_to_l1"
   TO authenticated
   USING (
     EXISTS (
-      SELECT 1 FROM public.user_roles ur
-      WHERE ur.user_id = auth.uid() AND ur.role IN ('admin', 'super_admin')
+      SELECT 1 FROM public.nexus_users nu
+      WHERE nu.id = auth.uid() AND nu.role IN ('admin', 'super_admin')
     )
   )
   WITH CHECK (
     EXISTS (
-      SELECT 1 FROM public.user_roles ur
-      WHERE ur.user_id = auth.uid() AND ur.role IN ('admin', 'super_admin')
+      SELECT 1 FROM public.nexus_users nu
+      WHERE nu.id = auth.uid() AND nu.role IN ('admin', 'super_admin')
     )
   );
