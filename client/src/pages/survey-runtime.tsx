@@ -524,9 +524,31 @@ function OtpGate({
     }
   }
 
+  // Render intro_markdown as paragraphs. Supports blank-line paragraph breaks,
+  // ## headings, and inline **bold** without pulling in a markdown dep.
+  const introBlocks = survey.intro_markdown
+    ? survey.intro_markdown
+        .replace(/\r\n/g, "\n")
+        .split(/\n\s*\n/)
+        .map((b) => b.trim())
+        .filter(Boolean)
+    : [];
+  const renderInline = (s: string) => {
+    const parts = s.split(/(\*\*[^*]+\*\*)/g);
+    return parts.map((p, i) =>
+      p.startsWith("**") && p.endsWith("**") ? (
+        <strong key={i}>{p.slice(2, -2)}</strong>
+      ) : (
+        <span key={i}>{p}</span>
+      )
+    );
+  };
+
+  const hasIntro = introBlocks.length > 0;
+
   return (
     <CenteredShell>
-      <Card className="max-w-md w-full">
+      <Card className={hasIntro ? "max-w-2xl w-full" : "max-w-md w-full"}>
         <CardHeader>
           <CardTitle>{survey.title}</CardTitle>
           {survey.description && (
@@ -538,6 +560,29 @@ function OtpGate({
             </p>
           )}
         </CardHeader>
+        {hasIntro && (
+          <CardContent className="pt-0 pb-4">
+            <div className="space-y-3 text-sm text-foreground/90 leading-relaxed border-t pt-4">
+              {introBlocks.map((block, i) => {
+                if (block.startsWith("## ")) {
+                  return (
+                    <h3 key={i} className="text-base font-semibold text-foreground">
+                      {block.replace(/^##\s+/, "")}
+                    </h3>
+                  );
+                }
+                if (block.startsWith("# ")) {
+                  return (
+                    <h2 key={i} className="text-lg font-semibold text-foreground">
+                      {block.replace(/^#\s+/, "")}
+                    </h2>
+                  );
+                }
+                return <p key={i}>{renderInline(block)}</p>;
+              })}
+            </div>
+          </CardContent>
+        )}
         <CardContent>
           {step === "email" ? (
             <form onSubmit={handleSendOtp} className="space-y-4">
