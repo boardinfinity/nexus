@@ -73,7 +73,7 @@ CREATE POLICY campus_upload_batches_admin_all
   USING (
     EXISTS (
       SELECT 1 FROM nexus_users
-      WHERE nexus_users.auth_uid = auth.uid()
+      WHERE nexus_users.id = auth.uid()
         AND nexus_users.role IN ('admin', 'super_admin')
     )
   );
@@ -87,7 +87,7 @@ CREATE POLICY campus_upload_batches_spoc_read
   USING (
     EXISTS (
       SELECT 1 FROM nexus_users
-      WHERE nexus_users.auth_uid = auth.uid()
+      WHERE nexus_users.id = auth.uid()
         AND nexus_users.role = 'college_rep'
         AND campus_upload_batches.college_id = ANY(nexus_users.restricted_college_ids)
     )
@@ -101,7 +101,7 @@ CREATE POLICY campus_upload_batches_spoc_write
   WITH CHECK (
     EXISTS (
       SELECT 1 FROM nexus_users
-      WHERE nexus_users.auth_uid = auth.uid()
+      WHERE nexus_users.id = auth.uid()
         AND nexus_users.role = 'college_rep'
         AND campus_upload_batches.college_id = ANY(nexus_users.restricted_college_ids)
     )
@@ -114,7 +114,7 @@ CREATE POLICY campus_upload_batches_spoc_update
   USING (
     EXISTS (
       SELECT 1 FROM nexus_users
-      WHERE nexus_users.auth_uid = auth.uid()
+      WHERE nexus_users.id = auth.uid()
         AND nexus_users.role = 'college_rep'
         AND campus_upload_batches.college_id = ANY(nexus_users.restricted_college_ids)
     )
