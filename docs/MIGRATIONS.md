@@ -14,6 +14,7 @@
 | 032 | `032_survey_status_published.sql` | — | — | (already in repo — backfill summary when known) |
 | 033 | `033_taxonomy_4category_model.sql` | 2026-05-06 | abhay | Taxonomy 4-category L1/L2 model. Adds `l1`, `l2`, `domain_tag`, `india_relevance` cols on `taxonomy_skills` with CHECK constraints (4-value l1 enum, 10-value l2 enum, valid l1+l2 pair, domain enum, india enum). 5 indexes + 1 partial unique index for v2 batch. Bulk-inserts 1,419 net-new contemporary skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged). Existing 8,887 legacy rows untouched. source=`nexus_taxonomy_v2_2026_05`. |
 | 037 | `037_taxonomy_legacy_backfill_and_regions.sql` | 2026-05-06 | abhay | Taxonomy legacy backfill + regions. Adds `regions text[]` column on `taxonomy_skills` + GIN index. Bulk deterministic backfill of `l1`/`l2` for 8,887 legacy rows (technology→TECHNICAL SKILLS/Tool, skill→COMPETENCIES/Skill, ability→COMPETENCIES/Ability, knowledge→KNOWLEDGE/Knowledge). Seeds `regions` from `india_relevance` (india_specific→[India], india_strong→[India,Global], else→[Global]). Replaces `get_taxonomy_stats()` to return `by_l1`, `by_l2` (nested), `by_region`. Final state: 0 null l1, 0 null regions, 10,307 total. |
+| 039 | `039_campus_upload_batches.sql` | 2026-05-07 | jdenh001 | Campus upload batches. New table `campus_upload_batches` (id uuid PK, college_id FK, program text, job_type CHECK enum, drive_year int, source text, ctc_tag text, status CHECK enum, uploaded_by FK auth.users, total_files int, jds_committed int, timestamps). Adds `jobs.upload_batch_id` uuid FK → campus_upload_batches ON DELETE SET NULL. Indexes: `idx_campus_upload_batches_college`, `idx_campus_upload_batches_status_year`, `idx_jobs_upload_batch_id`. RLS: admin full access; college_rep read+insert+update scoped to their `restricted_college_ids`; no DELETE policy for college_rep. Auto-update trigger `trg_campus_batch_updated_at`. |
 
 ---
 
@@ -26,7 +27,7 @@
 | 036 | Bucket validation cycle audit columns | TBD | available |
 | 038 | `038_analyze_jd_runs_and_l2_to_l1.sql` | 2026-05-07 | jdenh001 (Track A) | analyze_jd_runs table (pipeline call-level logging, 5 indexes) + l2_to_l1_lookup table (10-row L2→L1 seed). RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
 | 038b | `038b_upsert_skill_l1_l2.sql` | 2026-05-07 | jdenh001 (Track B) | Extends upsert_skill() with optional p_l1/p_l2 params (backwards compat). Adds find_similar_skill() RPC (pg_trgm similarity pre-filter) and append_skill_alias() RPC (fuzzy-merge alias append + mention_count increment). Enables fuzzystrmatch extension. GIN index on aliases[] + trigram index on name. NOT applied yet — pending user CLI apply. |
-| 039 | campus_upload_batches + jobs.upload_batch_id FK | jdenh001 | reserved (in progress) |
+| 039 | _(applied — see main table)_ | jdenh001 | applied 2026-05-07 |
 | 040 | _(open)_ | TBD | available |
 
 > Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
