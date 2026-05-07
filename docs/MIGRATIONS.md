@@ -1,6 +1,6 @@
 # Nexus — Migration Log
 
-**The next migration number is: `038`** (reserve before writing SQL).
+**The next migration number is: `040`** (reserve before writing SQL).
 
 | # | File | Date | Author | Summary |
 |---|---|---|---|---|
@@ -24,7 +24,8 @@
 | 034 | Alumni Insights core (re-reserve) | TBD | available |
 | 035 | Alumni Insights seed (re-reserve) | TBD | available |
 | 036 | Bucket validation cycle audit columns | TBD | available |
-| 038 | analyze_jd_runs (logging table for all 3 Analyze JD entry points) + l2_to_l1 lookup table | jdenh001 | reserved (in progress) |
+| 038 | `038_analyze_jd_runs_and_l2_to_l1.sql` | 2026-05-07 | jdenh001 (Track A) | analyze_jd_runs table (pipeline call-level logging, 5 indexes) + l2_to_l1_lookup table (10-row L2→L1 seed). RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
+| 038b | `038b_upsert_skill_l1_l2.sql` | 2026-05-07 | jdenh001 (Track B) | Extends upsert_skill() with optional p_l1/p_l2 params (backwards compat). Adds find_similar_skill() RPC (pg_trgm similarity pre-filter) and append_skill_alias() RPC (fuzzy-merge alias append + mention_count increment). Enables fuzzystrmatch extension. GIN index on aliases[] + trigram index on name. NOT applied yet — pending user CLI apply. |
 | 039 | campus_upload_batches + jobs.upload_batch_id FK | jdenh001 | reserved (in progress) |
 | 040 | _(open)_ | TBD | available |
 
