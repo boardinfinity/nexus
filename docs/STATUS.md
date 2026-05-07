@@ -26,3 +26,4 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 - 2026-04-09 · intelligence-framework · — · Migration 025: P1 schema for Intelligence Framework. 26 functions, 20 families, 15 industries seeded. upsert_skill() + validate_skills() functions.
 - 2026-04-03 · marketing · — · Nexus product marketing wireframe + Nexus University one-pager.
 2026-05-06 · bd929ff · UOWD survey: 25 preset skill rows (text-only) + optional taxonomy add-more picker
+2026-05-07 · dffb624 · feat(analyze-jd-C): JD Analyzer results refactored into 7 transparent sub-components (ResultHeader, ClassificationCard, BucketMappingCard, ExperienceEducationCTC, SkillsCard + types/InfoTooltip) with shadcn Tooltip explainers, candidate/auto-created badges, L1-coloured skill chips, and a 'Why this bucket?' Collapsible disclosure (placeholder pending Track A scoring) [thread jdenh001]
