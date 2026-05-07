@@ -25,6 +25,7 @@ import Taxonomy from "@/pages/taxonomy";
 import JDAnalyzer from "@/pages/jd-analyzer";
 import JDAnalyzerRuns from "@/pages/jd-analyzer-runs";
 import UploadPage from "@/pages/upload";
+import UploadCampusPage from "@/pages/upload-campus";
 import { Redirect } from "wouter";
 import SurveyAdmin from "@/pages/survey-admin";
 import SurveyDetail from "@/pages/survey-detail";
@@ -52,6 +53,7 @@ function AppRouter() {
       <Route path="/companies" component={Companies} />
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />
+      <Route path="/upload/campus" component={UploadCampusPage} />
       <Route path="/pipelines/jobs" component={JobCollection} />
       <Route path="/pipelines/jd" component={JDIntelligence} />
       <Route path="/pipelines/people" component={PeopleAlumni} />
