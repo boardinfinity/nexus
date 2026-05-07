@@ -13,80 +13,18 @@ import { Loader2, Sparkles, FileText, CheckCircle, ChevronsUpDown, Check, Info, 
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
-
-interface AnalyzeSkill {
-  name: string;
-  category: string;
-  skill_tier: string;
-  required: boolean;
-  taxonomy_match: { id: string; name: string } | null;
-  is_new: boolean;
-}
-
-interface BucketCandidate {
-  bucket_id: string;
-  bucket_code: string;
-  name: string;
-  status: "candidate" | "validated" | "deprecated" | "merged";
-  score: number;
-  reasons: Array<{ signal: string; weight: number; contribution: number; detail?: string }>;
-  function_id: string | null;
-  family_id: string | null;
-  industry_id: string | null;
-  seniority_level: string | null;
-  geography_scope: string | null;
-}
-
-interface BucketMapping {
-  selected: BucketCandidate | null;
-  confidence: number;
-  action: "auto_assign" | "tentative" | "show_candidates" | "needs_candidate" | "unclassified";
-  top_candidates: BucketCandidate[];
-  candidate_needed: boolean;
-  mismatch_flags: string[];
-  reason_summary: string;
-}
-
-interface AnalyzeResult {
-  bucket: string | null;
-  job_function: string | null;
-  job_function_name: string | null;
-  job_family: string | null;
-  job_family_name: string | null;
-  job_industry: string | null;
-  job_industry_name: string | null;
-  seniority: string | null;
-  company_type: string | null;
-  geography: string | null;
-  sub_role: string | null;
-  standardized_title: string | null;
-  company_name: string | null;
-  experience_min: number | null;
-  experience_max: number | null;
-  min_education: string | null;
-  preferred_fields: string[];
-  jd_quality: string | null;
-  classification_confidence: number;
-  ctc_min: number | null;
-  ctc_max: number | null;
-  skills: AnalyzeSkill[];
-  total: number;
-  saved: boolean;
-  classification?: any;
-  bucket_mapping?: BucketMapping | null;
-}
+import type { AnalyzeResult } from "@/components/jd-analyzer/types";
+import { ResultHeader } from "@/components/jd-analyzer/ResultHeader";
+import { ClassificationCard } from "@/components/jd-analyzer/ClassificationCard";
+import { BucketMappingCard } from "@/components/jd-analyzer/BucketMappingCard";
+import { ExperienceEducationCTC } from "@/components/jd-analyzer/ExperienceEducationCTC";
+import { SkillsCard } from "@/components/jd-analyzer/SkillsCard";
 
 interface Job {
   id: string;
   title: string;
   company_name: string | null;
 }
-
-const qualityColors: Record<string, string> = {
-  well_structured: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-  adequate: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-  poor: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-};
 
 export default function JDAnalyzer() {
   const [mode, setMode] = useState<"paste" | "select" | "upload">("paste");
@@ -171,11 +109,6 @@ export default function JDAnalyzer() {
       toast({ title: "Analysis failed", description: err.message, variant: "destructive" });
     },
   });
-
-  const hardSkills = result?.skills.filter(s => s.skill_tier === "hard_skill") || [];
-  const knowledgeSkills = result?.skills.filter(s => s.skill_tier === "knowledge") || [];
-  const competencies = result?.skills.filter(s => s.skill_tier === "competency") || [];
-
 
   const pollSalary = async (run_id: string, company: string, job_title: string) => {
     try {
@@ -511,204 +444,14 @@ export default function JDAnalyzer() {
         )}
       </div>
 
-      {/* V2 Results */}
+      {/* V2 Results — refactored into sub-components for transparency (Track C jdenh001) */}
       {result && (
-        <div className="space-y-4">
-          {/* 1. Classification Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <Sparkles className="h-4 w-4" /> Classification
-                {result.saved && <Badge variant="outline" className="text-[10px] text-green-600 border-green-300"><CheckCircle className="h-3 w-3 mr-1" />Saved</Badge>}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {/* Bucket label */}
-              {result.bucket && (
-                <div className="rounded-lg bg-teal-600 text-white px-4 py-3">
-                  <p className="text-lg font-semibold">{result.bucket}</p>
-                  {result.standardized_title && result.standardized_title !== result.bucket && (
-                    <p className="text-teal-100 text-sm mt-0.5">{result.standardized_title}</p>
-                  )}
-                </div>
-              )}
-
-              {/* Classification badges */}
-              <div className="flex flex-wrap gap-2">
-                {result.job_function_name && (
-                  <Badge variant="secondary" className="text-xs">{result.job_function_name}</Badge>
-                )}
-                {result.job_family_name && (
-                  <Badge variant="secondary" className="text-xs">{result.job_family_name}</Badge>
-                )}
-                {result.job_industry_name && (
-                  <Badge variant="secondary" className="text-xs">{result.job_industry_name}</Badge>
-                )}
-                {result.seniority && (
-                  <Badge variant="secondary" className="text-xs">{result.seniority}</Badge>
-                )}
-                {result.company_type && (
-                  <Badge variant="secondary" className="text-xs">{result.company_type}</Badge>
-                )}
-                {result.geography && (
-                  <Badge variant="outline" className="text-xs">{result.geography}</Badge>
-                )}
-              </div>
-
-              {/* Sub-role */}
-              {result.sub_role && (
-                <p className="text-sm text-muted-foreground">Sub-role: <span className="text-foreground font-medium">{result.sub_role}</span></p>
-              )}
-
-              {/* Quality + confidence */}
-              <div className="flex items-center gap-2">
-                {result.jd_quality && (
-                  <Badge className={`text-[10px] ${qualityColors[result.jd_quality] || ""}`}>
-                    {result.jd_quality.replace("_", " ")}
-                  </Badge>
-                )}
-                {result.classification_confidence > 0 && (
-                  <Badge variant="outline" className="text-[10px]">
-                    {Math.round(result.classification_confidence * 100)}% confidence
-                  </Badge>
-                )}
-              </div>
-
-              {/* Bucket mapping (resolver result) */}
-              {result.bucket_mapping && (
-                <div className="border rounded-md p-3 bg-muted/30 space-y-2" data-testid="bucket-mapping">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs font-semibold uppercase text-muted-foreground">Bucket mapping</span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {result.bucket_mapping.action.replace("_", " ")}
-                    </Badge>
-                    <Badge variant="outline" className="text-[10px]">
-                      {Math.round(result.bucket_mapping.confidence * 100)}% match
-                    </Badge>
-                    {result.bucket_mapping.candidate_needed && (
-                      <Badge variant="outline" className="text-[10px] text-amber-700 border-amber-300">
-                        candidate suggested
-                      </Badge>
-                    )}
-                  </div>
-                  {result.bucket_mapping.selected ? (
-                    <div className="text-sm">
-                      <span className="font-medium">{result.bucket_mapping.selected.name}</span>
-                      <span className="ml-2 text-muted-foreground text-xs">{result.bucket_mapping.selected.bucket_code}</span>
-                    </div>
-                  ) : (
-                    <p className="text-xs text-muted-foreground italic">{result.bucket_mapping.reason_summary}</p>
-                  )}
-                  {result.bucket_mapping.top_candidates.length > 0 && (
-                    <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground">
-                        Top {result.bucket_mapping.top_candidates.length} candidate{result.bucket_mapping.top_candidates.length === 1 ? "" : "s"}
-                      </summary>
-                      <ul className="mt-1 space-y-1">
-                        {result.bucket_mapping.top_candidates.map(c => (
-                          <li key={c.bucket_id} className="flex items-center justify-between gap-2">
-                            <span className="truncate">{c.name}</span>
-                            <span className="font-mono text-[10px] text-muted-foreground">
-                              {Math.round(c.score * 100)}%{c.status !== "validated" ? ` · ${c.status}` : ""}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    </details>
-                  )}
-                  {result.bucket_mapping.mismatch_flags.length > 0 && (
-                    <div className="text-[10px] text-red-700 dark:text-red-400">
-                      ⚠ {result.bucket_mapping.mismatch_flags.join(", ")}
-                    </div>
-                  )}
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* 2. Experience & Education Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm">Experience & Education</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">Experience</p>
-                  <p className="text-sm font-medium">
-                    {result.experience_min != null || result.experience_max != null
-                      ? `${result.experience_min ?? 0} – ${result.experience_max ?? "?"} years`
-                      : "Not specified"}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">Education</p>
-                  <p className="text-sm font-medium capitalize">{result.min_education || "Not specified"}</p>
-                  {result.preferred_fields.length > 0 && (
-                    <p className="text-xs text-muted-foreground mt-0.5">{result.preferred_fields.join(", ")}</p>
-                  )}
-                </div>
-                <div>
-                  <p className="text-xs text-muted-foreground mb-1">CTC</p>
-                  <p className="text-sm font-medium">
-                    {result.ctc_min != null || result.ctc_max != null
-                      ? `₹${result.ctc_min ?? "?"} – ${result.ctc_max ?? "?"} LPA`
-                      : "Not stated in JD"}
-                  </p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* 3. Skills Card */}
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="text-sm flex items-center gap-2">
-                Skills <Badge variant="secondary">{result.total}</Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {[
-                { label: "Hard Skills", items: hardSkills, color: "bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200" },
-                { label: "Knowledge", items: knowledgeSkills, color: "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-200" },
-                { label: "Competencies", items: competencies, color: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200" },
-              ].filter(g => g.items.length > 0).map(group => (
-                <div key={group.label}>
-                  <h3 className="text-xs font-semibold text-muted-foreground uppercase mb-2">
-                    {group.label} ({group.items.length})
-                  </h3>
-                  <div className="space-y-1.5">
-                    {group.items.map((skill, i) => (
-                      <div key={i} className="flex items-center justify-between p-2 rounded border">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="text-sm font-medium truncate">{skill.name}</span>
-                          <Badge className={`text-[10px] shrink-0 ${group.color}`}>
-                            {skill.category}
-                          </Badge>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <Badge variant={skill.required ? "default" : "outline"} className="text-[10px]">
-                            {skill.required ? "Required" : "Optional"}
-                          </Badge>
-                          {skill.is_new ? (
-                            <Badge variant="outline" className="text-[10px] text-orange-600 border-orange-300">New</Badge>
-                          ) : skill.taxonomy_match ? (
-                            <Badge variant="outline" className="text-[10px] text-green-600 border-green-300">
-                              <CheckCircle className="h-2.5 w-2.5 mr-0.5" />Matched
-                            </Badge>
-                          ) : null}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {result.total === 0 && (
-                <p className="text-sm text-muted-foreground text-center py-4">No skills extracted</p>
-              )}
-
-            </CardContent>
-          </Card>
+        <div className="space-y-4" data-testid="jd-analyzer-results">
+          <ResultHeader result={result} />
+          <ClassificationCard result={result} />
+          <BucketMappingCard result={result} />
+          <ExperienceEducationCTC result={result} />
+          <SkillsCard result={result} />
         </div>
       )}
     </div>
