@@ -1,7 +1,7 @@
 /**
  * api/lib/analyze-jd.ts
  * ──────────────────────────────────────────────────────────────
- * Unified JD analysis pipeline — Track A (jdenh001)
+ * Unified JD analysis pipeline — Track A (jdenh001) + Track B (jdenh001)
  *
  * All three entry points funnel through runAnalyzeJd():
  *   1. manual_single  — jd-analyzer.tsx paste / upload / select-job
@@ -17,6 +17,14 @@
  *     (no more silent catch {})
  *   - Bucket resolver failures are non-fatal but logged
  *   - Top-level failures set status = 'failed'
+ *
+ * Track B additions (v2.2):
+ *   - processSkill() now passes p_l1 + p_l2 to upsert_skill RPC (migration 038b)
+ *   - Fuzzy-match step runs BEFORE upsert: similarity() via pg_trgm + Levenshtein
+ *     check. Near-duplicate (lev ≤ 2 normalised) → append alias, return existing id.
+ *   - Fuzzy-merge events are logged to analyze_jd_runs.error_message with "[fuzzy-merge]" prefix.
+ *   - ProcessedSkill now includes l1 and l2 in the returned payload.
+ *   - JD_CLASSIFICATION_PROMPT updated to v2.2 — category field explicitly named L2.
  */
 
 import { supabase, OPENAI_API_KEY } from "./supabase";
@@ -32,10 +40,16 @@ import {
 // Constants
 // ─────────────────────────────────────────────────────────────────────
 
-export const ANALYZE_JD_PROMPT_VERSION = "v2.1"; // bump when prompt changes
+export const ANALYZE_JD_PROMPT_VERSION = "v2.2"; // bumped by Track B
 const REALTIME_MODEL = "gpt-4.1-mini";
 
-/** L2 category → L1 group (deterministic, mirrors l2_to_l1_lookup table) */
+/**
+ * L2 → L1 mapping (deterministic, mirrors l2_to_l1_lookup DB table).
+ * Must stay in sync with migration 038's l2_to_l1_lookup seed.
+ *
+ * L2 values are the exact 10 valid "category" values the LLM returns
+ * (see JD_CLASSIFICATION_PROMPT below).  L1 has 4 values only.
+ */
 export const L2_TO_L1: Record<string, string> = {
   Technology:    "TECHNICAL SKILLS",
   Tool:          "TECHNICAL SKILLS",
@@ -49,11 +63,18 @@ export const L2_TO_L1: Record<string, string> = {
   Certification: "CREDENTIAL",
 };
 
+/** Valid L2 values (10 total — mirrors the LLM prompt enum exactly) */
+const VALID_L2 = new Set(Object.keys(L2_TO_L1));
+
 /** Capitalise first letter of category for L2 normalisation */
 function normaliseCategory(raw: string): string {
-  const s = (raw || "skill").trim();
+  const s = (raw || "Skill").trim();
   return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
+
+// ─────────────────────────────────────────────────────────────────────
+// Prompt (v2.2) — L2 category field made explicit
+// ─────────────────────────────────────────────────────────────────────
 
 export const JD_CLASSIFICATION_PROMPT = `You are an expert job market analyst specializing in Indian MBA/graduate placement intelligence. Classify the given job description into structured fields.
 
@@ -107,7 +128,22 @@ Return a JSON object with:
   "skills": [
     {
       "name": "skill name",
+
+      // IMPORTANT — "category" is the L2 skill sub-category.
+      // You MUST use EXACTLY one of these 10 values (case-sensitive):
+      //   Technology   — programming languages, frameworks, platforms (e.g. Python, React, AWS)
+      //   Tool         — software tools & applications (e.g. Tableau, Salesforce, Excel)
+      //   Methodology  — processes, practices, standards (e.g. Agile, Six Sigma, GAAP)
+      //   Language     — human/spoken languages (e.g. English, Hindi, Mandarin)
+      //   Knowledge    — bodies of knowledge & theory (e.g. Financial Modelling, Thermodynamics)
+      //   Domain       — industry/functional domains (e.g. FMCG, Healthcare, E-commerce)
+      //   Skill        — general professional skills (e.g. Communication, Problem Solving)
+      //   Competency   — measurable work competencies (e.g. Strategic Thinking, Data Analysis)
+      //   Ability      — innate or developed aptitudes (e.g. Attention to Detail, Creativity)
+      //   Certification — formal credentials & certifications (e.g. CFA, PMP, AWS Solutions Architect)
+      // Do NOT invent new values. If uncertain, default to "Skill".
       "category": "Technology|Tool|Methodology|Language|Knowledge|Domain|Skill|Competency|Ability|Certification",
+
       "required": true
     }
   ],
@@ -130,7 +166,7 @@ export interface AnalyzeJdInput {
   filename?: string;
   /** Existing job_id — if set, classification will be written back */
   job_id?: string;
-  /** Batch grouping ID (OpenAI batch_id or campus upload session) */
+  /** Batch grouping ID (OpenAI batch_id or campus upload session uuid) */
   batch_id?: string;
   /** Which call path triggered this */
   source: AnalyzeSource;
@@ -141,12 +177,16 @@ export interface AnalyzeJdInput {
 export interface ProcessedSkill {
   name: string;
   category: string;
+  /** L2 sub-category (one of 10 valid values) — set by Track B */
   l2: string;
+  /** L1 group (one of 4: TECHNICAL SKILLS / KNOWLEDGE / COMPETENCIES / CREDENTIAL) — set by Track B */
   l1: string;
   skill_tier: string;
   required: boolean;
   taxonomy_match: { id: string; name: string } | null;
   is_new: boolean;
+  /** True when a fuzzy-match merged this variant into an existing skill */
+  was_fuzzy_merged?: boolean;
 }
 
 export interface AnalyzeJdResult {
@@ -214,9 +254,24 @@ async function upsertRun(
     .from("analyze_jd_runs")
     .upsert({ id, ...fields }, { onConflict: "id" });
   if (error) {
-    // Never let instrumentation failures surface to the caller
     console.error("[analyze-jd] run upsert failed:", error.message, "| run_id:", id, "| fields:", JSON.stringify(fields));
   }
+}
+
+/** Append a message to analyze_jd_runs.error_message (best-effort, non-blocking) */
+async function appendRunMessage(runId: string, msg: string): Promise<void> {
+  try {
+    const { data: existing } = await supabase
+      .from("analyze_jd_runs")
+      .select("error_message")
+      .eq("id", runId)
+      .maybeSingle();
+    const prev = existing?.error_message ? `${existing.error_message}\n` : "";
+    await supabase
+      .from("analyze_jd_runs")
+      .update({ error_message: `${prev}${msg}` })
+      .eq("id", runId);
+  } catch { /* instrumentation must never throw */ }
 }
 
 /** Determine if a result qualifies as partial enrichment */
@@ -233,30 +288,143 @@ function calcWasPartial(
   );
 }
 
-/** Process a single skill: taxonomy lookup → upsert_skill RPC → log errors */
+/**
+ * Normalise a skill name for fuzzy matching:
+ * lowercase → trim → strip punctuation → collapse whitespace
+ */
+function normaliseFuzzy(s: string): string {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/[^\w\s]/g, "")   // strip punctuation
+    .replace(/\s+/g, " ")      // collapse whitespace
+    .trim();
+}
+
+/**
+ * Simple JS Levenshtein distance (used to validate the DB candidate returned
+ * by similarity() — avoids a round-trip if the candidate is clearly too far).
+ */
+function levenshtein(a: string, b: string): number {
+  const m = a.length, n = b.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0))
+  );
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      dp[i][j] = a[i - 1] === b[j - 1]
+        ? dp[i - 1][j - 1]
+        : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+    }
+  }
+  return dp[m][n];
+}
+
+/**
+ * Fuzzy-match a skill name against taxonomy_skills.
+ * Uses similarity() from pg_trgm (already installed) as the fast filter,
+ * then validates with a JS Levenshtein check.
+ *
+ * Returns the best matching existing skill row, or null if no close match.
+ * Threshold: trigram similarity ≥ 0.7 AND levenshtein ≤ 2 (normalised strings).
+ */
+async function fuzzyMatchSkill(
+  normalisedName: string
+): Promise<{ id: string; name: string; aliases: string[] } | null> {
+  if (normalisedName.length < 3) return null; // too short to fuzzy-match safely
+
+  const { data: candidates, error } = await supabase.rpc("find_similar_skill", {
+    p_name: normalisedName,
+    p_threshold: 0.7,
+    p_limit: 3,
+  });
+
+  if (error || !candidates || candidates.length === 0) return null;
+
+  // JS-side Levenshtein validation (normalised strings, ≤ 2 edits)
+  for (const c of candidates) {
+    const candidateNorm = normaliseFuzzy(c.name);
+    const dist = levenshtein(normalisedName, candidateNorm);
+    if (dist <= 2) {
+      return { id: c.id, name: c.name, aliases: c.aliases || [] };
+    }
+  }
+  return null;
+}
+
+/**
+ * Process a single skill: taxonomy lookup → fuzzy match → upsert_skill RPC → log errors.
+ * Passes l1 and l2 to upsert_skill when creating net-new skills (migration 038b).
+ */
 async function processSkill(
   skillName: string,
   category: string,
   required: boolean,
   runId: string
 ): Promise<ProcessedSkill> {
-  const l2 = normaliseCategory(category);
-  const l1 = L2_TO_L1[l2] ?? "COMPETENCIES";
+  // ── Derive L2 and L1 ─────────────────────────────────────────────
+  const rawL2 = normaliseCategory(category);
+  // Validate L2 against the 10-value enum; default to "Skill" if invalid
+  const l2 = VALID_L2.has(rawL2) ? rawL2 : "Skill";
+  const l1 = L2_TO_L1[l2]!; // always defined since l2 is now in VALID_L2
   const skill_tier = categoryToTier(category);
 
-  // 1. Exact taxonomy lookup
-  const { data: match } = await supabase
+  const normName = normaliseFuzzy(skillName);
+
+  // ── 1. Exact taxonomy lookup ──────────────────────────────────────
+  const { data: exactMatch } = await supabase
     .from("taxonomy_skills")
     .select("id, name")
     .ilike("name", skillName)
     .limit(1)
     .maybeSingle();
 
-  if (match) {
-    return { name: skillName, category, l2, l1, skill_tier, required, taxonomy_match: { id: match.id, name: match.name }, is_new: false };
+  if (exactMatch) {
+    return { name: skillName, category, l2, l1, skill_tier, required, taxonomy_match: { id: exactMatch.id, name: exactMatch.name }, is_new: false };
   }
 
-  // 2. Auto-create via upsert_skill RPC — with structured error logging
+  // ── 2. Alias exact lookup ────────────────────────────────────────
+  const { data: aliasMatch } = await supabase
+    .from("taxonomy_skills")
+    .select("id, name")
+    .contains("aliases", [normName])
+    .limit(1)
+    .maybeSingle();
+
+  if (aliasMatch) {
+    return { name: skillName, category, l2, l1, skill_tier, required, taxonomy_match: { id: aliasMatch.id, name: aliasMatch.name }, is_new: false };
+  }
+
+  // ── 3. Fuzzy match (pg_trgm similarity + Levenshtein ≤ 2) ────────
+  try {
+    const fuzzy = await fuzzyMatchSkill(normName);
+    if (fuzzy) {
+      // Append this variant as an alias (NOT EXISTS guard is in the SQL function)
+      const { error: mergeErr } = await supabase.rpc("append_skill_alias", {
+        p_skill_id: fuzzy.id,
+        p_alias: normName,
+      });
+      const mergeNote = `[fuzzy-merge] "${skillName}" (norm: "${normName}") merged into existing skill "${fuzzy.name}" (id: ${fuzzy.id})${mergeErr ? ` — alias append failed: ${mergeErr.message}` : ""}`;
+      console.info("[analyze-jd]", mergeNote, "| run_id:", runId);
+      await appendRunMessage(runId, mergeNote);
+      return {
+        name: skillName,
+        category,
+        l2,
+        l1,
+        skill_tier,
+        required,
+        taxonomy_match: { id: fuzzy.id, name: fuzzy.name },
+        is_new: false,
+        was_fuzzy_merged: true,
+      };
+    }
+  } catch (fuzzyErr: any) {
+    // Fuzzy match failure is non-fatal — fall through to upsert
+    console.warn("[analyze-jd] fuzzy match error for", skillName, ":", fuzzyErr?.message, "| run_id:", runId);
+  }
+
+  // ── 4. Net-new: create via upsert_skill RPC (with l1 + l2) ───────
   let taxonomyMatch: { id: string; name: string } | null = null;
   let isNew = false;
   try {
@@ -264,22 +432,13 @@ async function processSkill(
       p_name: skillName,
       p_category: category || "skill",
       p_tier: skill_tier,
+      p_l1: l1,
+      p_l2: l2,
     });
     if (rpcErr) {
-      // Log RPC error to the run row instead of swallowing it
       const errMsg = `upsert_skill failed for "${skillName}": ${rpcErr.message} (code: ${rpcErr.code})`;
       console.error("[analyze-jd]", errMsg, "| run_id:", runId);
-      // Append to existing error_message (non-blocking, best-effort)
-      const { data: existing } = await supabase
-        .from("analyze_jd_runs")
-        .select("error_message")
-        .eq("id", runId)
-        .maybeSingle();
-      const prev = existing?.error_message ? `${existing.error_message}\n` : "";
-      await supabase
-        .from("analyze_jd_runs")
-        .update({ error_message: `${prev}${errMsg}` })
-        .eq("id", runId);
+      await appendRunMessage(runId, errMsg);
     } else if (newId) {
       taxonomyMatch = { id: newId, name: skillName };
       isNew = true;
@@ -287,19 +446,7 @@ async function processSkill(
   } catch (e: any) {
     const errMsg = `upsert_skill threw for "${skillName}": ${e?.message || String(e)}`;
     console.error("[analyze-jd]", errMsg, "| run_id:", runId);
-    // Best-effort log to run row
-    try {
-      const { data: existing } = await supabase
-        .from("analyze_jd_runs")
-        .select("error_message")
-        .eq("id", runId)
-        .maybeSingle();
-      const prev = existing?.error_message ? `${existing.error_message}\n` : "";
-      await supabase
-        .from("analyze_jd_runs")
-        .update({ error_message: `${prev}${errMsg}` })
-        .eq("id", runId);
-    } catch { /* instrumentation must never throw */ }
+    await appendRunMessage(runId, errMsg);
   }
 
   return { name: skillName, category, l2, l1, skill_tier, required, taxonomy_match: taxonomyMatch, is_new: isNew };
@@ -523,7 +670,7 @@ export async function runAnalyzeJd(input: AnalyzeJdInput): Promise<AnalyzeJdResu
         await supabase.from("jobs").update(fallback).eq("id", job_id);
       }
 
-      // Upsert job_skills
+      // Upsert job_skills (now includes l1/l2 in skill rows via taxonomy_match)
       const skillRows = processedSkills
         .filter(s => s.taxonomy_match)
         .map(s => ({
@@ -550,7 +697,7 @@ export async function runAnalyzeJd(input: AnalyzeJdInput): Promise<AnalyzeJdResu
   const wasPartial = calcWasPartial(classification, processedSkills.length);
   const latencyMs = Date.now() - startMs;
 
-  // Accumulate non-fatal errors for the run row
+  // Accumulate non-fatal errors for the run row (skill errors + resolver + save)
   const allErrors = [...skillErrors];
   if (bucketResolverErr) allErrors.push(bucketResolverErr);
   if (saveErr) allErrors.push(saveErr);
@@ -569,12 +716,12 @@ export async function runAnalyzeJd(input: AnalyzeJdInput): Promise<AnalyzeJdResu
     finished_at: new Date().toISOString(),
   });
 
-  // ── 9. Return unified result ───────────────────────────────────
+  // ── 9. Return unified result (skills now include l1 + l2) ──────
   return {
     run_id: runId,
     classification,
     bucket_mapping: bucketMapping,
-    skills: processedSkills,
+    skills: processedSkills,   // each ProcessedSkill carries l1, l2, was_fuzzy_merged
     saved,
     was_partial: wasPartial,
     status: finalStatus,
