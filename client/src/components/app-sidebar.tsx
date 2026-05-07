@@ -27,6 +27,7 @@ const navItems = [
   { title: "Schedules", href: "/schedules", icon: CalendarClock, section: "schedules" },
   { title: "Taxonomy", href: "/taxonomy", icon: BookOpen, section: "taxonomy" },
   { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles, section: "jd_analyzer" },
+  { title: "Analyzer Runs", href: "/jd-analyzer/runs", icon: Activity, section: "jd_analyzer" },
   { title: "Monitoring", href: "/monitoring", icon: Activity, section: null },
   { title: "Survey Admin", href: "/survey-admin", icon: ClipboardList, section: "surveys" },
   { title: "PlaceIntel", href: "/placeintel-admin", icon: ClipboardCheck, section: "placeintel" },
