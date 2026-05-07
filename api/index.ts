@@ -24,6 +24,12 @@ import { handleReportRoutes } from "./routes/reports";
 import { handleCollegeRoutes } from "./routes/colleges";
 import { handleBucketTestRoutes } from "./routes/bucket-test";
 import { handleMastersRoutes } from "./routes/masters";
+import {
+  handleInsightsRoutes,
+  handlePublicReportRoute,
+  isInsightsPath,
+  isPublicReportPath,
+} from "./routes/insights";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -65,6 +71,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return await handleSurveyRoutes(path, req, res);
     } catch (err: any) {
       console.error("Survey API Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
+
+  // ==================== PUBLIC INSIGHTS REPORT (no auth, before main auth) ====================
+  if (isPublicReportPath(path) && req.method === "GET") {
+    try {
+      const result = await handlePublicReportRoute(path, req, res);
+      if (result) return result;
+    } catch (err: any) {
+      console.error("Public Report Error:", err);
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -118,6 +135,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleScheduleRoutes(path, req, res, auth);
     } else if (path.startsWith("/reports")) {
       result = await handleReportRoutes(path, req, res, auth);
+    } else if (path.startsWith("/colleges") && isInsightsPath(path)) {
+      result = await handleInsightsRoutes(path, req, res, auth);
     } else if (path.startsWith("/college") || path.startsWith("/colleges")) {
       result = await handleCollegeRoutes(path, req, res, auth);
     } else if (path.startsWith("/masters")) {

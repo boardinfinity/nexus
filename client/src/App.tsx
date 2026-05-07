@@ -39,6 +39,8 @@ import PlacementForm from "@/pages/placement-form";
 import PlaceIntelAdmin from "@/pages/placeintel-admin";
 import MasterData from "@/pages/masters";
 import UsersPage from "@/pages/users";
+import InsightsHub from "@/pages/insights-hub";
+import CohortDashboard from "@/pages/cohort-dashboard";
 import { Loader2 } from "lucide-react";
 
 function AppRouter() {
@@ -66,6 +68,8 @@ function AppRouter() {
       <Route path="/survey-admin/:id">{(params) => <SurveyDetail params={params} />}</Route>
       <Route path="/colleges" component={Colleges} />
       <Route path="/colleges/:id">{(params) => <CollegeDetail params={params} />}</Route>
+      <Route path="/colleges/:id/insights">{(params: any) => <InsightsHub params={params} />}</Route>
+      <Route path="/colleges/:id/insights/:year">{(params: any) => <CohortDashboard params={params} />}</Route>
       <Route path="/colleges/:id/programs/:pid">{(params) => <ProgramDetail params={params} />}</Route>
       <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
       <Route path="/reports" component={Reports} />
