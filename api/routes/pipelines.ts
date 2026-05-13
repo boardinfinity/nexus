@@ -3,7 +3,7 @@ import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, APIFY_API_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
-import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore } from "../lib/helpers";
+import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore, mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel } from "../lib/helpers";
 import { randomUUID } from "crypto";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
@@ -349,6 +349,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     // Deduplication and co-occurrence pipelines execute synchronously
     if (pipeline_type === "deduplication" || pipeline_type === "cooccurrence") {
       await executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
+    }
+
+    // Middle East job source pipelines — same async fire-and-forget pattern as LinkedIn
+    if (pipeline_type === "bayt_jobs" || pipeline_type === "naukrigulf_jobs") {
+      executePipeline(run.id, pipeline_type, config || {}).catch(console.error);
     }
 
     return res.json(run);
@@ -1532,6 +1537,10 @@ export async function executePipeline(runId: string, pipelineType: string, confi
       await executeDeduplication(runId, config);
     } else if (pipelineType === "cooccurrence") {
       await executeCooccurrence(runId, config);
+    } else if (pipelineType === "bayt_jobs") {
+      await executeBaytJobs(runId, config);
+    } else if (pipelineType === "naukrigulf_jobs") {
+      await executeNaukriGulfJobs(runId, config);
     } else if (pipelineType === "job_status_check") {
       // Handled by the /pipelines/check-job-status endpoint directly
       return;
@@ -3540,3 +3549,363 @@ async function executeJDBatchPoll(runId: string, config: any) {
   }
 }
 
+
+// MIDDLE EAST JOB PIPELINES
+// Bayt.com (blackfalcondata/bayt-scraper) and NaukriGulf (blackfalcondata/naukrigulf-scraper)
+// Pattern mirrors executeLinkedInJobs: role-driven keyword expansion, parallel Apify
+// launches, poll loop, mapper, batch upsert into jobs table.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Shared helper: batch upsert a set of mapped job rows into `jobs`,
+ * handling company resolution and incremental deduplification.
+ * Used by both executeBaytJobs and executeNaukriGulfJobs.
+ */
+async function processMEJobResults(
+  runId: string,
+  datasetId: string,
+  source: "bayt.com" | "naukrigulf.com",
+  config: any,
+  runMeta: { roleId?: string; roleName?: string; synonyms?: string[]; runId?: string }
+): Promise<void> {
+  // Paginate ALL dataset items (avoids the 2,500-item truncation bug)
+  const rawItems: any[] = [];
+  const PAGE_SIZE = 1000;
+  let dsOffset = 0;
+  while (true) {
+    const pageRes = await fetch(
+      `https://api.apify.com/v2/datasets/${datasetId}/items?token=${APIFY_API_KEY}&limit=${PAGE_SIZE}&offset=${dsOffset}`
+    );
+    const page = await pageRes.json();
+    if (!Array.isArray(page) || page.length === 0) break;
+    rawItems.push(...page);
+    if (page.length < PAGE_SIZE) break;
+    dsOffset += PAGE_SIZE;
+  }
+
+  if (rawItems.length === 0) return;
+  await supabase.from("pipeline_runs").update({ total_items: rawItems.length }).eq("id", runId);
+
+  // Build external_id set for dedup
+  const externalIds = rawItems.map((item, i) =>
+    String(item.jobId || item.jobKey || item.id || item.url || `${source}-${Date.now()}-${i}`)
+  );
+  const { data: existingJobs } = await supabase
+    .from("jobs")
+    .select("external_id")
+    .eq("source", source)
+    .in("external_id", externalIds);
+  const existingIdSet = new Set((existingJobs || []).map((j: any) => j.external_id));
+
+  // Batch-resolve / create companies
+  const companyNames = [...new Set(rawItems.map(item => item.company).filter(Boolean))];
+  const companyMap = new Map<string, string>();
+  if (companyNames.length > 0) {
+    const { data: existing } = await supabase
+      .from("companies")
+      .select("id, name")
+      .in("name", companyNames);
+    for (const c of existing || []) companyMap.set(c.name, c.id);
+
+    const newNames = companyNames.filter(n => !companyMap.has(n));
+    if (newNames.length > 0) {
+      const rows = newNames.map(name => ({
+        name,
+        name_normalized: normalizeText(name),
+        enrichment_status: "pending",
+      }));
+      for (let i = 0; i < rows.length; i += 100) {
+        const { data: inserted } = await supabase
+          .from("companies")
+          .upsert(rows.slice(i, i + 100), { onConflict: "name" })
+          .select("id, name");
+        for (const c of inserted || []) companyMap.set(c.name, c.id);
+      }
+    }
+  }
+
+  // Map + filter
+  const BATCH_SIZE = 100;
+  const newJobs: any[] = [];
+  let skipped = 0;
+
+  for (let i = 0; i < rawItems.length; i++) {
+    const item = rawItems[i];
+    const extId = externalIds[i];
+    if (existingIdSet.has(extId)) { skipped++; continue; }
+
+    const companyId = item.company ? (companyMap.get(item.company) || null) : null;
+    let roleMatchScore: number | null = null;
+    if (runMeta.synonyms && runMeta.synonyms.length > 0 && item.title) {
+      roleMatchScore = computeRoleMatchScore(item.title, runMeta.synonyms);
+    }
+
+    const mapped = source === "bayt.com"
+      ? mapBaytJob(item, { ...runMeta, runId }, companyId, roleMatchScore)
+      : mapNaukriGulfJob(item, { ...runMeta, runId }, companyId, roleMatchScore);
+
+    // Stamp correct external_id (mapper uses same logic, but let's be explicit)
+    mapped.external_id = extId;
+    newJobs.push(mapped);
+  }
+
+  // Batch insert
+  let processed = 0, failed = 0;
+  for (let i = 0; i < newJobs.length; i += BATCH_SIZE) {
+    const batch = newJobs.slice(i, i + BATCH_SIZE);
+    try {
+      const { data: inserted, error } = await supabase.from("jobs").insert(batch).select("id");
+      if (error) {
+        for (const job of batch) {
+          try { await supabase.from("jobs").insert(job); processed++; } catch { failed++; }
+        }
+      } else {
+        processed += (inserted || []).length;
+      }
+    } catch { failed += batch.length; }
+
+    await supabase.from("pipeline_runs").update({
+      processed_items: processed, failed_items: failed, skipped_items: skipped,
+    }).eq("id", runId);
+  }
+
+  // Credits
+  const currentMonth = new Date().toISOString().slice(0, 7) + "-01";
+  await supabase.rpc("increment_credits_used", { p_provider: "apify", p_month: currentMonth, p_amount: processed });
+
+  await supabase.from("pipeline_runs").update({
+    status: "completed",
+    processed_items: processed,
+    failed_items: failed,
+    skipped_items: skipped,
+    completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+}
+
+/**
+ * Execute a Bayt.com jobs collection run.
+ * Actor: blackfalcondata/bayt-scraper
+ * Supports: keywords, country, careerLevel, datePosted, maxResults, incrementalMode
+ */
+async function executeBaytJobs(runId: string, config: any): Promise<void> {
+  if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
+
+  // Country mapping: UI passes full names, actor expects portal codes
+  const COUNTRY_TO_CODE: Record<string, string> = {
+    "United Arab Emirates": "UAE", "UAE": "UAE",
+    "Saudi Arabia": "KSA", "KSA": "KSA",
+    "Kuwait": "KWT", "Qatar": "QAT",
+    "Bahrain": "BHR", "Oman": "OMN",
+    "Egypt": "EGY", "Jordan": "JOR",
+    "Lebanon": "LBN",
+  };
+  const countryCode = COUNTRY_TO_CODE[config?.country || ""] || "UAE";
+
+  // Build keyword runs — one per job role (same synonym expansion as LinkedIn)
+  const KEYWORD_CAP = 500;
+  const jobRoleIds = config?.job_role_ids as string[] | undefined;
+  let runs: { keywords: string; roleId?: string; roleName?: string; synonyms?: string[] }[] = [];
+
+  if (jobRoleIds && jobRoleIds.length > 0) {
+    const { data: roles } = await supabase.from("job_roles").select("id, name, synonyms").in("id", jobRoleIds);
+    if (roles && roles.length > 0) {
+      for (const r of roles) {
+        const syns = ((r.synonyms as string[]) || []).filter(Boolean);
+        const joined = syns.map(s => `"${s}"`).join(" OR ");
+        if (joined.length <= KEYWORD_CAP) {
+          runs.push({ keywords: joined || r.name, roleId: r.id, roleName: r.name, synonyms: syns.length ? syns : [r.name] });
+        } else {
+          // Split into chunks
+          const chunks: string[][] = [];
+          let cur: string[] = [], curLen = 0;
+          for (const s of syns) {
+            const add = (cur.length ? 4 : 0) + s.length + 2;
+            if (curLen + add > KEYWORD_CAP && cur.length > 0) { chunks.push(cur); cur = []; curLen = 0; }
+            cur.push(s); curLen += add;
+          }
+          if (cur.length > 0) chunks.push(cur);
+          for (const chunk of chunks) {
+            runs.push({ keywords: chunk.map(s => `"${s}"`).join(" OR "), roleId: r.id, roleName: r.name, synonyms: chunk });
+          }
+        }
+      }
+    }
+  }
+  if (runs.length === 0) {
+    runs = [{ keywords: config?.keywords || config?.search_keywords || "software engineer" }];
+  }
+
+  // Persist run metadata
+  await supabase.from("pipeline_runs").update({
+    config: {
+      ...config,
+      _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
+      _provider: "apify",
+      _actor: "blackfalcondata/bayt-scraper",
+    },
+  }).eq("id", runId);
+
+  // Launch all Apify runs in parallel
+  const apifyRuns: any[] = [];
+  await Promise.all(runs.map(async (run) => {
+    try {
+      const input = {
+        keywords: run.keywords,
+        country: countryCode,
+        maxResults: parseInt(config?.limit) || 200,
+        daysOld: config?.days_old ? parseInt(config.days_old) : 7,
+        fetchDetails: true,
+        incrementalMode: config?.incremental !== false,
+        stateKey: `bayt-${countryCode.toLowerCase()}-${(run.roleName || run.keywords).toLowerCase().replace(/[^a-z0-9]/g, "-").substring(0, 40)}`,
+        proxyConfig: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+      };
+      const apifyUrl = `https://api.apify.com/v2/acts/blackfalcondata~bayt-scraper/runs?token=${APIFY_API_KEY}`;
+      const apifyRes = await fetch(apifyUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (apifyRes.ok) {
+        const d = await apifyRes.json();
+        apifyRuns.push({ runId: d.data?.id, datasetId: d.data?.defaultDatasetId, ...run, _done: false });
+      } else {
+        console.error(`[executeBaytJobs] Apify launch error: ${apifyRes.status} ${await apifyRes.text().then(t => t.substring(0, 200))}`);
+      }
+    } catch (err: any) {
+      console.error(`[executeBaytJobs] Launch failed: ${err.message}`);
+    }
+  }));
+
+  if (apifyRuns.filter(r => r.runId).length === 0) {
+    throw new Error(`[executeBaytJobs] No Apify runs launched. Roles: ${runs.length}, Sample keywords: ${runs[0]?.keywords?.substring(0, 100)}`);
+  }
+
+  // Poll (max 5 min — Bayt detail fetch is slower than LinkedIn)
+  const MAX_WAIT = 300000;
+  const start = Date.now();
+  while (Date.now() - start < MAX_WAIT) {
+    let allDone = true;
+    for (const r of apifyRuns) {
+      if (!r.runId || r._done) continue;
+      try {
+        const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${r.runId}?token=${APIFY_API_KEY}`);
+        const d = await pollRes.json();
+        const st = d.data?.status;
+        if (["SUCCEEDED", "FAILED", "ABORTED"].includes(st)) { r._done = true; r._status = st; }
+        else allDone = false;
+      } catch { allDone = false; }
+    }
+    if (allDone) break;
+    await new Promise(res => setTimeout(res, 6000));
+  }
+
+  // Process succeeded runs
+  for (const r of apifyRuns) {
+    if (r._status === "SUCCEEDED" && r.datasetId) {
+      await processMEJobResults(runId, r.datasetId, "bayt.com", config, {
+        roleId: r.roleId, roleName: r.roleName, synonyms: r.synonyms,
+      });
+    }
+  }
+}
+
+/**
+ * Execute a NaukriGulf jobs collection run.
+ * Actor: blackfalcondata/naukrigulf-scraper
+ * Supports: query, location, maxResults, incrementalMode
+ */
+async function executeNaukriGulfJobs(runId: string, config: any): Promise<void> {
+  if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
+
+  const location = config?.location || "UAE";
+
+  // Build keyword runs — same role expansion pattern
+  const KEYWORD_CAP = 400;
+  const jobRoleIds = config?.job_role_ids as string[] | undefined;
+  let runs: { keywords: string; roleId?: string; roleName?: string; synonyms?: string[] }[] = [];
+
+  if (jobRoleIds && jobRoleIds.length > 0) {
+    const { data: roles } = await supabase.from("job_roles").select("id, name, synonyms").in("id", jobRoleIds);
+    if (roles && roles.length > 0) {
+      for (const r of roles) {
+        const syns = ((r.synonyms as string[]) || []).filter(Boolean);
+        // NaukriGulf query: comma-separated works well (no boolean operator needed)
+        const query = syns.length > 0 ? syns.slice(0, 8).join(", ") : r.name;
+        runs.push({ keywords: query.substring(0, KEYWORD_CAP), roleId: r.id, roleName: r.name, synonyms: syns.length ? syns : [r.name] });
+      }
+    }
+  }
+  if (runs.length === 0) {
+    runs = [{ keywords: config?.keywords || config?.search_keywords || "software engineer" }];
+  }
+
+  await supabase.from("pipeline_runs").update({
+    config: {
+      ...config,
+      _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
+      _provider: "apify",
+      _actor: "blackfalcondata/naukrigulf-scraper",
+    },
+  }).eq("id", runId);
+
+  const apifyRuns: any[] = [];
+  await Promise.all(runs.map(async (run) => {
+    try {
+      const input = {
+        mode: "search",
+        query: run.keywords,
+        location,
+        maxResults: parseInt(config?.limit) || 200,
+        includeDetails: true,
+        incrementalMode: config?.incremental !== false,
+        stateKey: `ng-${location.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${(run.roleName || run.keywords).toLowerCase().replace(/[^a-z0-9]/g, "-").substring(0, 40)}`,
+        proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
+      };
+      const apifyUrl = `https://api.apify.com/v2/acts/blackfalcondata~naukrigulf-scraper/runs?token=${APIFY_API_KEY}`;
+      const apifyRes = await fetch(apifyUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      if (apifyRes.ok) {
+        const d = await apifyRes.json();
+        apifyRuns.push({ runId: d.data?.id, datasetId: d.data?.defaultDatasetId, ...run, _done: false });
+      } else {
+        console.error(`[executeNaukriGulfJobs] Apify launch error: ${apifyRes.status} ${await apifyRes.text().then(t => t.substring(0, 200))}`);
+      }
+    } catch (err: any) {
+      console.error(`[executeNaukriGulfJobs] Launch failed: ${err.message}`);
+    }
+  }));
+
+  if (apifyRuns.filter(r => r.runId).length === 0) {
+    throw new Error(`[executeNaukriGulfJobs] No Apify runs launched. Roles: ${runs.length}, Sample query: ${runs[0]?.keywords?.substring(0, 100)}`);
+  }
+
+  // Poll (max 5 min)
+  const MAX_WAIT = 300000;
+  const start = Date.now();
+  while (Date.now() - start < MAX_WAIT) {
+    let allDone = true;
+    for (const r of apifyRuns) {
+      if (!r.runId || r._done) continue;
+      try {
+        const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${r.runId}?token=${APIFY_API_KEY}`);
+        const d = await pollRes.json();
+        const st = d.data?.status;
+        if (["SUCCEEDED", "FAILED", "ABORTED"].includes(st)) { r._done = true; r._status = st; }
+        else allDone = false;
+      } catch { allDone = false; }
+    }
+    if (allDone) break;
+    await new Promise(res => setTimeout(res, 6000));
+  }
+
+  for (const r of apifyRuns) {
+    if (r._status === "SUCCEEDED" && r.datasetId) {
+      await processMEJobResults(runId, r.datasetId, "naukrigulf.com", config, {
+        roleId: r.roleId, roleName: r.roleName, synonyms: r.synonyms,
+      });
+    }
+  }
+}
