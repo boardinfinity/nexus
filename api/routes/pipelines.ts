@@ -4,6 +4,7 @@ import { supabase, APIFY_API_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore } from "../lib/helpers";
+import { randomUUID } from "crypto";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
@@ -450,6 +451,403 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json(run);
   }
 
+  // ==================== BULK DISPATCH ====================
+  // POST /pipelines/jobs/bulk-dispatch
+  // Fan-out across (country × experience_level × city) — one pipeline_run per combination.
+  // All 30 job_role_ids are embedded in every run; executeLinkedInJobs fans them out per role.
+  if (path === "/pipelines/jobs/bulk-dispatch" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+
+    const {
+      job_role_ids,
+      countries,
+      experience_levels,
+      cities,
+      date_posted = "past_month",
+      fetch_description,
+    } = req.body || {}
+
+    if (!Array.isArray(job_role_ids) || job_role_ids.length === 0)
+      return res.status(400).json({ error: "job_role_ids is required" })
+    if (!Array.isArray(countries) || countries.length === 0)
+      return res.status(400).json({ error: "countries is required" })
+    if (!Array.isArray(experience_levels) || experience_levels.length === 0)
+      return res.status(400).json({ error: "experience_levels is required" })
+
+    const bulkDispatchId = randomUUID()
+    const runRows: { run_id: string; country: string; city: string | null; exp: string }[] = []
+    const insertErrors: string[] = []
+
+    for (const country of countries) {
+      const citiesForCountry: string[] | undefined = cities?.[country]
+      const locations: string[] = citiesForCountry && citiesForCountry.length > 0
+        ? citiesForCountry
+        : [country]
+
+      for (const exp of experience_levels) {
+        for (const location of locations) {
+          const isCity = citiesForCountry && citiesForCountry.length > 0
+          const config: Record<string, any> = {
+            job_role_ids,
+            experience_level: exp,
+            location,
+            date_posted,
+            fetch_description: !!fetch_description,
+            _bulk_dispatch_id: bulkDispatchId,
+            _bulk_meta: { country, city: isCity ? location : null, exp },
+          }
+
+          const { data: run, error: insertErr } = await supabase
+            .from("pipeline_runs")
+            .insert({
+              pipeline_type: "linkedin_jobs",
+              trigger_type: "manual",
+              status: "pending",
+              config,
+              started_at: new Date().toISOString(),
+              triggered_by: "bulk_dispatch",
+            })
+            .select("id")
+            .single()
+
+          if (insertErr || !run) {
+            insertErrors.push(`${country}/${location}/${exp}: ${insertErr?.message || "unknown"}`)
+            continue
+          }
+
+          runRows.push({ run_id: run.id, country, city: isCity ? location : null, exp })
+
+          // Fire-and-forget — do not await
+          executePipeline(run.id, "linkedin_jobs", config).catch(console.error)
+        }
+      }
+    }
+
+    return res.json({
+      bulk_dispatch_id: bulkDispatchId,
+      dispatched: runRows.length,
+      runs: runRows,
+      ...(insertErrors.length > 0 ? { errors: insertErrors } : {}),
+    })
+  }
+
+  // ==================== DISCOVERY SWEEP ====================
+  // POST /pipelines/jobs/discovery-sweep
+  // Launches exploratory jobs collection across domain keywords and industry queries,
+  // independently of the known job_roles list, to surface new title candidates.
+  if (path === "/pipelines/jobs/discovery-sweep" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+
+    const {
+      countries,
+      experience_levels = ["1", "2", "3"],
+      date_posted = "past_month",
+      domain_keywords = ["engineer", "manager", "analyst", "designer", "developer", "specialist", "consultant", "lead", "architect", "scientist", "researcher", "executive"],
+      industry_queries = ["fintech", "edtech", "healthtech", "saas", "ecommerce", "logistics", "manufacturing", "retail", "banking", "insurance", "media", "telecom", "energy", "real estate", "consulting", "government", "aerospace", "automotive", "pharmaceutical", "hospitality"],
+      fetch_description,
+    } = req.body || {}
+
+    if (!Array.isArray(countries) || countries.length === 0)
+      return res.status(400).json({ error: "countries is required" })
+
+    const expJoined = (experience_levels as string[]).join(",")
+    const runRows: { run_id: string; discovery_run_id: string; country: string; query: string; run_type: string }[] = []
+    const insertErrors: string[] = []
+
+    for (const country of countries) {
+      // Domain-keyword queries
+      for (const keyword of (domain_keywords as string[])) {
+        const { data: discRun, error: drErr } = await supabase
+          .from("discovery_runs")
+          .insert({
+            run_type: "domain",
+            country,
+            query: keyword,
+            source: "linkedin",
+            status: "running",
+            started_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single()
+
+        if (drErr || !discRun) {
+          insertErrors.push(`discovery_runs domain ${country}/${keyword}: ${drErr?.message || "unknown"}`)
+          continue
+        }
+
+        const config: Record<string, any> = {
+          keywords: keyword,
+          location: country,
+          experience_level: expJoined,
+          date_posted,
+          discovery_source: "domain_sweep",
+          _discovery_run_id: discRun.id,
+          fetch_description: !!fetch_description,
+        }
+
+        const { data: pRun, error: prErr } = await supabase
+          .from("pipeline_runs")
+          .insert({
+            pipeline_type: "linkedin_jobs",
+            trigger_type: "manual",
+            status: "pending",
+            config,
+            started_at: new Date().toISOString(),
+            triggered_by: "discovery_sweep",
+          })
+          .select("id")
+          .single()
+
+        if (prErr || !pRun) {
+          insertErrors.push(`pipeline_runs domain ${country}/${keyword}: ${prErr?.message || "unknown"}`)
+          continue
+        }
+
+        // Link pipeline_run back to discovery_run
+        await supabase.from("discovery_runs").update({ pipeline_run_id: pRun.id }).eq("id", discRun.id)
+
+        runRows.push({ run_id: pRun.id, discovery_run_id: discRun.id, country, query: keyword, run_type: "domain" })
+        executePipeline(pRun.id, "linkedin_jobs", config).catch(console.error)
+      }
+
+      // Industry-query queries
+      for (const industry of (industry_queries as string[])) {
+        const { data: discRun, error: drErr } = await supabase
+          .from("discovery_runs")
+          .insert({
+            run_type: "industry",
+            country,
+            query: industry,
+            source: "linkedin",
+            status: "running",
+            started_at: new Date().toISOString(),
+          })
+          .select("id")
+          .single()
+
+        if (drErr || !discRun) {
+          insertErrors.push(`discovery_runs industry ${country}/${industry}: ${drErr?.message || "unknown"}`)
+          continue
+        }
+
+        const discoverySource = `industry_sweep:${industry}`
+        const config: Record<string, any> = {
+          keywords: industry,
+          location: country,
+          experience_level: expJoined,
+          date_posted,
+          discovery_source: discoverySource,
+          _discovery_run_id: discRun.id,
+          fetch_description: !!fetch_description,
+        }
+
+        const { data: pRun, error: prErr } = await supabase
+          .from("pipeline_runs")
+          .insert({
+            pipeline_type: "linkedin_jobs",
+            trigger_type: "manual",
+            status: "pending",
+            config,
+            started_at: new Date().toISOString(),
+            triggered_by: "discovery_sweep",
+          })
+          .select("id")
+          .single()
+
+        if (prErr || !pRun) {
+          insertErrors.push(`pipeline_runs industry ${country}/${industry}: ${prErr?.message || "unknown"}`)
+          continue
+        }
+
+        await supabase.from("discovery_runs").update({ pipeline_run_id: pRun.id }).eq("id", discRun.id)
+
+        runRows.push({ run_id: pRun.id, discovery_run_id: discRun.id, country, query: industry, run_type: "industry" })
+        executePipeline(pRun.id, "linkedin_jobs", config).catch(console.error)
+      }
+    }
+
+    return res.json({
+      discovery_runs: runRows.length,
+      dispatched: runRows.length,
+      runs: runRows,
+      ...(insertErrors.length > 0 ? { errors: insertErrors } : {}),
+    })
+  }
+
+  // ==================== DISCOVERY HARVEST ====================
+  // POST /pipelines/jobs/discovery-harvest
+  // Reads jobs collected by discovery sweep pipeline_runs, extracts titles not
+  // covered by any known job_role or synonym, and upserts into discovered_titles.
+  if (path === "/pipelines/jobs/discovery-harvest" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+
+    const { discovery_run_id } = req.body || {}
+
+    // Determine which discovery_runs to harvest
+    let discRunsToHarvest: any[] = []
+
+    if (discovery_run_id) {
+      const { data, error } = await supabase
+        .from("discovery_runs")
+        .select("*")
+        .eq("id", discovery_run_id)
+        .single()
+      if (error || !data) return res.status(404).json({ error: "discovery_run not found" })
+      discRunsToHarvest = [data]
+    } else {
+      // Harvest all running discovery_runs whose linked pipeline_run is completed
+      const { data: running } = await supabase
+        .from("discovery_runs")
+        .select("*, pipeline_runs!pipeline_run_id(status)")
+        .eq("status", "running")
+      if (running && running.length > 0) {
+        discRunsToHarvest = running.filter((dr: any) => {
+          const pRun = dr.pipeline_runs
+          return pRun && (pRun.status === "completed" || pRun.status === "succeeded")
+        })
+      }
+    }
+
+    if (discRunsToHarvest.length === 0)
+      return res.json({ harvested: 0, new_titles_total: 0, errors: [] })
+
+    // Build set of all known role strings (names + synonyms) once
+    const { data: roleRows } = await supabase
+      .from("job_roles")
+      .select("name, synonyms")
+
+    const knownStrings = new Set<string>()
+    for (const r of (roleRows || [])) {
+      if (r.name) knownStrings.add(r.name.toLowerCase())
+      if (Array.isArray(r.synonyms)) {
+        for (const s of r.synonyms) {
+          if (s) knownStrings.add(s.toLowerCase())
+        }
+      }
+    }
+
+    let harvestedCount = 0
+    let newTitlesTotal = 0
+    const harvestErrors: string[] = []
+
+    for (const discRun of discRunsToHarvest) {
+      try {
+        // Find the linked pipeline_run via discovery_runs.pipeline_run_id or config fallback
+        let pipelineRunId: string | null = discRun.pipeline_run_id || null
+        if (!pipelineRunId) {
+          // Fallback: search pipeline_runs by config._discovery_run_id
+          const { data: fallback } = await supabase
+            .from("pipeline_runs")
+            .select("id")
+            .filter("config->>_discovery_run_id", "eq", discRun.id)
+            .maybeSingle()
+          pipelineRunId = fallback?.id || null
+        }
+
+        if (!pipelineRunId) {
+          harvestErrors.push(`${discRun.id}: no linked pipeline_run found`)
+          continue
+        }
+
+        // Fetch location from the pipeline_run config
+        const { data: pRunRow } = await supabase
+          .from("pipeline_runs")
+          .select("config")
+          .eq("id", pipelineRunId)
+          .single()
+        const locationFromConfig: string = pRunRow?.config?.location || discRun.country || ""
+
+        // Fetch all jobs inserted by this pipeline_run.
+        // jobs has no FK to pipeline_runs; we store the linkage in raw_data._pipeline_run_id
+        // (written by processLinkedInResults / executeGoogleJobs at insert time).
+        const { data: jobs } = await supabase
+          .from("jobs")
+          .select("title, title_normalized")
+          .filter("raw_data->>_pipeline_run_id", "eq", pipelineRunId)
+
+        let jobsFound = 0
+        let newTitles = 0
+
+        for (const job of (jobs || [])) {
+          jobsFound++
+          const rawTitle: string = job.title || ""
+          const normTitle: string = job.title_normalized || rawTitle
+          const checkStr = (normTitle + " " + rawTitle).toLowerCase()
+
+          // Check if any known string appears in the job title
+          let matched = false
+          for (const known of knownStrings) {
+            if (checkStr.includes(known)) {
+              matched = true
+              break
+            }
+          }
+
+          if (!matched) {
+            // Upsert into discovered_titles
+            const { error: upsertErr } = await supabase
+              .from("discovered_titles")
+              .upsert(
+                {
+                  title: rawTitle,
+                  normalized_title: normTitle,
+                  country: locationFromConfig,
+                  source: "linkedin",
+                  run_id: discRun.id,
+                  observed_count: 1,
+                  last_seen_at: new Date().toISOString(),
+                },
+                {
+                  onConflict: "normalized_title,country,source",
+                  ignoreDuplicates: false,
+                }
+              )
+            if (upsertErr) {
+              harvestErrors.push(`upsert ${normTitle}: ${upsertErr.message}`)
+            } else {
+              newTitles++
+            }
+          }
+        }
+
+        // For upserts that were updates (conflict), increment observed_count
+        // Supabase upsert merges — handle count increment via RPC or separate update
+        // Using a targeted update: increment observed_count for rows that already exist
+        // (they were touched above; now bump count for existing ones only via updated_at heuristic)
+        // Simpler: do a raw increment update on all rows for this location/source just touched
+        await supabase.rpc("increment_discovered_title_counts", {
+          p_run_id: discRun.id,
+          p_country: locationFromConfig,
+          p_source: "linkedin",
+        }).then(() => {}).catch(() => {
+          // RPC may not exist yet — safe to ignore, observed_count starts at 1 on insert
+        })
+
+        // Mark discovery_run as succeeded
+        await supabase
+          .from("discovery_runs")
+          .update({
+            status: "succeeded",
+            finished_at: new Date().toISOString(),
+            jobs_found: jobsFound,
+            new_titles: newTitles,
+          })
+          .eq("id", discRun.id)
+
+        harvestedCount++
+        newTitlesTotal += newTitles
+      } catch (err: any) {
+        harvestErrors.push(`${discRun.id}: ${err.message}`)
+        await supabase
+          .from("discovery_runs")
+          .update({ status: "failed", error_message: err.message, finished_at: new Date().toISOString() })
+          .eq("id", discRun.id)
+      }
+    }
+
+    return res.json({ harvested: harvestedCount, new_titles_total: newTitlesTotal, errors: harvestErrors })
+  }
+
   if (path.match(/^\/pipelines\/[^/]+$/) && !path.includes("run") && !path.includes("execute") && !path.includes("cancel") && req.method === "GET") {
     const id = path.split("/").pop();
     const { data, error } = await supabase.from("pipeline_runs").select("*").eq("id", id).single();
@@ -871,9 +1269,9 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
       job_role_id: runMeta?.roleId || null,
       role_match_score: roleMatchScore,
       last_seen_at: new Date().toISOString(),
-      discovery_source: (runMeta as any)?.discoverySource || null,
+      discovery_source: (runMeta as any)?.discoverySource || (config as any)?.discovery_source || null,
       enrichment_status: description ? "partial" : "pending",
-      raw_data: { ...item, _role_match_score: roleMatchScore, _role_id: runMeta?.roleId, _role_name: runMeta?.roleName },
+      raw_data: { ...item, _role_match_score: roleMatchScore, _role_id: runMeta?.roleId, _role_name: runMeta?.roleName, _pipeline_run_id: runId },
     });
   }
 
@@ -1043,7 +1441,8 @@ async function executeLinkedInJobs(runId: string, config: any) {
     if ((r as any)._status === "SUCCEEDED" && r.datasetId) {
       await processLinkedInResults(runId, r.datasetId, config, {
         roleId: r.roleId, roleName: r.roleName, keywords: r.keywords, synonyms: r.synonyms,
-      });
+        discoverySource: config?.discovery_source || null,
+      } as any);
       processedCount++;
     }
   }
@@ -1230,9 +1629,9 @@ async function executeGoogleJobs(runId: string, config: any) {
               job_role_id: (run as any).roleId || null,
               role_match_score: roleMatchScore,
               last_seen_at: new Date().toISOString(),
-              discovery_source: (run as any).discoverySource || null,
+              discovery_source: (run as any).discoverySource || config?.discovery_source || null,
               enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
-              raw_data: { ...item, search_query: (run as any).query, _role_id: (run as any).roleId, _role_name: (run as any).roleName, _role_match_score: roleMatchScore },
+              raw_data: { ...item, search_query: (run as any).query, _role_id: (run as any).roleId, _role_name: (run as any).roleName, _role_match_score: roleMatchScore, _pipeline_run_id: runId },
             });
             allProcessed++;
           } catch (e) { allFailed++; }

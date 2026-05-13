@@ -35,3 +35,4 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 
 2026-05-13 09:13 UTC · amb-jobs-pipeline · P2 migration 040 reserved + written (jobs.last_seen_at, role_match_score, discovery_source; discovered_titles + discovery_runs tables; backfill role_match_score from raw_data). Awaiting CLI apply.
 2026-05-13 09:30 UTC · amb-jobs-pipeline · Migration 040 applied (last_seen_at on 22118 rows). Promoted role_match_score + last_seen_at writes into the new columns on LinkedIn + Google insert paths.
+2026-05-13 09:38 UTC · amb-jobs-pipeline · P3 routes added: /pipelines/jobs/bulk-dispatch, /pipelines/jobs/discovery-sweep, /pipelines/jobs/discovery-harvest. Plumbed discovery_source through executeLinkedInJobs + processLinkedInResults + executeGoogleJobs, and _pipeline_run_id into raw_data for harvest joins. Migration 041 (increment_discovered_title_counts RPC) reserved.
