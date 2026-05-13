@@ -801,6 +801,170 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json({ summary })
   }
 
+  // ==================== BULK BACKFILL (CHUNKED, RESUMABLE) ====================
+  // POST /pipelines/jobs/bulk-backfill
+  // Server-side resumable backfill. First call creates pipeline_runs for every
+  // (country x city x experience) combo, tagged with _backfill_id and
+  // _backfill_status='pending'. Then processes chunk_size combos synchronously
+  // inside the request (waits for executeLinkedInJobs to finish each one) so we
+  // never lose a run to Vercel timeout. Returns { backfill_id, processed, remaining }.
+  // Re-call with the same backfill_id to drain more.
+  if (path === "/pipelines/jobs/bulk-backfill" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+
+    const {
+      job_role_ids,
+      countries,
+      cities,
+      experience_levels,
+      date_posted = "past_month",
+      fetch_description,
+      chunk_size = 4,
+      backfill_id: existingBackfillId,
+    } = req.body || {}
+
+    let backfillId = existingBackfillId as string | undefined
+
+    // FIRST CALL: create all combos as pending pipeline_runs
+    if (!backfillId) {
+      if (!Array.isArray(job_role_ids) || job_role_ids.length === 0)
+        return res.status(400).json({ error: "job_role_ids is required" })
+      if (!Array.isArray(countries) || countries.length === 0)
+        return res.status(400).json({ error: "countries is required" })
+      if (!Array.isArray(experience_levels) || experience_levels.length === 0)
+        return res.status(400).json({ error: "experience_levels is required" })
+
+      backfillId = randomUUID()
+      const insertErrors: string[] = []
+      let created = 0
+
+      for (const country of countries) {
+        const citiesForCountry: string[] | undefined = cities?.[country]
+        const locations: string[] = citiesForCountry && citiesForCountry.length > 0
+          ? citiesForCountry
+          : [country]
+
+        for (const exp of experience_levels) {
+          for (const location of locations) {
+            const isCity = citiesForCountry && citiesForCountry.length > 0
+            const config: Record<string, any> = {
+              job_role_ids,
+              experience_level: exp,
+              location,
+              date_posted,
+              fetch_description: !!fetch_description,
+              _backfill_id: backfillId,
+              _backfill_status: "pending",
+              _backfill_meta: { country, city: isCity ? location : null, exp },
+            }
+
+            const { error: insertErr } = await supabase
+              .from("pipeline_runs")
+              .insert({
+                pipeline_type: "linkedin_jobs",
+                trigger_type: "manual",
+                status: "pending",
+                config,
+                started_at: new Date().toISOString(),
+                triggered_by: "bulk_backfill",
+              })
+
+            if (insertErr) {
+              insertErrors.push(`${country}/${location}/${exp}: ${insertErr.message}`)
+            } else {
+              created++
+            }
+          }
+        }
+      }
+
+      return res.json({
+        backfill_id: backfillId,
+        created,
+        phase: "queued",
+        next: `POST /pipelines/jobs/bulk-backfill with backfill_id=${backfillId} to start draining`,
+        ...(insertErrors.length > 0 ? { errors: insertErrors } : {}),
+      })
+    }
+
+    // RESUME CALL: drain up to chunk_size pending combos
+    const { data: pendingRuns, error: fetchErr } = await supabase
+      .from("pipeline_runs")
+      .select("id, config")
+      .eq("config->>_backfill_id", backfillId)
+      .eq("config->>_backfill_status", "pending")
+      .order("started_at", { ascending: true })
+      .limit(Math.max(1, Math.min(20, chunk_size)))
+
+    if (fetchErr) return res.status(500).json({ error: fetchErr.message })
+
+    const processed: any[] = []
+    const failed: any[] = []
+
+    for (const run of (pendingRuns || [])) {
+      // Mark in-progress so a parallel call doesn't pick it up
+      await supabase
+        .from("pipeline_runs")
+        .update({ config: { ...run.config, _backfill_status: "running" }, status: "running" })
+        .eq("id", run.id)
+
+      try {
+        // Synchronously drive the full pipeline. executeLinkedInJobs will:
+        //  - launch all 30 Apify runs for the role list
+        //  - poll + harvest each
+        //  - persist all jobs, role_match_score, last_seen_at, raw_data
+        await executePipeline(run.id, "linkedin_jobs", run.config)
+
+        // Re-read the now-final state to record processed_items
+        const { data: finalRun } = await supabase
+          .from("pipeline_runs")
+          .select("processed_items, total_items, config, status")
+          .eq("id", run.id)
+          .single()
+
+        await supabase
+          .from("pipeline_runs")
+          .update({ config: { ...(finalRun?.config || run.config), _backfill_status: "done" } })
+          .eq("id", run.id)
+
+        processed.push({
+          run_id: run.id,
+          location: run.config?.location,
+          exp: run.config?.experience_level,
+          processed_items: finalRun?.processed_items,
+          total_items: finalRun?.total_items,
+          status: finalRun?.status,
+        })
+      } catch (e: any) {
+        await supabase
+          .from("pipeline_runs")
+          .update({
+            config: { ...run.config, _backfill_status: "failed", _backfill_error: e?.message || String(e) },
+            status: "failed",
+            error_message: e?.message || String(e),
+          })
+          .eq("id", run.id)
+        failed.push({ run_id: run.id, error: e?.message || String(e) })
+      }
+    }
+
+    const { count: remaining } = await supabase
+      .from("pipeline_runs")
+      .select("id", { count: "exact", head: true })
+      .eq("config->>_backfill_id", backfillId)
+      .eq("config->>_backfill_status", "pending")
+
+    return res.json({
+      backfill_id: backfillId,
+      processed_count: processed.length,
+      failed_count: failed.length,
+      remaining: remaining || 0,
+      processed,
+      ...(failed.length > 0 ? { failed } : {}),
+      phase: (remaining || 0) > 0 ? "draining" : "complete",
+    })
+  }
+
   // ==================== DISCOVERY HARVEST ====================
   // POST /pipelines/jobs/discovery-harvest
   // Reads jobs collected by discovery sweep pipeline_runs, extracts titles not
