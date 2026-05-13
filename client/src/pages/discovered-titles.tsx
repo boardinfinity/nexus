@@ -156,9 +156,10 @@ export default function DiscoveredTitles() {
                 <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="candidate">Candidate</SelectItem>
+                  <SelectItem value="candidate">Pending review</SelectItem>
                   <SelectItem value="promoted">Promoted</SelectItem>
                   <SelectItem value="ignored">Ignored</SelectItem>
+                  <SelectItem value="merged">Merged</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -212,12 +213,19 @@ export default function DiscoveredTitles() {
             {
               header: "Status",
               accessor: (r: DiscoveredTitle) => {
-                const map: Record<string, string> = {
+                const colorMap: Record<string, string> = {
                   candidate: "bg-yellow-100 text-yellow-800",
                   promoted: "bg-green-100 text-green-800",
                   ignored: "bg-gray-100 text-gray-600",
+                  merged: "bg-blue-100 text-blue-800",
                 };
-                return <Badge className={`text-[10px] ${map[r.status] || ""}`} variant="outline">{r.status}</Badge>;
+                const labelMap: Record<string, string> = {
+                  candidate: "Pending",
+                  promoted: "Promoted",
+                  ignored: "Ignored",
+                  merged: "Merged",
+                };
+                return <Badge className={`text-[10px] ${colorMap[r.status] || ""}`} variant="outline">{labelMap[r.status] || r.status}</Badge>;
               },
               className: "w-[90px]",
             },
