@@ -826,7 +826,27 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       fetch_description,
       chunk_size = 4,
       backfill_id: existingBackfillId,
+      also_google_jobs = true,
+      google_jobs_country_codes,
     } = req.body || {}
+
+    // Country name -> ISO code used by google_jobs executor
+    const DEFAULT_GJ_CC: Record<string, string> = {
+      "India": "in",
+      "United Arab Emirates": "ae",
+      "Saudi Arabia": "sa",
+      "Qatar": "qa",
+      "Oman": "om",
+      "Bahrain": "bh",
+      "Kuwait": "kw",
+      "Singapore": "sg",
+      "United States": "us",
+      "United Kingdom": "gb",
+      "Canada": "ca",
+      "Australia": "au",
+      "Germany": "de",
+    }
+    const gjCountryCodes: Record<string, string> = { ...DEFAULT_GJ_CC, ...(google_jobs_country_codes || {}) }
 
     let backfillId = existingBackfillId as string | undefined
 
@@ -842,6 +862,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       backfillId = randomUUID()
       const insertErrors: string[] = []
       let created = 0
+      let createdGoogle = 0
 
       for (const country of countries) {
         const citiesForCountry: string[] | undefined = cities?.[country]
@@ -860,7 +881,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
               fetch_description: !!fetch_description,
               _backfill_id: backfillId,
               _backfill_status: "pending",
-              _backfill_meta: { country, city: isCity ? location : null, exp },
+              _backfill_meta: { country, city: isCity ? location : null, exp, source: "linkedin" },
             }
 
             const { error: insertErr } = await supabase
@@ -881,11 +902,50 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
             }
           }
         }
+
+        // Also queue ONE google_jobs run per country (country-level, no city/exp fan-out).
+        // google_jobs executor uses ISO country code and ignores experience_level.
+        // date_posted: google_jobs uses 'month'/'week'/'day' (not 'past_month'); map below.
+        if (also_google_jobs) {
+          const cc = gjCountryCodes[country]
+          if (!cc) {
+            insertErrors.push(`${country}/google_jobs: no ISO code mapping (pass google_jobs_country_codes)`)
+          } else {
+            const gjDatePosted = (date_posted === "past_month" || date_posted === "month") ? "month"
+              : (date_posted === "past_week" || date_posted === "week") ? "week"
+              : (date_posted === "past_24_hours" || date_posted === "day") ? "day"
+              : "month"
+            const gjConfig: Record<string, any> = {
+              job_role_ids,
+              country: cc,
+              date_posted: gjDatePosted,
+              _backfill_id: backfillId,
+              _backfill_status: "pending",
+              _backfill_meta: { country, city: null, exp: null, source: "google_jobs" },
+            }
+            const { error: gjErr } = await supabase
+              .from("pipeline_runs")
+              .insert({
+                pipeline_type: "google_jobs",
+                trigger_type: "manual",
+                status: "pending",
+                config: gjConfig,
+                started_at: new Date().toISOString(),
+                triggered_by: "bulk_backfill",
+              })
+            if (gjErr) {
+              insertErrors.push(`${country}/google_jobs: ${gjErr.message}`)
+            } else {
+              createdGoogle++
+            }
+          }
+        }
       }
 
       return res.json({
         backfill_id: backfillId,
         created,
+        created_google_jobs: createdGoogle,
         phase: "queued",
         next: `POST /pipelines/jobs/bulk-backfill with backfill_id=${backfillId} to start draining`,
         ...(insertErrors.length > 0 ? { errors: insertErrors } : {}),
@@ -895,7 +955,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     // RESUME CALL: drain up to chunk_size pending combos
     const { data: pendingRuns, error: fetchErr } = await supabase
       .from("pipeline_runs")
-      .select("id, config")
+      .select("id, pipeline_type, config")
       .eq("config->>_backfill_id", backfillId)
       .eq("config->>_backfill_status", "pending")
       .order("started_at", { ascending: true })
@@ -914,11 +974,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         .eq("id", run.id)
 
       try {
-        // Synchronously drive the full pipeline. executeLinkedInJobs will:
-        //  - launch all 30 Apify runs for the role list
-        //  - poll + harvest each
-        //  - persist all jobs, role_match_score, last_seen_at, raw_data
-        await executePipeline(run.id, "linkedin_jobs", run.config)
+        // Synchronously drive the full pipeline. Each run carries its own pipeline_type:
+        //  - linkedin_jobs: fan out 30 Apify runs (one per role), poll, harvest, persist
+        //  - google_jobs: fan out up to 20 query runs to Google Jobs scraper, persist
+        const ptype = (run as any).pipeline_type || "linkedin_jobs"
+        await executePipeline(run.id, ptype, run.config)
 
         // Re-read the now-final state to record processed_items
         const { data: finalRun } = await supabase
@@ -934,8 +994,9 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
         processed.push({
           run_id: run.id,
-          location: run.config?.location,
-          exp: run.config?.experience_level,
+          pipeline_type: ptype,
+          location: run.config?.location || run.config?.country,
+          exp: run.config?.experience_level || null,
           processed_items: finalRun?.processed_items,
           total_items: finalRun?.total_items,
           status: finalRun?.status,
