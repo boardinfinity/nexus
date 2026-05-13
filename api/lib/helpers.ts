@@ -5,6 +5,39 @@ export function normalizeText(s: string): string {
   return s.toLowerCase().trim().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ");
 }
 
+/**
+ * Computes a 0..1 match score between a job title and a role's synonym list.
+ *  - 1.0 = exact synonym match (case/whitespace normalized)
+ *  - 0.8 = synonym is a whole-word substring of the title (or vice-versa)
+ *  - 0.6 = significant token overlap (≥ 50% of synonym tokens present in title)
+ *  - 0.3 = fallback when query returned the job but no synonym is recognizable in title
+ * Returns the best score across all synonyms.
+ */
+export function computeRoleMatchScore(title: string, synonyms: string[]): number {
+  if (!title || !Array.isArray(synonyms) || synonyms.length === 0) return 0.3;
+  const tNorm = normalizeText(title);
+  if (!tNorm) return 0.3;
+  const tTokens = new Set(tNorm.split(" ").filter(Boolean));
+  let best = 0.3;
+  for (const syn of synonyms) {
+    if (!syn) continue;
+    const sNorm = normalizeText(syn);
+    if (!sNorm) continue;
+    if (tNorm === sNorm) return 1.0;
+    // whole-word substring (with word boundaries simulated via spaces)
+    if ((` ${tNorm} `).includes(` ${sNorm} `) || (` ${sNorm} `).includes(` ${tNorm} `)) {
+      if (best < 0.8) best = 0.8;
+      continue;
+    }
+    const sTokens = sNorm.split(" ").filter(Boolean);
+    if (sTokens.length === 0) continue;
+    const overlap = sTokens.filter(tok => tTokens.has(tok)).length;
+    const ratio = overlap / sTokens.length;
+    if (ratio >= 0.5 && best < 0.6) best = 0.6;
+  }
+  return best;
+}
+
 const ARABIC_EMPLOYMENT_MAP: Record<string, string> = {
   "دوام كامل": "full_time",
   "دوام جزئي": "part_time",
@@ -101,34 +134,59 @@ export function normalizeCompanyName(name: string): string {
     .trim();
 }
 
-export async function upsertCompanyByName(name: string, website?: string | null, logoUrl?: string | null): Promise<string | null> {
+export async function upsertCompanyByName(name: string, website?: string | null, logoUrl?: string | null, linkedinUrl?: string | null): Promise<string | null> {
+  // Try exact name match first
   const { data: existing } = await supabase
     .from("companies")
-    .select("id")
+    .select("id, website, logo_url, linkedin_url, domain")
     .eq("name", name)
     .maybeSingle();
-  if (existing) return existing.id;
+
+  const incomingDomain = parseDomain(website ?? null);
+
+  if (existing) {
+    // COALESCE backfill: only set fields that are currently NULL
+    const patch: Record<string, any> = {};
+    if (!existing.website && website) patch.website = website;
+    if (!existing.logo_url && logoUrl) patch.logo_url = logoUrl;
+    if (!existing.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
+    if (!existing.domain && incomingDomain) patch.domain = incomingDomain;
+    if (Object.keys(patch).length > 0) {
+      await supabase.from("companies").update(patch).eq("id", existing.id);
+    }
+    return existing.id;
+  }
 
   const normalized = normalizeCompanyName(name);
   if (normalized) {
     const { data: normalizedMatch } = await supabase
       .from("companies")
-      .select("id")
+      .select("id, website, logo_url, linkedin_url, domain")
       .eq("name_normalized", normalized)
       .limit(1)
       .maybeSingle();
-    if (normalizedMatch) return normalizedMatch.id;
+    if (normalizedMatch) {
+      const patch: Record<string, any> = {};
+      if (!normalizedMatch.website && website) patch.website = website;
+      if (!normalizedMatch.logo_url && logoUrl) patch.logo_url = logoUrl;
+      if (!normalizedMatch.linkedin_url && linkedinUrl) patch.linkedin_url = linkedinUrl;
+      if (!normalizedMatch.domain && incomingDomain) patch.domain = incomingDomain;
+      if (Object.keys(patch).length > 0) {
+        await supabase.from("companies").update(patch).eq("id", normalizedMatch.id);
+      }
+      return normalizedMatch.id;
+    }
   }
 
-  const domain = parseDomain(website ?? null);
   const insertData: Record<string, any> = {
     name,
     name_normalized: normalized || null,
     enrichment_status: "pending",
   };
-  if (domain) insertData.domain = domain;
+  if (incomingDomain) insertData.domain = incomingDomain;
   if (website) insertData.website = website;
   if (logoUrl) insertData.logo_url = logoUrl;
+  if (linkedinUrl) insertData.linkedin_url = linkedinUrl;
 
   const { data: newCompany } = await supabase
     .from("companies")

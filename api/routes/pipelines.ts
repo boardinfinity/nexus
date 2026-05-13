@@ -3,7 +3,7 @@ import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase, APIFY_API_KEY, OPENAI_API_KEY } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
-import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub } from "../lib/helpers";
+import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore } from "../lib/helpers";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
@@ -396,7 +396,20 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       const dsId = providerDatasetId || pollData.data?.defaultDatasetId;
       let chunkResult: { done: boolean; remaining?: number } | undefined;
       if (run.pipeline_type === "linkedin_jobs") {
-        await processLinkedInResults(id, dsId, run.config);
+        // Recover role context from config._job_roles (primary run is first entry)
+        const jobRolesMeta = (run.config?._job_roles as any[]) || [];
+        const primaryRole = jobRolesMeta[0];
+        let runMeta: any = undefined;
+        if (primaryRole?.id) {
+          // Re-fetch synonyms for match scoring
+          const { data: roleRow } = await supabase.from("job_roles").select("synonyms").eq("id", primaryRole.id).maybeSingle();
+          runMeta = {
+            roleId: primaryRole.id,
+            roleName: primaryRole.name,
+            synonyms: (roleRow?.synonyms as string[]) || [],
+          };
+        }
+        await processLinkedInResults(id, dsId, run.config, runMeta);
       } else if (run.pipeline_type === "alumni" || run.pipeline_type === "alumni_bulk_upload") {
         // Chunked processing: each /poll call processes up to ALUMNI_CHUNK_SIZE profiles
         // and returns. The status stays 'running' until all profiles are done.
@@ -690,7 +703,9 @@ export async function executePipeline(runId: string, pipelineType: string, confi
 }
 
 // Process LinkedIn job results from Apify dataset (called by /poll endpoint)
-async function processLinkedInResults(runId: string, datasetId: string, config: any) {
+// runMeta carries the searched role context (id, name, keywords) so we can
+// persist job_role_id and compute role_match_score at insert time.
+async function processLinkedInResults(runId: string, datasetId: string, config: any, runMeta?: { roleId?: string; roleName?: string; keywords?: string; synonyms?: string[] }) {
   // Fetch results from Apify dataset
   // Paginate through ALL dataset items (remove old limit=1000 hardcode)
   const jobs: any[] = [];
@@ -740,13 +755,14 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
     }
   }
 
-  // Batch insert new companies
+  // Batch insert new companies (only those not in DB yet)
   const newCompanyNames = companyNames.filter(name => !companyMap.has(name));
   if (newCompanyNames.length > 0) {
     const companyRows = newCompanyNames.map(name => {
       const item = jobs.find(j => (j.company || j.companyName) === name);
       return {
         name,
+        name_normalized: normalizeText(name),
         linkedin_url: item?.companyUrl || null,
         domain: item?.companyDomain || null,
         enrichment_status: "pending",
@@ -761,6 +777,34 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
         .select("id, name");
       for (const c of inserted || []) {
         companyMap.set(c.name, c.id);
+      }
+    }
+  }
+
+  // COALESCE backfill: for existing companies, fill nullable URL/domain fields when this batch carries them
+  // (no overwrite; only fills NULLs)
+  const existingCompanyBackfill = companyNames
+    .filter(name => companyMap.has(name))
+    .map(name => {
+      const item = jobs.find(j => (j.company || j.companyName) === name);
+      return { id: companyMap.get(name)!, name, linkedinUrl: item?.companyUrl || null, domain: item?.companyDomain || null };
+    })
+    .filter(r => r.linkedinUrl || r.domain);
+  if (existingCompanyBackfill.length > 0) {
+    // Fetch current null-status to avoid unnecessary writes
+    const ids = existingCompanyBackfill.map(r => r.id);
+    const { data: currentRows } = await supabase
+      .from("companies")
+      .select("id, linkedin_url, domain")
+      .in("id", ids);
+    const currentMap = new Map((currentRows || []).map((r: any) => [r.id, r]));
+    for (const r of existingCompanyBackfill) {
+      const cur: any = currentMap.get(r.id);
+      const patch: any = {};
+      if (cur && !cur.linkedin_url && r.linkedinUrl) patch.linkedin_url = r.linkedinUrl;
+      if (cur && !cur.domain && r.domain) patch.domain = r.domain;
+      if (Object.keys(patch).length > 0) {
+        await supabase.from("companies").update(patch).eq("id", r.id);
       }
     }
   }
@@ -780,29 +824,53 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
     const companyName = item.company || item.companyName || null;
     const companyId = companyName ? (companyMap.get(companyName) || null) : null;
 
+    // Apply URL: actor returns under different keys depending on actor version
+    const applyUrl = item.applyUrl || item.applicationUrl || item.applyLink || item.jobApplyLink || item.applyUrlLI || null;
+    // Description: prefer descriptionHtml (richer) then plain description
+    const description = item.descriptionHtml || item.description || item.jobDescription || null;
+    // Salary: actor sometimes returns range strings, sometimes structured fields
+    const salaryMin = item.salaryMin || item.salary?.min || null;
+    const salaryMax = item.salaryMax || item.salary?.max || null;
+    const salaryText = item.salary?.text || item.salaryText || (typeof item.salary === "string" ? item.salary : null) || null;
+
+    // Role match score is computed but stored only after P2 migration adds the column.
+    // For now we attach it to raw_data so we can backfill later without re-collecting.
+    let roleMatchScore: number | null = null;
+    if (runMeta?.synonyms && runMeta.synonyms.length > 0 && item.title) {
+      roleMatchScore = computeRoleMatchScore(item.title, runMeta.synonyms);
+    }
+
     newJobs.push({
       external_id: externalId,
       source: "linkedin",
       title: item.title || "Unknown",
-      description: item.description || null,
+      title_normalized: item.title ? normalizeText(item.title) : null,
+      company_name_normalized: companyName ? normalizeText(companyName) : null,
+      description,
       company_id: companyId,
       company_name: companyName,
       location_raw: item.location || item.formattedLocation || null,
       location_city: item.city || null,
       location_state: item.state || null,
       location_country: item.country || config.location || null,
-      employment_type: mapEmploymentType(item.employmentType || item.jobType),
+      employment_type: mapEmploymentType(item.employmentType || item.jobType || item.workType),
       seniority_level: mapSeniority(item.seniorityLevel || item.experienceLevel),
-      salary_min: item.salaryMin || null,
-      salary_max: item.salaryMax || null,
-      salary_currency: item.salaryCurrency || null,
+      salary_min: salaryMin,
+      salary_max: salaryMax,
+      salary_currency: item.salaryCurrency || item.salary?.currency || null,
+      salary_text: salaryText,
       posted_at: item.datePosted || item.postedAt || item.publishedAt || null,
-      application_url: item.applyUrl || item.applicationUrl || null,
-      source_url: item.url || item.link || null,
-      recruiter_name: item.recruiterName || null,
-      recruiter_url: item.recruiterUrl || null,
-      enrichment_status: item.description ? "partial" : "pending",
-      raw_data: item,
+      application_url: applyUrl,
+      source_url: item.url || item.link || item.jobUrl || null,
+      is_remote: typeof item.isRemote === "boolean" ? item.isRemote : (item.workLocation === "remote" ? true : null),
+      qualifications: item.qualifications || null,
+      responsibilities: item.responsibilities || null,
+      benefits: item.benefits || item.benefitsList || null,
+      recruiter_name: item.recruiterName || item.poster?.name || null,
+      recruiter_url: item.recruiterUrl || item.poster?.linkedinUrl || null,
+      job_role_id: runMeta?.roleId || null,
+      enrichment_status: description ? "partial" : "pending",
+      raw_data: { ...item, _role_match_score: roleMatchScore, _role_id: runMeta?.roleId, _role_name: runMeta?.roleName },
     });
   }
 
@@ -870,17 +938,46 @@ async function executeLinkedInJobs(runId: string, config: any) {
   if (config?.easy_apply_only) commonInput.easyApplyOnly = true;
   if (config?.sort_by) commonInput.sortBy = config.sort_by;
 
-  // Build keyword queries: one per role or fallback to keywords
+  // Build keyword queries: one Apify run per role (synonyms OR-joined).
+  // LinkedIn enforces a ~1000 char hard limit on keyword field; we cap conservatively at 600.
+  // If a role's combined OR-query exceeds the cap, split synonyms across multiple runs (per-synonym for that role).
+  const KEYWORD_CAP = 600;
   const jobRoleIds = config?.job_role_ids as string[] | undefined;
-  let runs: { keywords: string; roleId?: string; roleName?: string }[] = [];
+  let runs: { keywords: string; roleId?: string; roleName?: string; synonyms?: string[]; split?: boolean }[] = [];
+  const overflowWarnings: any[] = [];
 
   if (jobRoleIds && jobRoleIds.length > 0) {
     const { data: roles } = await supabase.from("job_roles").select("id, name, synonyms").in("id", jobRoleIds);
     if (roles && roles.length > 0) {
-      runs = roles.map(r => ({
-        keywords: ((r.synonyms as string[]) || []).map(s => `"${s}"`).join(" OR "),
-        roleId: r.id, roleName: r.name,
-      }));
+      for (const r of roles) {
+        const syns = ((r.synonyms as string[]) || []).filter(Boolean);
+        const joined = syns.map(s => `"${s}"`).join(" OR ");
+        if (joined.length <= KEYWORD_CAP) {
+          runs.push({ keywords: joined || `"${r.name}"`, roleId: r.id, roleName: r.name, synonyms: syns.length ? syns : [r.name] });
+        } else {
+          // Split synonyms into multiple chunks, each under KEYWORD_CAP
+          overflowWarnings.push({ roleId: r.id, roleName: r.name, totalLen: joined.length, synonymCount: syns.length });
+          const chunks: string[][] = [];
+          let cur: string[] = [];
+          let curLen = 0;
+          for (const s of syns) {
+            const piece = `"${s}"`;
+            const add = (cur.length ? " OR " : "").length + piece.length;
+            if (curLen + add > KEYWORD_CAP && cur.length > 0) {
+              chunks.push(cur); cur = []; curLen = 0;
+            }
+            cur.push(s); curLen += add;
+          }
+          if (cur.length > 0) chunks.push(cur);
+          for (const chunk of chunks) {
+            runs.push({
+              keywords: chunk.map(s => `"${s}"`).join(" OR "),
+              roleId: r.id, roleName: r.name, synonyms: chunk, split: true,
+            });
+          }
+          console.warn(`[executeLinkedInJobs] OR-query overflow for role ${r.name}: ${joined.length} chars, split into ${chunks.length} runs`);
+        }
+      }
     }
   }
   if (runs.length === 0) {
@@ -888,11 +985,16 @@ async function executeLinkedInJobs(runId: string, config: any) {
   }
 
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })), _provider: "apify" },
+    config: {
+      ...config,
+      _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName, split: r.split || false })),
+      _provider: "apify",
+      _overflow_warnings: overflowWarnings.length ? overflowWarnings : undefined,
+    },
   }).eq("id", runId);
 
   // Launch all Apify runs in parallel
-  const apifyRuns: { runId?: string; datasetId?: string; keywords: string }[] = [];
+  const apifyRuns: { runId?: string; datasetId?: string; keywords: string; roleId?: string; roleName?: string; synonyms?: string[] }[] = [];
   const launchPromises = runs.map(async (run) => {
     try {
       const apifyUrl = `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs?token=${APIFY_API_KEY}`;
@@ -900,7 +1002,7 @@ async function executeLinkedInJobs(runId: string, config: any) {
       const res = await fetch(apifyUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body });
       if (res.ok) {
         const d = await res.json();
-        return { runId: d.data?.id, datasetId: d.data?.defaultDatasetId, keywords: run.keywords };
+        return { runId: d.data?.id, datasetId: d.data?.defaultDatasetId, keywords: run.keywords, roleId: run.roleId, roleName: run.roleName, synonyms: run.synonyms };
       } else {
         const errText = await res.text();
         console.error(`[executeLinkedInJobs] Apify error: ${res.status} ${errText.substring(0, 200)}`);
@@ -908,7 +1010,7 @@ async function executeLinkedInJobs(runId: string, config: any) {
     } catch (err: any) {
       console.error(`[executeLinkedInJobs] Fetch failed: ${err.message}`);
     }
-    return { keywords: run.keywords };
+    return { keywords: run.keywords, roleId: run.roleId, roleName: run.roleName, synonyms: run.synonyms };
   });
   apifyRuns.push(...(await Promise.all(launchPromises)));
 
@@ -932,11 +1034,13 @@ async function executeLinkedInJobs(runId: string, config: any) {
     await new Promise(r => setTimeout(r, 5000));
   }
 
-  // Process results from all succeeded runs
+  // Process results from all succeeded runs — pass per-run role context for tagging
   let processedCount = 0;
   for (const r of apifyRuns) {
     if ((r as any)._status === "SUCCEEDED" && r.datasetId) {
-      await processLinkedInResults(runId, r.datasetId, config);
+      await processLinkedInResults(runId, r.datasetId, config, {
+        roleId: r.roleId, roleName: r.roleName, keywords: r.keywords, synonyms: r.synonyms,
+      });
       processedCount++;
     }
   }
@@ -954,9 +1058,12 @@ async function executeLinkedInJobs(runId: string, config: any) {
 async function executeGoogleJobs(runId: string, config: any) {
   if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
 
-  // Build individual search queries from role synonyms or free text
-  let queries: string[] = [];
-  
+  // Build individual search queries from role synonyms or free text.
+  // Each query carries its roleId so the resulting jobs are tagged at insert time.
+  type GoogleQuery = { query: string; roleId?: string; roleName?: string; synonyms?: string[] };
+  let queries: GoogleQuery[] = [];
+  let roleSynonymMap = new Map<string, string[]>(); // roleId -> synonyms (for match scoring)
+
   const jobRoleIds = config.job_role_ids as string[] | undefined;
   if (jobRoleIds && jobRoleIds.length > 0) {
     const { data: roles } = await supabase
@@ -965,16 +1072,21 @@ async function executeGoogleJobs(runId: string, config: any) {
       .in("id", jobRoleIds);
     if (roles && roles.length > 0) {
       for (const role of roles) {
-        const synonyms = (role.synonyms as string[]) || [role.name];
-        queries.push(...synonyms);
+        const synonyms = ((role.synonyms as string[]) || [role.name]).filter(Boolean);
+        roleSynonymMap.set(role.id, synonyms);
+        for (const syn of synonyms) {
+          queries.push({ query: syn, roleId: role.id, roleName: role.name, synonyms });
+        }
       }
     }
   }
-  
+
   if (Array.isArray(config.queries) && config.queries.length > 0) {
-    queries.push(...config.queries.filter((q: string) => q.trim()));
+    for (const q of config.queries) {
+      if (typeof q === "string" && q.trim()) queries.push({ query: q.trim() });
+    }
   }
-  if (!queries.length) queries = [config.query || "software engineer"];
+  if (!queries.length) queries = [{ query: config.query || "software engineer" }];
 
   // Cap at 20 queries to stay within Vercel 300s timeout
   const MAX_QUERIES = 20;
@@ -994,16 +1106,22 @@ async function executeGoogleJobs(runId: string, config: any) {
   const datePosted = config.date_posted && config.date_posted !== "all" ? config.date_posted : "month";
 
   await supabase.from("pipeline_runs").update({
-    config: { ...config, _resolved_queries: queries, _query_count: queries.length, _provider: "apify", _actor: "igview-owner/google-jobs-scraper" },
+    config: {
+      ...config,
+      _resolved_queries: queries.map(q => ({ query: q.query, roleId: q.roleId, roleName: q.roleName })),
+      _query_count: queries.length,
+      _provider: "apify",
+      _actor: "igview-owner/google-jobs-scraper",
+    },
   }).eq("id", runId);
 
   let allProcessed = 0, allFailed = 0, allSkipped = 0, allTotal = 0;
 
   // Fire ALL queries to Apify in parallel
-  const launchPromises = queries.map(async (query) => {
+  const launchPromises = queries.map(async (q) => {
     try {
       const actorInput: Record<string, any> = {
-        query,
+        query: q.query,
         location: locationName,
         country: countryCode,
         maxResults: 10,
@@ -1015,13 +1133,13 @@ async function executeGoogleJobs(runId: string, config: any) {
       );
       if (startRes.ok) {
         const d = await startRes.json();
-        return { query, runId: d.data?.id, datasetId: d.data?.defaultDatasetId };
+        return { query: q.query, roleId: q.roleId, roleName: q.roleName, synonyms: q.synonyms, runId: d.data?.id, datasetId: d.data?.defaultDatasetId };
       }
     } catch {}
-    return { query };
+    return { query: q.query, roleId: q.roleId, roleName: q.roleName, synonyms: q.synonyms };
   });
 
-  const apifyRuns = (await Promise.all(launchPromises)).filter(r => r.runId);
+  const apifyRuns = (await Promise.all(launchPromises)).filter((r: any) => r.runId);
 
   // Poll all runs until done (max 4 minutes)
   const MAX_WAIT = 240000;
@@ -1072,6 +1190,12 @@ async function executeGoogleJobs(runId: string, config: any) {
             const titleNorm = normalizeText(item.jobTitle || "");
             const companyNorm = normalizeText(item.employerName || "");
 
+            // Role match score computed but stored in raw_data until P2 adds the column
+            let roleMatchScore: number | null = null;
+            if ((run as any).synonyms && (run as any).synonyms.length > 0 && item.jobTitle) {
+              roleMatchScore = computeRoleMatchScore(item.jobTitle, (run as any).synonyms);
+            }
+
             await supabase.from("jobs").insert({
               external_id: externalId,
               source: "google_jobs",
@@ -1100,8 +1224,9 @@ async function executeGoogleJobs(runId: string, config: any) {
               qualifications: item.qualifications || null,
               responsibilities: item.responsibilities || null,
               benefits: item.benefitsList || item.benefits || null,
+              job_role_id: (run as any).roleId || null,
               enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
-              raw_data: { ...item, search_query: run.query },
+              raw_data: { ...item, search_query: (run as any).query, _role_id: (run as any).roleId, _role_name: (run as any).roleName, _role_match_score: roleMatchScore },
             });
             allProcessed++;
           } catch (e) { allFailed++; }
