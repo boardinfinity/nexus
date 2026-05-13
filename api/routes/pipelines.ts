@@ -674,6 +674,133 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     })
   }
 
+  // ==================== RECOVER MULTI-ROLE BULK RUNS ====================
+  // POST /pipelines/jobs/recover-bulk-roles
+  // For pipeline_runs created with 30 job_role_ids via /pipelines/run, the standard
+  // /poll endpoint only harvests the primary Apify dataset — the other 29 (stored in
+  // config._additional_runs) are silently dropped. This endpoint iterates ALL the
+  // role datasets, polls Apify per-role, harvests succeeded ones, and accumulates
+  // counts properly. Idempotent — safe to re-run; processLinkedInResults UPSERTs jobs.
+  if (path === "/pipelines/jobs/recover-bulk-roles" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+
+    const { run_ids } = req.body || {}
+    if (!Array.isArray(run_ids) || run_ids.length === 0) {
+      return res.status(400).json({ error: "run_ids array is required" })
+    }
+
+    const summary: any[] = []
+
+    for (const runId of run_ids) {
+      const { data: run, error: runErr } = await supabase.from("pipeline_runs").select("*").eq("id", runId).single()
+      if (runErr || !run) {
+        summary.push({ run_id: runId, ok: false, error: "run not found" })
+        continue
+      }
+      if (run.pipeline_type !== "linkedin_jobs") {
+        summary.push({ run_id: runId, ok: false, error: `unsupported pipeline_type ${run.pipeline_type}` })
+        continue
+      }
+
+      const cfg = run.config || {}
+      // Build complete role-run list: primary + additional
+      const primary = {
+        runId: cfg._provider_run_id,
+        datasetId: cfg._provider_dataset_id,
+        roleId: (cfg._job_roles as any[])?.[0]?.id,
+        roleName: (cfg._job_roles as any[])?.[0]?.name,
+      }
+      const additional = (cfg._additional_runs as any[]) || []
+      const allRoleRuns = [primary, ...additional].filter(r => r.runId && r.datasetId)
+
+      // Pre-fetch synonyms for all roles in one query
+      const roleIds = allRoleRuns.map(r => r.roleId).filter(Boolean) as string[]
+      const synMap = new Map<string, string[]>()
+      if (roleIds.length > 0) {
+        const { data: roles } = await supabase.from("job_roles").select("id, synonyms").in("id", roleIds)
+        for (const r of roles || []) synMap.set(r.id as string, (r.synonyms as string[]) || [])
+      }
+
+      let totalProcessed = 0
+      let totalItems = 0
+      let succeededRoles = 0
+      let runningRoles = 0
+      let failedRoles = 0
+      const roleErrors: string[] = []
+
+      for (const rr of allRoleRuns) {
+        try {
+          const apifyRes = await fetch(
+            `https://api.apify.com/v2/acts/practicaltools~linkedin-jobs/runs/${rr.runId}?token=${APIFY_API_KEY}`
+          )
+          const apifyData = await apifyRes.json()
+          const st = apifyData.data?.status
+          if (st === "RUNNING" || st === "READY") { runningRoles++; continue }
+          if (st !== "SUCCEEDED") { failedRoles++; continue }
+
+          // Count items in dataset before harvest (for total tracking)
+          const dsId = rr.datasetId || apifyData.data?.defaultDatasetId
+          if (!dsId) { failedRoles++; continue }
+
+          // Snapshot processed_items before this harvest so we can compute delta
+          const { data: pre } = await supabase.from("pipeline_runs").select("processed_items, total_items").eq("id", runId).single()
+          const preProcessed = (pre?.processed_items as number) || 0
+          const preTotal = (pre?.total_items as number) || 0
+
+          await processLinkedInResults(runId, dsId, cfg, {
+            roleId: rr.roleId, roleName: rr.roleName,
+            synonyms: synMap.get(rr.roleId as string) || [],
+            discoverySource: cfg.discovery_source || null,
+          } as any)
+
+          // processLinkedInResults wrote: processed_items=<this role's processed>, total_items=<this role's total>
+          // We need to ADD them to the pre-existing values. Read what it wrote, then accumulate.
+          const { data: post } = await supabase.from("pipeline_runs").select("processed_items, total_items").eq("id", runId).single()
+          const thisProcessed = (post?.processed_items as number) || 0
+          const thisTotal = (post?.total_items as number) || 0
+
+          const newProcessed = preProcessed + thisProcessed
+          const newTotal = preTotal + thisTotal
+          await supabase.from("pipeline_runs").update({
+            processed_items: newProcessed,
+            total_items: newTotal,
+          }).eq("id", runId)
+
+          totalProcessed = newProcessed
+          totalItems = newTotal
+          succeededRoles++
+        } catch (err: any) {
+          failedRoles++
+          roleErrors.push(`${rr.roleName || rr.roleId}: ${err.message}`)
+        }
+      }
+
+      // Mark run completed only if no roles still running
+      const finalStatus = runningRoles > 0 ? "running" : "completed"
+      await supabase.from("pipeline_runs").update({
+        status: finalStatus,
+        processed_items: totalProcessed,
+        total_items: totalItems,
+        completed_at: runningRoles > 0 ? null : new Date().toISOString(),
+        ...(roleErrors.length > 0 ? { error_message: roleErrors.slice(0, 5).join(" | ") } : {}),
+      }).eq("id", runId)
+
+      summary.push({
+        run_id: runId,
+        ok: true,
+        roles_total: allRoleRuns.length,
+        succeeded: succeededRoles,
+        running: runningRoles,
+        failed: failedRoles,
+        processed_items: totalProcessed,
+        total_items: totalItems,
+        final_status: finalStatus,
+      })
+    }
+
+    return res.json({ summary })
+  }
+
   // ==================== DISCOVERY HARVEST ====================
   // POST /pipelines/jobs/discovery-harvest
   // Reads jobs collected by discovery sweep pipeline_runs, extracts titles not
