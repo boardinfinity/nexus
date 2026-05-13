@@ -30,6 +30,7 @@ import { Redirect } from "wouter";
 import SurveyAdmin from "@/pages/survey-admin";
 import SurveyDetail from "@/pages/survey-detail";
 import Reports from "@/pages/reports";
+import DiscoveredTitles from "@/pages/discovered-titles";
 import Login from "@/pages/login";
 import DataQuality from "@/pages/data-quality";
 import Colleges from "@/pages/colleges";
@@ -73,6 +74,7 @@ function AppRouter() {
       <Route path="/colleges/:id/programs/:pid">{(params) => <ProgramDetail params={params} />}</Route>
       <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
       <Route path="/reports" component={Reports} />
+      <Route path="/discovered-titles" component={DiscoveredTitles} />
       <Route path="/placeintel-admin" component={PlaceIntelAdmin} />
       <Route path="/masters" component={MasterData} />
       <Route path="/users" component={UsersPage} />

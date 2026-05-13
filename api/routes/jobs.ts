@@ -44,7 +44,11 @@ export async function handleJobsRoutes(path: string, req: VercelRequest, res: Ve
 
   if (path.match(/^\/jobs\/[^/]+$/) && req.method === "GET") {
     const id = path.split("/").pop();
-    const { data, error } = await supabase.from("jobs").select("*").eq("id", id).single();
+    const { data, error } = await supabase
+      .from("jobs")
+      .select("*, mapped_role:job_roles!job_role_id(id, name), mapped_bucket:job_buckets!bucket_id(id, name)")
+      .eq("id", id)
+      .single();
     if (error) return res.status(404).json({ error: "Job not found" });
 
     const { data: skills } = await supabase.from("job_skills").select("*").eq("job_id", id);

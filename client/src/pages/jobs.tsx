@@ -68,7 +68,15 @@ export default function Jobs() {
     },
   });
 
-  const { data: jobDetail } = useQuery<Job & { skills?: JobSkill[] }>({
+  const { data: jobDetail } = useQuery<Job & {
+    skills?: JobSkill[];
+    mapped_role?: { id: string; name: string } | null;
+    mapped_bucket?: { id: string; name: string } | null;
+    role_match_score?: number | null;
+    discovery_source?: string | null;
+    last_seen_at?: string | null;
+    jd_fetch_status?: string | null;
+  }>({
     queryKey: ["/api/jobs", selectedJob?.id],
     queryFn: async () => {
       const res = await authFetch(`/api/jobs/${selectedJob!.id}`);
@@ -287,6 +295,69 @@ export default function Jobs() {
           </SheetHeader>
           {(jobDetail || selectedJob) && (
             <div className="space-y-4 mt-4">
+              {/* Intelligence — Nexus mapping, scoring, discovery signals */}
+              {(jobDetail?.mapped_role || jobDetail?.mapped_bucket || jobDetail?.role_match_score != null || jobDetail?.discovery_source || jobDetail?.last_seen_at || jobDetail?.jd_fetch_status) && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
+                      <Brain className="h-3 w-3" /> Intelligence
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm">
+                    {jobDetail?.mapped_role && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Mapped Role</span>
+                        <span className="text-right">{jobDetail.mapped_role.name}</span>
+                      </div>
+                    )}
+                    {jobDetail?.role_match_score != null && (
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-muted-foreground">Match Score</span>
+                        <div className="flex items-center gap-2 flex-1 max-w-[180px]">
+                          <div className="h-1.5 flex-1 rounded bg-muted overflow-hidden">
+                            <div
+                              className="h-full bg-primary"
+                              style={{ width: `${Math.min(100, Math.max(0, Math.round(Number(jobDetail.role_match_score) * 100)))}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-mono">{Math.round(Number(jobDetail.role_match_score) * 100)}%</span>
+                        </div>
+                      </div>
+                    )}
+                    {jobDetail?.mapped_bucket && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Mapped Bucket</span>
+                        <span className="text-right">{jobDetail.mapped_bucket.name}</span>
+                      </div>
+                    )}
+                    {jobDetail?.discovery_source && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Discovery Source</span>
+                        <Badge variant="outline" className="text-[10px]">{jobDetail.discovery_source}</Badge>
+                      </div>
+                    )}
+                    {jobDetail?.jd_fetch_status && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">JD Status</span>
+                        <StatusBadge status={jobDetail.jd_fetch_status} />
+                      </div>
+                    )}
+                    {jobDetail?.last_seen_at && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Last Seen</span>
+                        <span className="text-right text-xs">{new Date(jobDetail.last_seen_at).toLocaleDateString()}</span>
+                      </div>
+                    )}
+                    {jobDetail?.posted_at && (
+                      <div className="flex justify-between">
+                        <span className="text-muted-foreground">Posted</span>
+                        <span className="text-right text-xs">{new Date(jobDetail.posted_at).toLocaleDateString()}</span>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+
               {/* Job Info */}
               <Card>
                 <CardHeader className="pb-2">

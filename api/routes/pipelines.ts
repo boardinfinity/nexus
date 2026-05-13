@@ -1197,6 +1197,99 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
   // Settings routes handled in api/routes/settings.ts
 
+  // ==================== DISCOVERED TITLES ====================
+  // Surfaces titles found during discovery sweeps that didn't match any existing job_role.
+  // Admin can promote (create a new job_role) or ignore them.
+
+  // GET /discovered-titles?status=&country=&search=&page=&limit=
+  if (path === "/discovered-titles" && req.method === "GET") {
+    if (!requireReader(auth, "pipelines", res)) return
+    const status = (req.query.status as string) || ""
+    const country = (req.query.country as string) || ""
+    const search = (req.query.search as string) || ""
+    const page = parseInt((req.query.page as string) || "1")
+    const limit = Math.min(200, parseInt((req.query.limit as string) || "50"))
+    const from = (page - 1) * limit
+    const to = from + limit - 1
+
+    let q = supabase
+      .from("discovered_titles")
+      .select("*", { count: "exact" })
+      .order("observed_count", { ascending: false })
+      .order("last_seen_at", { ascending: false })
+      .range(from, to)
+
+    if (status) q = q.eq("status", status)
+    if (country) q = q.eq("country", country)
+    if (search) q = q.ilike("normalized_title", `%${search.toLowerCase()}%`)
+
+    const { data, error, count } = await q
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json({ items: data || [], total: count || 0, page, limit })
+  }
+
+  // POST /discovered-titles/:id/promote { role_name?, role_id? }
+  // If role_id provided: link to that existing role. Else create a new job_role from role_name (or title).
+  const promoteMatch = path.match(/^\/discovered-titles\/([^/]+)\/promote$/)
+  if (promoteMatch && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+    const titleId = promoteMatch[1]
+    const body = req.body || {}
+
+    const { data: dt, error: dtErr } = await supabase
+      .from("discovered_titles").select("*").eq("id", titleId).single()
+    if (dtErr || !dt) return res.status(404).json({ error: "discovered_title not found" })
+
+    let roleId: string | null = body.role_id || null
+    const roleName: string = body.role_name || dt.title
+    const family: string = body.family || "Others"
+
+    if (!roleId) {
+      // Create a new job_role. job_roles schema: id, name, family (NOT NULL), synonyms, airtable_id, created_at
+      const { data: created, error: createErr } = await supabase
+        .from("job_roles")
+        .insert({ name: roleName, family, synonyms: [dt.title] })
+        .select()
+        .single()
+      if (createErr) return res.status(500).json({ error: `Failed to create job_role: ${createErr.message}` })
+      roleId = created.id
+    }
+
+    const { error: updErr } = await supabase
+      .from("discovered_titles")
+      .update({
+        status: "promoted",
+        promoted_role_id: roleId,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: (auth as any)?.nexusUser?.email || null,
+      })
+      .eq("id", titleId)
+    if (updErr) return res.status(500).json({ error: updErr.message })
+
+    return res.json({ ok: true, discovered_title_id: titleId, job_role_id: roleId, role_name: roleName })
+  }
+
+  // POST /discovered-titles/:id/ignore { reason? }
+  const ignoreMatch = path.match(/^\/discovered-titles\/([^/]+)\/ignore$/)
+  if (ignoreMatch && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+    const titleId = ignoreMatch[1]
+    const reason = (req.body || {}).reason || null
+
+    const { error: updErr } = await supabase
+      .from("discovered_titles")
+      .update({
+        status: "ignored",
+        notes: reason,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: (auth as any)?.nexusUser?.email || null,
+      })
+      .eq("id", titleId)
+    if (updErr) return res.status(500).json({ error: updErr.message })
+
+    return res.json({ ok: true, discovered_title_id: titleId })
+  }
+
   return undefined;
 }
 

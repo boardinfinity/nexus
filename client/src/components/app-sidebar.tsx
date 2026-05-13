@@ -27,6 +27,7 @@ const navItems = [
   { title: "Pipelines", href: "/pipelines", icon: GitBranch, section: "pipelines" },
   { title: "Schedules", href: "/schedules", icon: CalendarClock, section: "schedules" },
   { title: "Taxonomy", href: "/taxonomy", icon: BookOpen, section: "taxonomy" },
+  { title: "Discovered Titles", href: "/discovered-titles", icon: Sparkles, section: "pipelines" },
   { title: "JD Analyzer", href: "/jd-analyzer", icon: Sparkles, section: "jd_analyzer" },
   { title: "Analyzer Runs", href: "/jd-analyzer/runs", icon: Activity, section: "jd_analyzer" },
   { title: "Monitoring", href: "/monitoring", icon: Activity, section: null },
