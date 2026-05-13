@@ -408,25 +408,34 @@ export default function DiscoveredTitles() {
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
-                    <Command>
-                      <CommandInput placeholder="Type to search…" />
+                    <Command
+                      filter={(value, search) => {
+                        // Strict case-insensitive substring match across name + family + synonyms.
+                        if (!search.trim()) return 1;
+                        return value.toLowerCase().includes(search.toLowerCase()) ? 1 : 0;
+                      }}
+                    >
+                      <CommandInput placeholder="Search name, family, or synonym…" />
                       <CommandList>
                         <CommandEmpty>No role found.</CommandEmpty>
                         <CommandGroup>
-                          {(roles || []).map((r) => (
-                            <CommandItem
-                              key={r.id}
-                              value={`${r.name} ${r.family} ${(r.synonyms || []).join(" ")}`}
-                              onSelect={() => { setSelectedRoleId(r.id); setRolePickerOpen(false); }}
-                            >
-                              <div className="flex flex-col">
-                                <span>{r.name}</span>
-                                <span className="text-[10px] text-muted-foreground">
-                                  {r.family} · {(r.synonyms || []).length} synonym{(r.synonyms || []).length === 1 ? "" : "s"}
-                                </span>
-                              </div>
-                            </CommandItem>
-                          ))}
+                          {(roles || []).map((r) => {
+                            const matchedSynonym = (r.synonyms || []);
+                            return (
+                              <CommandItem
+                                key={r.id}
+                                value={`${r.name} ${r.family} ${matchedSynonym.join(" ")}`}
+                                onSelect={() => { setSelectedRoleId(r.id); setRolePickerOpen(false); }}
+                              >
+                                <div className="flex flex-col">
+                                  <span>{r.name}</span>
+                                  <span className="text-[10px] text-muted-foreground">
+                                    {r.family} · {matchedSynonym.length} synonym{matchedSynonym.length === 1 ? "" : "s"}
+                                  </span>
+                                </div>
+                              </CommandItem>
+                            );
+                          })}
                         </CommandGroup>
                       </CommandList>
                     </Command>
