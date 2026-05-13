@@ -34,3 +34,4 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 2026-05-13 09:01 UTC amb-jobs-pipeline: P1 started — patching LinkedIn mapping (qualifications, responsibilities, benefits, salary_text, is_remote, work_type, application_url multi-key), persisting job_role_id at insert, OR-query overflow detection, COALESCE company URL backfill
 
 2026-05-13 09:13 UTC · amb-jobs-pipeline · P2 migration 040 reserved + written (jobs.last_seen_at, role_match_score, discovery_source; discovered_titles + discovery_runs tables; backfill role_match_score from raw_data). Awaiting CLI apply.
+2026-05-13 09:30 UTC · amb-jobs-pipeline · Migration 040 applied (last_seen_at on 22118 rows). Promoted role_match_score + last_seen_at writes into the new columns on LinkedIn + Google insert paths.

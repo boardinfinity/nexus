@@ -833,8 +833,8 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
     const salaryMax = item.salaryMax || item.salary?.max || null;
     const salaryText = item.salary?.text || item.salaryText || (typeof item.salary === "string" ? item.salary : null) || null;
 
-    // Role match score is computed but stored only after P2 migration adds the column.
-    // For now we attach it to raw_data so we can backfill later without re-collecting.
+    // Role match score computed and persisted to the column (migration 040 — May 2026).
+    // Mirror copy retained in raw_data._role_match_score for traceability.
     let roleMatchScore: number | null = null;
     if (runMeta?.synonyms && runMeta.synonyms.length > 0 && item.title) {
       roleMatchScore = computeRoleMatchScore(item.title, runMeta.synonyms);
@@ -869,6 +869,9 @@ async function processLinkedInResults(runId: string, datasetId: string, config: 
       recruiter_name: item.recruiterName || item.poster?.name || null,
       recruiter_url: item.recruiterUrl || item.poster?.linkedinUrl || null,
       job_role_id: runMeta?.roleId || null,
+      role_match_score: roleMatchScore,
+      last_seen_at: new Date().toISOString(),
+      discovery_source: (runMeta as any)?.discoverySource || null,
       enrichment_status: description ? "partial" : "pending",
       raw_data: { ...item, _role_match_score: roleMatchScore, _role_id: runMeta?.roleId, _role_name: runMeta?.roleName },
     });
@@ -1190,7 +1193,7 @@ async function executeGoogleJobs(runId: string, config: any) {
             const titleNorm = normalizeText(item.jobTitle || "");
             const companyNorm = normalizeText(item.employerName || "");
 
-            // Role match score computed but stored in raw_data until P2 adds the column
+            // Role match score computed and persisted to the column (migration 040 — May 2026).
             let roleMatchScore: number | null = null;
             if ((run as any).synonyms && (run as any).synonyms.length > 0 && item.jobTitle) {
               roleMatchScore = computeRoleMatchScore(item.jobTitle, (run as any).synonyms);
@@ -1225,6 +1228,9 @@ async function executeGoogleJobs(runId: string, config: any) {
               responsibilities: item.responsibilities || null,
               benefits: item.benefitsList || item.benefits || null,
               job_role_id: (run as any).roleId || null,
+              role_match_score: roleMatchScore,
+              last_seen_at: new Date().toISOString(),
+              discovery_source: (run as any).discoverySource || null,
               enrichment_status: (desc && desc.length > 100) ? "partial" : "pending",
               raw_data: { ...item, search_query: (run as any).query, _role_id: (run as any).roleId, _role_name: (run as any).roleName, _role_match_score: roleMatchScore },
             });
