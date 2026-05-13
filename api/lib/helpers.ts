@@ -313,3 +313,140 @@ export function generatePeopleSearchStub(params: any, count: number): any[] {
   }
   return results;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Middle East Job Source Mappers
+// Bayt.com and NaukriGulf.com field → jobs table row
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Map Bayt.com career level strings to Nexus seniority enum */
+export function mapBaytCareerLevel(raw: string | null): string | null {
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (lower.includes("intern") || lower.includes("fresh")) return "internship";
+  if (lower.includes("entry") || lower.includes("junior")) return "entry_level";
+  if (lower.includes("mid career") || lower.includes("mid-career")) return "associate";
+  if (lower.includes("senior") || lower.includes("management")) return "mid_senior";
+  if (lower.includes("director") || lower.includes("head")) return "director";
+  if (lower.includes("vp") || lower.includes("vice")) return "vp";
+  if (lower.includes("c-level") || lower.includes("ceo") || lower.includes("cto") || lower.includes("chief")) return "c_suite";
+  return "other";
+}
+
+/** Map Bayt.com country portal code to a readable country string */
+export function mapBaytCountryCode(code: string | null): string | null {
+  if (!code) return null;
+  const MAP: Record<string, string> = {
+    UAE: "United Arab Emirates", KSA: "Saudi Arabia", KWT: "Kuwait",
+    QAT: "Qatar", BHR: "Bahrain", OMN: "Oman", EGY: "Egypt",
+    JOR: "Jordan", LBN: "Lebanon", INTERNATIONAL: "International",
+  };
+  return MAP[code.toUpperCase()] || code;
+}
+
+/**
+ * Transform a raw Bayt.com Apify item (blackfalcondata/bayt-scraper)
+ * into a Nexus jobs table row.
+ */
+export function mapBaytJob(
+  item: any,
+  runMeta: { roleId?: string; roleName?: string; synonyms?: string[]; runId?: string },
+  companyId: string | null,
+  roleMatchScore: number | null
+): Record<string, any> {
+  const description = item.descriptionText || item.descriptionMarkdown || item.descriptionHtml || null;
+  return {
+    external_id: String(item.jobId || item.id || item.url || `bayt-${Date.now()}-${Math.random()}`),
+    source: "bayt.com",
+    title: item.title || "Unknown",
+    title_normalized: item.title ? normalizeText(item.title) : null,
+    company_name: item.company || null,
+    company_name_normalized: item.company ? normalizeText(item.company) : null,
+    company_id: companyId,
+    description,
+    location_raw: item.location || null,
+    location_city: item.city || null,
+    location_country: mapBaytCountryCode(item.country) || item.country || null,
+    employment_type: mapEmploymentType(item.employmentType || null),
+    seniority_level: mapBaytCareerLevel(item.careerLevel || null),
+    salary_min: typeof item.salaryMin === "number" ? item.salaryMin : null,
+    salary_max: typeof item.salaryMax === "number" ? item.salaryMax : null,
+    salary_currency: item.salaryCurrency || null,
+    salary_unit: item.salaryPeriod || null,
+    salary_text: item.salaryText || null,
+    is_remote: typeof item.isRemote === "boolean" ? item.isRemote : null,
+    source_url: item.url || null,
+    application_url: item.applyUrl || null,
+    posted_at: item.postedDate || null,
+    job_role_id: runMeta.roleId || null,
+    role_match_score: roleMatchScore,
+    last_seen_at: new Date().toISOString(),
+    discovery_source: "bayt.com",
+    enrichment_status: description ? "partial" : "pending",
+    raw_data: {
+      ...item,
+      _role_id: runMeta.roleId,
+      _role_name: runMeta.roleName,
+      _pipeline_run_id: runMeta.runId,
+      _role_match_score: roleMatchScore,
+    },
+  };
+}
+
+/**
+ * Transform a raw NaukriGulf Apify item (blackfalcondata/naukrigulf-scraper)
+ * into a Nexus jobs table row.
+ */
+export function mapNaukriGulfJob(
+  item: any,
+  runMeta: { roleId?: string; roleName?: string; synonyms?: string[]; runId?: string },
+  companyId: string | null,
+  roleMatchScore: number | null
+): Record<string, any> {
+  // NaukriGulf merges description + desiredCandidate for a richer JD text
+  const description = [
+    item.description || item.descriptionMarkdown || item.descriptionHtml || "",
+    item.desiredCandidate ? `\n\nDesired Candidate:\n${item.desiredCandidate}` : "",
+  ].join("").trim() || null;
+
+  const expMin = typeof item.experienceMin === "number" ? item.experienceMin : null;
+  const expMax = typeof item.experienceMax === "number" ? item.experienceMax : null;
+
+  return {
+    external_id: String(item.jobId || item.jobKey || item.url || `ng-${Date.now()}-${Math.random()}`),
+    source: "naukrigulf.com",
+    title: item.title || "Unknown",
+    title_normalized: item.title ? normalizeText(item.title) : null,
+    company_name: item.company || null,
+    company_name_normalized: item.company ? normalizeText(item.company) : null,
+    company_id: companyId,
+    description,
+    location_raw: item.location || (Array.isArray(item.localities) ? item.localities.join(", ") : null),
+    location_country: item.jobCountry || null,
+    employment_type: mapEmploymentType(item.employmentType || null),
+    seniority_level: null,  // NaukriGulf doesn't provide career level — will be inferred by JD analyzer
+    salary_min: item.salary?.min ?? null,
+    salary_max: item.salary?.max ?? null,
+    salary_currency: item.salary?.currency ?? null,
+    salary_text: typeof item.salary === "string" ? item.salary : (item.salary?.text ?? null),
+    is_remote: item.locationType === "remote" ? true : null,
+    source_url: item.url || null,
+    application_url: item.applyUrl || null,
+    posted_at: item.postedAt || null,
+    min_experience_years: expMin,
+    max_experience_years: expMax,
+    recruiter_name: item.contactName || null,
+    job_role_id: runMeta.roleId || null,
+    role_match_score: roleMatchScore,
+    last_seen_at: new Date().toISOString(),
+    discovery_source: "naukrigulf.com",
+    enrichment_status: description ? "partial" : "pending",
+    raw_data: {
+      ...item,
+      _role_id: runMeta.roleId,
+      _role_name: runMeta.roleName,
+      _pipeline_run_id: runMeta.runId,
+      _role_match_score: roleMatchScore,
+    },
+  };
+}

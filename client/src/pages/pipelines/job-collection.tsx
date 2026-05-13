@@ -804,6 +804,542 @@ function GoogleJobsForm() {
   );
 }
 
+// ── ME_COUNTRIES constant ────────────────────────────────────────────────────
+
+const ME_COUNTRIES_BAYT = [
+  { value: "UAE", label: "UAE" },
+  { value: "Saudi Arabia", label: "Saudi Arabia" },
+  { value: "Kuwait", label: "Kuwait" },
+  { value: "Qatar", label: "Qatar" },
+  { value: "Bahrain", label: "Bahrain" },
+  { value: "Oman", label: "Oman" },
+  { value: "Egypt", label: "Egypt" },
+  { value: "Jordan", label: "Jordan" },
+  { value: "Lebanon", label: "Lebanon" },
+];
+
+const ME_COUNTRIES_NG = [
+  { value: "UAE", label: "UAE" },
+  { value: "Saudi Arabia", label: "Saudi Arabia" },
+  { value: "Kuwait", label: "Kuwait" },
+  { value: "Qatar", label: "Qatar" },
+  { value: "Bahrain", label: "Bahrain" },
+  { value: "Oman", label: "Oman" },
+];
+
+// ── Bayt.com Form ─────────────────────────────────────────────────────────────
+
+function BaytForm() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const { data: allRoles = [], isLoading: rolesLoading } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const [selectedFamily, setSelectedFamily] = useState<string>("all");
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
+  const [roleSearch, setRoleSearch] = useState("");
+
+  const filteredRoles = allRoles.filter(r => {
+    if (selectedFamily !== "all" && r.family !== selectedFamily) return false;
+    if (roleSearch && !r.name.toLowerCase().includes(roleSearch.toLowerCase())) return false;
+    return true;
+  });
+  const selectedRoles = allRoles.filter(r => selectedRoleIds.includes(r.id));
+  const toggleRole = (id: string) => setSelectedRoleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const [keywords, setKeywords] = useState("");
+  const [country, setCountry] = useState("UAE");
+  const [daysOld, setDaysOld] = useState("7");
+  const [limit, setLimit] = useState(200);
+  const [incremental, setIncremental] = useState(true);
+  const [scheduleMode, setScheduleMode] = useState(false);
+  const [frequency, setFrequency] = useState("daily");
+  const [scheduleName, setScheduleName] = useState("");
+
+  const buildConfig = () => ({
+    search_keywords: keywords || undefined,
+    job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
+    country,
+    days_old: parseInt(daysOld) || 7,
+    limit,
+    incremental,
+  });
+
+  const runNow = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/pipelines/run", {
+        method: "POST",
+        body: JSON.stringify({ pipeline_type: "bayt_jobs", config: buildConfig() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => { toast({ title: "Bayt.com collection started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines"] }); },
+    onError: (e: any) => toast({ title: "Failed to start", description: e.message, variant: "destructive" }),
+  });
+
+  const autoScheduleName = `${frequency === "daily" ? "Daily" : "Weekly"} Bayt ${country}`;
+  const saveSchedule = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/scheduler/schedules", {
+        method: "POST",
+        body: JSON.stringify({
+          name: scheduleName || autoScheduleName,
+          pipeline_type: "bayt_jobs",
+          config: buildConfig(),
+          frequency,
+          cron_expression: frequency === "daily" ? "0 0 * * *" : "0 0 * * 1",
+          is_active: true,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => toast({ title: "Bayt schedule saved" }),
+    onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Globe className="h-5 w-5 text-orange-500" /> Bayt.com — Middle East Jobs
+          </CardTitle>
+          <Badge variant="outline" className="text-[10px]">$0.001/job · UAE/KSA/GCC</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" /> How to use <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 text-xs text-muted-foreground space-y-1 bg-muted/30 rounded-lg p-3">
+            <p>1. <strong>Bayt.com</strong> is the #1 job board in MENA — UAE, Saudi, Kuwait, Qatar, Bahrain, Oman, Egypt</p>
+            <p>2. <strong>Select Job Roles</strong> — synonyms become keyword OR-queries, one Apify run per role</p>
+            <p>3. <strong>Incremental mode ON</strong> — subsequent runs only fetch new/changed listings (saves cost)</p>
+            <p>4. <strong>Full descriptions included</strong> — salary, skills[], career level, company size all structured</p>
+            <p>5. <strong>Salary in AED/SAR</strong> — already numeric min/max in the actor output, flows to JD Analyzer</p>
+          </CollapsibleContent>
+        </Collapsible>
+
+        {/* ── JOB ROLES ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Job Roles</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Select roles — synonyms become Bayt.com search queries</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Job Family</Label>
+              <Select value={selectedFamily} onValueChange={setSelectedFamily}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Families</SelectItem>
+                  {JOB_FAMILIES.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Search Roles</Label>
+              <div className="relative mt-1">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input value={roleSearch} onChange={e => setRoleSearch(e.target.value)} placeholder="Filter roles..." className="text-sm h-9 pl-8" />
+              </div>
+            </div>
+          </div>
+          <ScrollArea className="h-36 rounded-md border p-2 mt-2">
+            {filteredRoles.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">{rolesLoading ? "Loading roles..." : "No roles match"}</p>
+            ) : (
+              <div className="space-y-1">
+                {filteredRoles.map(role => (
+                  <label key={role.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer">
+                    <Checkbox checked={selectedRoleIds.includes(role.id)} onCheckedChange={() => toggleRole(role.id)} />
+                    <span className="text-xs">{role.name}</span>
+                    <span className="text-[10px] text-muted-foreground ml-auto">{role.family}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+          {selectedRoles.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {selectedRoles.map(r => (
+                <Badge key={r.id} variant="secondary" className="text-[10px] pr-1">
+                  {r.name}
+                  <button onClick={() => toggleRole(r.id)} className="ml-1 hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* ── SEARCH ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Keywords {selectedRoleIds.length === 0 ? "*" : "(optional)"}</Label>
+              <Input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="e.g. Product Manager" className="text-sm h-9 mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Country *</Label>
+              <Select value={country} onValueChange={setCountry}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ME_COUNTRIES_BAYT.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── OPTIONS ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Options</p>
+          <div className="space-y-3">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Max Jobs</Label>
+                <Select value={String(limit)} onValueChange={v => setLimit(parseInt(v))}>
+                  <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {[100, 200, 500, 1000].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div>
+                <Label className="text-xs">Posted Within (days)</Label>
+                <Select value={daysOld} onValueChange={setDaysOld}>
+                  <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="1">1 day</SelectItem>
+                    <SelectItem value="3">3 days</SelectItem>
+                    <SelectItem value="7">7 days</SelectItem>
+                    <SelectItem value="30">30 days</SelectItem>
+                    <SelectItem value="0">All time</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-xs">Incremental mode</Label>
+                <p className="text-[10px] text-muted-foreground">Skip jobs already seen — saves cost on recurring runs</p>
+              </div>
+              <Switch checked={incremental} onCheckedChange={setIncremental} />
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── SCHEDULE ─── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Schedule</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Save as a recurring pipeline run</p>
+            </div>
+            <Switch checked={scheduleMode} onCheckedChange={setScheduleMode} />
+          </div>
+          {scheduleMode && (
+            <div className="space-y-2 rounded-lg border p-3 bg-muted/30">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Frequency</Label>
+                  <Select value={frequency} onValueChange={setFrequency}>
+                    <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Schedule Name</Label>
+                  <Input value={scheduleName} onChange={e => setScheduleName(e.target.value)} placeholder={autoScheduleName} className="text-sm h-9 mt-1" />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 pt-1">
+          <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || (!keywords.trim() && selectedRoleIds.length === 0)} className="flex-1 h-10">
+            {runNow.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+            Run Now
+          </Button>
+          {scheduleMode && (
+            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending} variant="outline" className="flex-1 h-10">
+              {saveSchedule.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CalendarClock className="h-4 w-4 mr-2" />}
+              Save Schedule
+            </Button>
+          )}
+        </div>
+
+        <div className="rounded-md bg-muted/50 p-2.5 text-[10px] text-muted-foreground">
+          <span className="font-medium">Estimated cost:</span> {limit} jobs × $0.001 = <span className="font-semibold text-foreground">${(limit * 0.001).toFixed(2)}</span> · Incremental runs ~$0.02–0.07 after baseline
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── NaukriGulf Form ───────────────────────────────────────────────────────────
+
+function NaukriGulfForm() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  const { data: allRoles = [], isLoading: rolesLoading } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
+    staleTime: 5 * 60 * 1000,
+  });
+  const [selectedFamily, setSelectedFamily] = useState<string>("all");
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([]);
+  const [roleSearch, setRoleSearch] = useState("");
+
+  const filteredRoles = allRoles.filter(r => {
+    if (selectedFamily !== "all" && r.family !== selectedFamily) return false;
+    if (roleSearch && !r.name.toLowerCase().includes(roleSearch.toLowerCase())) return false;
+    return true;
+  });
+  const selectedRoles = allRoles.filter(r => selectedRoleIds.includes(r.id));
+  const toggleRole = (id: string) => setSelectedRoleIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
+
+  const [keywords, setKeywords] = useState("");
+  const [location, setLocation] = useState("UAE");
+  const [limit, setLimit] = useState(200);
+  const [incremental, setIncremental] = useState(true);
+  const [scheduleMode, setScheduleMode] = useState(false);
+  const [frequency, setFrequency] = useState("daily");
+  const [scheduleName, setScheduleName] = useState("");
+
+  const buildConfig = () => ({
+    search_keywords: keywords || undefined,
+    job_role_ids: selectedRoleIds.length > 0 ? selectedRoleIds : undefined,
+    location,
+    limit,
+    incremental,
+  });
+
+  const runNow = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/pipelines/run", {
+        method: "POST",
+        body: JSON.stringify({ pipeline_type: "naukrigulf_jobs", config: buildConfig() }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => { toast({ title: "NaukriGulf collection started" }); qc.invalidateQueries({ queryKey: ["/api/pipelines"] }); },
+    onError: (e: any) => toast({ title: "Failed to start", description: e.message, variant: "destructive" }),
+  });
+
+  const autoScheduleName = `${frequency === "daily" ? "Daily" : "Weekly"} NaukriGulf ${location}`;
+  const saveSchedule = useMutation({
+    mutationFn: async () => {
+      const res = await authFetch("/api/scheduler/schedules", {
+        method: "POST",
+        body: JSON.stringify({
+          name: scheduleName || autoScheduleName,
+          pipeline_type: "naukrigulf_jobs",
+          config: buildConfig(),
+          frequency,
+          cron_expression: frequency === "daily" ? "0 0 * * *" : "0 0 * * 1",
+          is_active: true,
+        }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    },
+    onSuccess: () => toast({ title: "NaukriGulf schedule saved" }),
+    onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <CardTitle className="text-base font-semibold flex items-center gap-2">
+            <Globe className="h-5 w-5 text-blue-500" /> NaukriGulf — GCC Jobs
+          </CardTitle>
+          <Badge variant="outline" className="text-[10px]">$0.001/job · UAE/KSA/Qatar/Kuwait</Badge>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-5">
+
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+            <Info className="h-3 w-3" /> How to use <ChevronDown className="h-3 w-3" />
+          </CollapsibleTrigger>
+          <CollapsibleContent className="mt-2 text-xs text-muted-foreground space-y-1 bg-muted/30 rounded-lg p-3">
+            <p>1. <strong>NaukriGulf</strong> is the highest-volume board for GCC professionals (IT, Banking, Construction, Hospitality)</p>
+            <p>2. <strong>Complementary to Bayt</strong> — different employer pool, strong mid-career coverage</p>
+            <p>3. <strong>Bonus fields</strong>: recruiter contact name, desiredCandidate section, experience min/max structured</p>
+            <p>4. <strong>Incremental mode</strong> — only new/changed jobs after first baseline run</p>
+            <p>5. Covers UAE, Saudi Arabia, Qatar, Kuwait, Bahrain, Oman</p>
+          </CollapsibleContent>
+        </Collapsible>
+
+        {/* ── JOB ROLES ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Job Roles</p>
+          <p className="text-[10px] text-muted-foreground mb-2">Select roles — synonyms become NaukriGulf search queries</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Job Family</Label>
+              <Select value={selectedFamily} onValueChange={setSelectedFamily}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Families</SelectItem>
+                  {JOB_FAMILIES.map(f => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-xs">Search Roles</Label>
+              <div className="relative mt-1">
+                <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                <Input value={roleSearch} onChange={e => setRoleSearch(e.target.value)} placeholder="Filter roles..." className="text-sm h-9 pl-8" />
+              </div>
+            </div>
+          </div>
+          <ScrollArea className="h-36 rounded-md border p-2 mt-2">
+            {filteredRoles.length === 0 ? (
+              <p className="text-xs text-muted-foreground py-4 text-center">{rolesLoading ? "Loading roles..." : "No roles match"}</p>
+            ) : (
+              <div className="space-y-1">
+                {filteredRoles.map(role => (
+                  <label key={role.id} className="flex items-center gap-2 px-1 py-1 rounded hover:bg-muted/50 cursor-pointer">
+                    <Checkbox checked={selectedRoleIds.includes(role.id)} onCheckedChange={() => toggleRole(role.id)} />
+                    <span className="text-xs">{role.name}</span>
+                    <span className="text-[10px] text-muted-foreground ml-auto">{role.family}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </ScrollArea>
+          {selectedRoles.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1">
+              {selectedRoles.map(r => (
+                <Badge key={r.id} variant="secondary" className="text-[10px] pr-1">
+                  {r.name}
+                  <button onClick={() => toggleRole(r.id)} className="ml-1 hover:text-destructive"><X className="h-2.5 w-2.5" /></button>
+                </Badge>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <Separator />
+
+        {/* ── SEARCH ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Search</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <Label className="text-xs">Keywords {selectedRoleIds.length === 0 ? "*" : "(optional)"}</Label>
+              <Input value={keywords} onChange={e => setKeywords(e.target.value)} placeholder="e.g. Finance Manager" className="text-sm h-9 mt-1" />
+            </div>
+            <div>
+              <Label className="text-xs">Location *</Label>
+              <Select value={location} onValueChange={setLocation}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {ME_COUNTRIES_NG.map(c => <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── OPTIONS ─── */}
+        <div>
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">Options</p>
+          <div className="space-y-3">
+            <div>
+              <Label className="text-xs">Max Jobs</Label>
+              <Select value={String(limit)} onValueChange={v => setLimit(parseInt(v))}>
+                <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {[100, 200, 500, 1000].map(n => <SelectItem key={n} value={String(n)}>{n}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <Label className="text-xs">Incremental mode</Label>
+                <p className="text-[10px] text-muted-foreground">Skip jobs already seen in previous runs</p>
+              </div>
+              <Switch checked={incremental} onCheckedChange={setIncremental} />
+            </div>
+          </div>
+        </div>
+
+        <Separator />
+
+        {/* ── SCHEDULE ─── */}
+        <div>
+          <div className="flex items-center justify-between mb-3">
+            <div>
+              <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Schedule</p>
+              <p className="text-[10px] text-muted-foreground mt-0.5">Save as a recurring pipeline run</p>
+            </div>
+            <Switch checked={scheduleMode} onCheckedChange={setScheduleMode} />
+          </div>
+          {scheduleMode && (
+            <div className="space-y-2 rounded-lg border p-3 bg-muted/30">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <Label className="text-xs">Frequency</Label>
+                  <Select value={frequency} onValueChange={setFrequency}>
+                    <SelectTrigger className="h-9 text-sm mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="daily">Daily</SelectItem>
+                      <SelectItem value="weekly">Weekly</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <Label className="text-xs">Schedule Name</Label>
+                  <Input value={scheduleName} onChange={e => setScheduleName(e.target.value)} placeholder={autoScheduleName} className="text-sm h-9 mt-1" />
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex gap-3 pt-1">
+          <Button onClick={() => runNow.mutate()} disabled={runNow.isPending || (!keywords.trim() && selectedRoleIds.length === 0)} className="flex-1 h-10">
+            {runNow.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <Play className="h-4 w-4 mr-2" />}
+            Run Now
+          </Button>
+          {scheduleMode && (
+            <Button onClick={() => saveSchedule.mutate()} disabled={saveSchedule.isPending} variant="outline" className="flex-1 h-10">
+              {saveSchedule.isPending ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : <CalendarClock className="h-4 w-4 mr-2" />}
+              Save Schedule
+            </Button>
+          )}
+        </div>
+
+        <div className="rounded-md bg-muted/50 p-2.5 text-[10px] text-muted-foreground">
+          <span className="font-medium">Estimated cost:</span> {limit} jobs × $0.001 = <span className="font-semibold text-foreground">${(limit * 0.001).toFixed(2)}</span> · Incremental runs ~$0.02–0.07 after baseline
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Page layout ──────────────────────────────────────────────────────────────
 
 export default function JobCollection() {
@@ -812,13 +1348,28 @@ export default function JobCollection() {
       <div>
         <Link href="/pipelines"><a className="text-xs text-muted-foreground hover:text-foreground">← Pipelines</a></Link>
         <h1 className="text-2xl font-bold mt-1">Job Collection</h1>
-        <p className="text-sm text-muted-foreground">Configure and run job scrapers with detailed filters</p>
+        <p className="text-sm text-muted-foreground">Configure and run job scrapers — LinkedIn, Google, Bayt.com, NaukriGulf</p>
       </div>
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-        <LinkedInForm />
-        <GoogleJobsForm />
+
+      {/* India + Global */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">India & Global</h2>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <LinkedInForm />
+          <GoogleJobsForm />
+        </div>
       </div>
-      <RunHistory pipelineTypes={["linkedin_jobs", "google_jobs"]} title="Job Collection Runs" />
+
+      {/* Middle East */}
+      <div>
+        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Middle East (MENA)</h2>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          <BaytForm />
+          <NaukriGulfForm />
+        </div>
+      </div>
+
+      <RunHistory pipelineTypes={["linkedin_jobs", "google_jobs", "bayt_jobs", "naukrigulf_jobs"]} title="Job Collection Runs" />
     </div>
   );
 }
