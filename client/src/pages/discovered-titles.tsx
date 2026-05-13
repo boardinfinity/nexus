@@ -35,6 +35,8 @@ interface DiscoveredTitle {
   last_seen_at: string;
   reviewed_at: string | null;
   reviewed_by: string | null;
+  promoted_role?: { id: string; name: string } | null;
+  reviewer?: { id: string; name: string | null; email: string } | null;
 }
 
 interface JobRole {
@@ -314,8 +316,11 @@ export default function DiscoveredTitles() {
                       </Button>
                     </>
                   )}
-                  {r.status !== "candidate" && r.reviewed_by && (
-                    <span className="text-[10px] text-muted-foreground">by {r.reviewed_by}</span>
+                  {r.status !== "candidate" && (
+                    <div className="flex flex-col text-[10px] text-muted-foreground">
+                      {r.promoted_role && <span>→ {r.promoted_role.name}</span>}
+                      {r.reviewer && <span>by {r.reviewer.name || r.reviewer.email.split("@")[0]}</span>}
+                    </div>
                   )}
                 </div>
               ),
