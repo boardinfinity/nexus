@@ -1,6 +1,6 @@
 # Nexus — Migration Log
 
-**The next migration number is: `040`** (reserve before writing SQL).
+**The next migration number is: `041`** (reserve before writing SQL).
 
 | # | File | Date | Author | Summary |
 |---|---|---|---|---|
@@ -28,7 +28,8 @@
 | 038 | `038_analyze_jd_runs_and_l2_to_l1.sql` | 2026-05-07 | jdenh001 (Track A) | analyze_jd_runs table (pipeline call-level logging, 5 indexes) + l2_to_l1_lookup table (10-row L2→L1 seed). RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
 | 038b | `038b_upsert_skill_l1_l2.sql` | 2026-05-07 | jdenh001 (Track B) | Extends upsert_skill() with optional p_l1/p_l2 params (backwards compat). Adds find_similar_skill() RPC (pg_trgm similarity pre-filter) and append_skill_alias() RPC (fuzzy-merge alias append + mention_count increment). Enables fuzzystrmatch extension. GIN index on aliases[] + trigram index on name. NOT applied yet — pending user CLI apply. |
 | 039 | _(applied — see main table)_ | jdenh001 | applied 2026-05-07 |
-| 040 | _(open)_ | TBD | available |
+| 040 | `040_job_pipeline_p2.sql` | 2026-05-13 | amb-jobs-pipeline | Job Collection Pipeline P2: adds `jobs.last_seen_at`, `jobs.role_match_score`, `jobs.discovery_source` columns. New tables: `discovered_titles` (unmatched titles harvested from discovery sweeps; cols: id, title, normalized_title, country, source, run_id, observed_count, first_seen_at, last_seen_at, status candidate/promoted/ignored, promoted_role_id FK), `discovery_runs` (sweep run log; cols: id, run_type domain/industry, country, query, jobs_found, new_titles, started_at, finished_at, status, pipeline_run_id FK). 6 indexes. RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
+| 041 | _(open)_ | TBD | available |
 
 > Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
 
