@@ -40,7 +40,7 @@ const FAMILIES = ["Technology", "Management", "Core Engineering", "Others"];
 export default function DiscoveredTitles() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [status, setStatus] = useState("pending");
+  const [status, setStatus] = useState("candidate");
   const [country, setCountry] = useState("all");
   const [page, setPage] = useState(1);
 
@@ -156,7 +156,7 @@ export default function DiscoveredTitles() {
                 <SelectTrigger className="h-9 mt-1"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="pending">Pending</SelectItem>
+                  <SelectItem value="candidate">Candidate</SelectItem>
                   <SelectItem value="promoted">Promoted</SelectItem>
                   <SelectItem value="ignored">Ignored</SelectItem>
                 </SelectContent>
@@ -169,7 +169,7 @@ export default function DiscoveredTitles() {
                 <SelectContent>
                   <SelectItem value="all">All</SelectItem>
                   <SelectItem value="India">India</SelectItem>
-                  <SelectItem value="UAE">UAE</SelectItem>
+                  <SelectItem value="United Arab Emirates">United Arab Emirates</SelectItem>
                   <SelectItem value="Saudi Arabia">Saudi Arabia</SelectItem>
                 </SelectContent>
               </Select>
@@ -213,7 +213,7 @@ export default function DiscoveredTitles() {
               header: "Status",
               accessor: (r: DiscoveredTitle) => {
                 const map: Record<string, string> = {
-                  pending: "bg-yellow-100 text-yellow-800",
+                  candidate: "bg-yellow-100 text-yellow-800",
                   promoted: "bg-green-100 text-green-800",
                   ignored: "bg-gray-100 text-gray-600",
                 };
@@ -230,7 +230,7 @@ export default function DiscoveredTitles() {
               header: "Actions",
               accessor: (r: DiscoveredTitle) => (
                 <div className="flex gap-1">
-                  {r.status === "pending" && (
+                  {r.status === "candidate" && (
                     <>
                       <Button
                         size="sm"
@@ -251,7 +251,7 @@ export default function DiscoveredTitles() {
                       </Button>
                     </>
                   )}
-                  {r.status !== "pending" && r.reviewed_by && (
+                  {r.status !== "candidate" && r.reviewed_by && (
                     <span className="text-[10px] text-muted-foreground">by {r.reviewed_by}</span>
                   )}
                 </div>
