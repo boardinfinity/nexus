@@ -15,8 +15,10 @@ import {
 } from "@/components/ui/dialog";
 import { DataTable } from "@/components/data-table";
 import {
-  Sparkles, Search, CheckCircle2, XCircle, Loader2, ChevronLeft, ChevronRight,
+  Sparkles, Search, CheckCircle2, XCircle, Loader2, ChevronLeft, ChevronRight, GitMerge, Plus,
 } from "lucide-react";
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 interface DiscoveredTitle {
   id: string;
@@ -35,6 +37,15 @@ interface DiscoveredTitle {
   reviewed_by: string | null;
 }
 
+interface JobRole {
+  id: string;
+  name: string;
+  family: string;
+  synonyms: string[] | null;
+}
+
+type PromoteMode = "create" | "merge";
+
 const FAMILIES = ["Technology", "Management", "Core Engineering", "Others"];
 
 export default function DiscoveredTitles() {
@@ -46,8 +57,11 @@ export default function DiscoveredTitles() {
 
   const [promoteOpen, setPromoteOpen] = useState(false);
   const [promoteTarget, setPromoteTarget] = useState<DiscoveredTitle | null>(null);
+  const [promoteMode, setPromoteMode] = useState<PromoteMode>("create");
   const [roleName, setRoleName] = useState("");
   const [family, setFamily] = useState("Others");
+  const [selectedRoleId, setSelectedRoleId] = useState<string | null>(null);
+  const [rolePickerOpen, setRolePickerOpen] = useState(false);
 
   const queryClient = useQueryClient();
   const { toast } = useToast();
@@ -57,6 +71,15 @@ export default function DiscoveredTitles() {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(t);
   }, [search]);
+
+  const { data: roles } = useQuery<JobRole[]>({
+    queryKey: ["/api/masters/job-roles"],
+    queryFn: async () => {
+      const res = await authFetch("/api/masters/job-roles");
+      if (!res.ok) throw new Error("Failed to load roles");
+      return res.json();
+    },
+  });
 
   const { data, isLoading } = useQuery<{ items: DiscoveredTitle[]; total: number; page: number; limit: number }>({
     queryKey: ["/api/discovered-titles", status, country, debouncedSearch, page],
@@ -86,10 +109,38 @@ export default function DiscoveredTitles() {
       return res.json();
     },
     onSuccess: (r) => {
-      toast({ title: "Promoted", description: `Created role "${r.role_name}".` });
+      toast({ title: "New role created", description: `"${r.role_name}" added to job_roles.` });
       setPromoteOpen(false);
       setPromoteTarget(null);
       queryClient.invalidateQueries({ queryKey: ["/api/discovered-titles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/masters/job-roles"] });
+    },
+    onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
+  });
+
+  const mergeMutation = useMutation({
+    mutationFn: async (payload: { id: string; role_id: string }) => {
+      const res = await apiRequest("POST", `/api/discovered-titles/${payload.id}/merge`, {
+        role_id: payload.role_id,
+      });
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}));
+        throw new Error(j.error || "Merge failed");
+      }
+      return res.json();
+    },
+    onSuccess: (r) => {
+      const added = (r.synonyms_added || []).length;
+      toast({
+        title: "Merged",
+        description: added > 0
+          ? `Added ${added} synonym${added === 1 ? "" : "s"} to "${r.role_name}".`
+          : `Already a synonym of "${r.role_name}". Marked merged.`,
+      });
+      setPromoteOpen(false);
+      setPromoteTarget(null);
+      queryClient.invalidateQueries({ queryKey: ["/api/discovered-titles"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/masters/job-roles"] });
     },
     onError: (e: any) => toast({ title: "Failed", description: e.message, variant: "destructive" }),
   });
@@ -114,10 +165,14 @@ export default function DiscoveredTitles() {
 
   const openPromote = (row: DiscoveredTitle) => {
     setPromoteTarget(row);
+    setPromoteMode("create");
     setRoleName(row.title);
     setFamily("Others");
+    setSelectedRoleId(null);
     setPromoteOpen(true);
   };
+
+  const selectedRole = roles?.find((r) => r.id === selectedRoleId) || null;
 
   return (
     <div className="p-6 space-y-4">
@@ -290,9 +345,9 @@ export default function DiscoveredTitles() {
       <Dialog open={promoteOpen} onOpenChange={setPromoteOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Promote to job role</DialogTitle>
+            <DialogTitle>Promote discovered title</DialogTitle>
             <DialogDescription>
-              Creates a new entry in <span className="font-mono">job_roles</span>. The original title will be saved as a synonym.
+              Either create a new role, or merge this title as a synonym of an existing one.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
@@ -300,31 +355,114 @@ export default function DiscoveredTitles() {
               <Label className="text-xs">Original title</Label>
               <div className="text-sm mt-1 p-2 bg-muted rounded">{promoteTarget?.title}</div>
             </div>
-            <div>
-              <Label className="text-xs">Role name (will be used for the new job_role)</Label>
-              <Input value={roleName} onChange={(e) => setRoleName(e.target.value)} className="mt-1" />
+
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant={promoteMode === "create" ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={() => setPromoteMode("create")}
+              >
+                <Plus className="h-3 w-3 mr-1" /> Create new role
+              </Button>
+              <Button
+                type="button"
+                variant={promoteMode === "merge" ? "default" : "outline"}
+                size="sm"
+                className="flex-1"
+                onClick={() => setPromoteMode("merge")}
+              >
+                <GitMerge className="h-3 w-3 mr-1" /> Merge into existing role
+              </Button>
             </div>
-            <div>
-              <Label className="text-xs">Family</Label>
-              <Select value={family} onValueChange={setFamily}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {FAMILIES.map((f) => <SelectItem key={f} value={f}>{f}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
+
+            {promoteMode === "create" && (
+              <>
+                <div>
+                  <Label className="text-xs">Role name (added to job_roles)</Label>
+                  <Input value={roleName} onChange={(e) => setRoleName(e.target.value)} className="mt-1" />
+                </div>
+                <div>
+                  <Label className="text-xs">Family</Label>
+                  <Select value={family} onValueChange={setFamily}>
+                    <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {FAMILIES.map((f) => <SelectItem key={f} value={f}>{f}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </>
+            )}
+
+            {promoteMode === "merge" && (
+              <div>
+                <Label className="text-xs">Pick existing role</Label>
+                <Popover open={rolePickerOpen} onOpenChange={setRolePickerOpen}>
+                  <PopoverTrigger asChild>
+                    <Button variant="outline" role="combobox" className="w-full justify-between mt-1 font-normal">
+                      {selectedRole
+                        ? <span className="truncate">{selectedRole.name} <span className="text-muted-foreground">— {selectedRole.family}</span></span>
+                        : <span className="text-muted-foreground">Search roles…</span>}
+                      <Search className="h-3 w-3 ml-2 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="p-0 w-[--radix-popover-trigger-width]" align="start">
+                    <Command>
+                      <CommandInput placeholder="Type to search…" />
+                      <CommandList>
+                        <CommandEmpty>No role found.</CommandEmpty>
+                        <CommandGroup>
+                          {(roles || []).map((r) => (
+                            <CommandItem
+                              key={r.id}
+                              value={`${r.name} ${r.family} ${(r.synonyms || []).join(" ")}`}
+                              onSelect={() => { setSelectedRoleId(r.id); setRolePickerOpen(false); }}
+                            >
+                              <div className="flex flex-col">
+                                <span>{r.name}</span>
+                                <span className="text-[10px] text-muted-foreground">
+                                  {r.family} · {(r.synonyms || []).length} synonym{(r.synonyms || []).length === 1 ? "" : "s"}
+                                </span>
+                              </div>
+                            </CommandItem>
+                          ))}
+                        </CommandGroup>
+                      </CommandList>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
+                {selectedRole && (
+                  <div className="text-[11px] text-muted-foreground mt-2">
+                    Existing synonyms: {(selectedRole.synonyms || []).slice(0, 5).join(", ") || "none"}
+                    {(selectedRole.synonyms || []).length > 5 ? "…" : ""}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setPromoteOpen(false)} disabled={promoteMutation.isPending}>
+            <Button variant="outline" onClick={() => setPromoteOpen(false)} disabled={promoteMutation.isPending || mergeMutation.isPending}>
               Cancel
             </Button>
-            <Button
-              onClick={() => promoteTarget && promoteMutation.mutate({ id: promoteTarget.id, role_name: roleName, family })}
-              disabled={promoteMutation.isPending || !roleName.trim()}
-            >
-              {promoteMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
-              Promote
-            </Button>
+            {promoteMode === "create" && (
+              <Button
+                onClick={() => promoteTarget && promoteMutation.mutate({ id: promoteTarget.id, role_name: roleName, family })}
+                disabled={promoteMutation.isPending || !roleName.trim()}
+              >
+                {promoteMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                Create role
+              </Button>
+            )}
+            {promoteMode === "merge" && (
+              <Button
+                onClick={() => promoteTarget && selectedRoleId && mergeMutation.mutate({ id: promoteTarget.id, role_id: selectedRoleId })}
+                disabled={mergeMutation.isPending || !selectedRoleId}
+              >
+                {mergeMutation.isPending && <Loader2 className="h-3 w-3 mr-1 animate-spin" />}
+                Merge as synonym
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

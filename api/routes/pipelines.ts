@@ -1269,6 +1269,56 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json({ ok: true, discovered_title_id: titleId, job_role_id: roleId, role_name: roleName })
   }
 
+  // POST /discovered-titles/:id/merge { role_id }
+  // Append discovered title to an existing role's synonyms; mark as merged.
+  const mergeMatch = path.match(/^\/discovered-titles\/([^/]+)\/merge$/)
+  if (mergeMatch && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return
+    const titleId = mergeMatch[1]
+    const roleId = (req.body || {}).role_id
+    if (!roleId) return res.status(400).json({ error: "role_id is required" })
+
+    const { data: dt, error: dtErr } = await supabase
+      .from("discovered_titles").select("*").eq("id", titleId).single()
+    if (dtErr || !dt) return res.status(404).json({ error: "discovered_title not found" })
+
+    const { data: role, error: roleErr } = await supabase
+      .from("job_roles").select("id, name, synonyms").eq("id", roleId).single()
+    if (roleErr || !role) return res.status(404).json({ error: "job_role not found" })
+
+    const existing: string[] = Array.isArray(role.synonyms) ? role.synonyms : []
+    const lower = new Set(existing.map((s: string) => String(s).toLowerCase()))
+    const candidates = [dt.title, dt.normalized_title].filter(Boolean) as string[]
+    const toAdd = candidates.filter(c => !lower.has(String(c).toLowerCase()))
+    const merged = [...existing, ...toAdd]
+
+    if (toAdd.length > 0) {
+      const { error: synErr } = await supabase
+        .from("job_roles").update({ synonyms: merged }).eq("id", roleId)
+      if (synErr) return res.status(500).json({ error: `Failed to update synonyms: ${synErr.message}` })
+    }
+
+    const { error: updErr } = await supabase
+      .from("discovered_titles")
+      .update({
+        status: "merged",
+        promoted_role_id: roleId,
+        reviewed_at: new Date().toISOString(),
+        reviewed_by: (auth as any)?.nexusUser?.email || null,
+      })
+      .eq("id", titleId)
+    if (updErr) return res.status(500).json({ error: updErr.message })
+
+    return res.json({
+      ok: true,
+      discovered_title_id: titleId,
+      job_role_id: roleId,
+      role_name: role.name,
+      synonyms_added: toAdd,
+      synonyms_total: merged.length,
+    })
+  }
+
   // POST /discovered-titles/:id/ignore { reason? }
   const ignoreMatch = path.match(/^\/discovered-titles\/([^/]+)\/ignore$/)
   if (ignoreMatch && req.method === "POST") {
