@@ -826,27 +826,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       fetch_description,
       chunk_size = 4,
       backfill_id: existingBackfillId,
-      also_google_jobs = true,
-      google_jobs_country_codes,
     } = req.body || {}
-
-    // Country name -> ISO code used by google_jobs executor
-    const DEFAULT_GJ_CC: Record<string, string> = {
-      "India": "in",
-      "United Arab Emirates": "ae",
-      "Saudi Arabia": "sa",
-      "Qatar": "qa",
-      "Oman": "om",
-      "Bahrain": "bh",
-      "Kuwait": "kw",
-      "Singapore": "sg",
-      "United States": "us",
-      "United Kingdom": "gb",
-      "Canada": "ca",
-      "Australia": "au",
-      "Germany": "de",
-    }
-    const gjCountryCodes: Record<string, string> = { ...DEFAULT_GJ_CC, ...(google_jobs_country_codes || {}) }
 
     let backfillId = existingBackfillId as string | undefined
 
@@ -862,7 +842,6 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       backfillId = randomUUID()
       const insertErrors: string[] = []
       let created = 0
-      let createdGoogle = 0
 
       for (const country of countries) {
         const citiesForCountry: string[] | undefined = cities?.[country]
@@ -881,7 +860,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
               fetch_description: !!fetch_description,
               _backfill_id: backfillId,
               _backfill_status: "pending",
-              _backfill_meta: { country, city: isCity ? location : null, exp, source: "linkedin" },
+              _backfill_meta: { country, city: isCity ? location : null, exp },
             }
 
             const { error: insertErr } = await supabase
@@ -902,50 +881,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
             }
           }
         }
-
-        // Also queue ONE google_jobs run per country (country-level, no city/exp fan-out).
-        // google_jobs executor uses ISO country code and ignores experience_level.
-        // date_posted: google_jobs uses 'month'/'week'/'day' (not 'past_month'); map below.
-        if (also_google_jobs) {
-          const cc = gjCountryCodes[country]
-          if (!cc) {
-            insertErrors.push(`${country}/google_jobs: no ISO code mapping (pass google_jobs_country_codes)`)
-          } else {
-            const gjDatePosted = (date_posted === "past_month" || date_posted === "month") ? "month"
-              : (date_posted === "past_week" || date_posted === "week") ? "week"
-              : (date_posted === "past_24_hours" || date_posted === "day") ? "day"
-              : "month"
-            const gjConfig: Record<string, any> = {
-              job_role_ids,
-              country: cc,
-              date_posted: gjDatePosted,
-              _backfill_id: backfillId,
-              _backfill_status: "pending",
-              _backfill_meta: { country, city: null, exp: null, source: "google_jobs" },
-            }
-            const { error: gjErr } = await supabase
-              .from("pipeline_runs")
-              .insert({
-                pipeline_type: "google_jobs",
-                trigger_type: "manual",
-                status: "pending",
-                config: gjConfig,
-                started_at: new Date().toISOString(),
-                triggered_by: "bulk_backfill",
-              })
-            if (gjErr) {
-              insertErrors.push(`${country}/google_jobs: ${gjErr.message}`)
-            } else {
-              createdGoogle++
-            }
-          }
-        }
       }
 
       return res.json({
         backfill_id: backfillId,
         created,
-        created_google_jobs: createdGoogle,
         phase: "queued",
         next: `POST /pipelines/jobs/bulk-backfill with backfill_id=${backfillId} to start draining`,
         ...(insertErrors.length > 0 ? { errors: insertErrors } : {}),
@@ -955,7 +895,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     // RESUME CALL: drain up to chunk_size pending combos
     const { data: pendingRuns, error: fetchErr } = await supabase
       .from("pipeline_runs")
-      .select("id, pipeline_type, config")
+      .select("id, config")
       .eq("config->>_backfill_id", backfillId)
       .eq("config->>_backfill_status", "pending")
       .order("started_at", { ascending: true })
@@ -974,11 +914,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         .eq("id", run.id)
 
       try {
-        // Synchronously drive the full pipeline. Each run carries its own pipeline_type:
-        //  - linkedin_jobs: fan out 30 Apify runs (one per role), poll, harvest, persist
-        //  - google_jobs: fan out up to 20 query runs to Google Jobs scraper, persist
-        const ptype = (run as any).pipeline_type || "linkedin_jobs"
-        await executePipeline(run.id, ptype, run.config)
+        // Synchronously drive the full pipeline. executeLinkedInJobs will:
+        //  - launch all 30 Apify runs for the role list
+        //  - poll + harvest each
+        //  - persist all jobs, role_match_score, last_seen_at, raw_data
+        await executePipeline(run.id, "linkedin_jobs", run.config)
 
         // Re-read the now-final state to record processed_items
         const { data: finalRun } = await supabase
@@ -994,9 +934,8 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
         processed.push({
           run_id: run.id,
-          pipeline_type: ptype,
-          location: run.config?.location || run.config?.country,
-          exp: run.config?.experience_level || null,
+          location: run.config?.location,
+          exp: run.config?.experience_level,
           processed_items: finalRun?.processed_items,
           total_items: finalRun?.total_items,
           status: finalRun?.status,
@@ -3752,15 +3691,21 @@ async function executeBaytJobs(runId: string, config: any): Promise<void> {
   if (!APIFY_API_KEY) throw new Error("Apify API key not configured");
 
   // Country mapping: UI passes full names, actor expects portal codes
+  // Actor expects ISO-style portal codes: AE, SA, KW, QA, BH, OM, EG, JO, LB, IN, PK, IQ, MA, INTERNATIONAL
   const COUNTRY_TO_CODE: Record<string, string> = {
-    "United Arab Emirates": "UAE", "UAE": "UAE",
-    "Saudi Arabia": "KSA", "KSA": "KSA",
-    "Kuwait": "KWT", "Qatar": "QAT",
-    "Bahrain": "BHR", "Oman": "OMN",
-    "Egypt": "EGY", "Jordan": "JOR",
-    "Lebanon": "LBN",
+    "United Arab Emirates": "AE", "UAE": "AE", "AE": "AE",
+    "Saudi Arabia": "SA", "KSA": "SA", "SA": "SA",
+    "Kuwait": "KW", "KWT": "KW", "KW": "KW",
+    "Qatar": "QA", "QAT": "QA", "QA": "QA",
+    "Bahrain": "BH", "BHR": "BH", "BH": "BH",
+    "Oman": "OM", "OMN": "OM", "OM": "OM",
+    "Egypt": "EG", "EGY": "EG", "EG": "EG",
+    "Jordan": "JO", "JOR": "JO", "JO": "JO",
+    "Lebanon": "LB", "LBN": "LB", "LB": "LB",
+    "India": "IN", "IN": "IN",
+    "Pakistan": "PK", "PAK": "PK", "PK": "PK",
   };
-  const countryCode = COUNTRY_TO_CODE[config?.country || ""] || "UAE";
+  const countryCode = COUNTRY_TO_CODE[config?.country || ""] || "INTERNATIONAL";
 
   // Build keyword runs — one per job role (same synonym expansion as LinkedIn)
   const KEYWORD_CAP = 500;
@@ -3810,16 +3755,24 @@ async function executeBaytJobs(runId: string, config: any): Promise<void> {
   const apifyRuns: any[] = [];
   await Promise.all(runs.map(async (run) => {
     try {
-      const input = {
-        keywords: run.keywords,
-        country: countryCode,
+      // Map days_old to actor's datePosted enum
+      const daysOldMap: Record<string, string> = {
+        "1": "past-24h", "24": "past-24h",
+        "7": "past-week", "14": "past-week",
+        "30": "past-month", "31": "past-month",
+      };
+      const datePosted = daysOldMap[String(config?.days_old || 7)] || "past-week";
+      const input: Record<string, any> = {
+        query: run.keywords,              // actor field is "query", not "keywords"
+        country: countryCode,             // actor expects "AE", "SA", etc.
         maxResults: parseInt(config?.limit) || 200,
-        daysOld: config?.days_old ? parseInt(config.days_old) : 7,
-        fetchDetails: true,
+        datePosted,                       // actor field, not daysOld
+        includeDetails: true,             // actor field is "includeDetails", not "fetchDetails"
         incrementalMode: config?.incremental !== false,
         stateKey: `bayt-${countryCode.toLowerCase()}-${(run.roleName || run.keywords).toLowerCase().replace(/[^a-z0-9]/g, "-").substring(0, 40)}`,
-        proxyConfig: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
       };
+      if (config?.career_level) input.careerLevel = config.career_level;
+      if (config?.location) input.location = config.location;
       const apifyUrl = `https://api.apify.com/v2/acts/blackfalcondata~bayt-scraper/runs?token=${APIFY_API_KEY}`;
       const apifyRes = await fetch(apifyUrl, {
         method: "POST",
