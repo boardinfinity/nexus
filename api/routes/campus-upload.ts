@@ -383,11 +383,14 @@ export async function handleCampusUploadRoutes(
       .eq("id", batchId)
       .single();
 
-    // Fetch all analyze_jd_runs for this batch
+    // Fetch all analyze_jd_runs for this batch. analyze_jd_runs is a pipeline-audit table — it does
+    // NOT store extracted company/title/classification fields. Those live only in the analyze response
+    // and the eventual jobs row. The Step-3 UI reads what's available here for status + skill counts;
+    // company + role are filled in by the user in the form (UI keeps them in component state).
     const { data: runs, error: runsError } = await supabase
       .from("analyze_jd_runs")
       .select(
-        "id, status, was_partial, company_name, standardized_title, job_function_name, job_family_name, bucket, skill_count, input_chars, latency_ms, error_message, created_at"
+        "id, status, was_partial, bucket_match, bucket_confidence, skills_extracted, input_chars, latency_ms, error_message, created_at"
       )
       .eq("batch_id", batchId)
       .order("created_at", { ascending: true });
@@ -439,12 +442,16 @@ export async function handleCampusUploadRoutes(
         continue;
       }
 
-      // Fetch the analyze run for company/title data
+      // Fetch the analyze run for batch verification.
+      // NOTE: analyze_jd_runs does NOT store company_name / standardized_title / job_function* /
+      // job_family* / job_industry* / bucket / seniority / geography / company_type / jd_quality /
+      // classification_confidence / experience_min/max / min_education columns. The unified analyze
+      // pipeline returns those values in-response and they're surfaced to the UI; the DB row only
+      // carries pipeline-level audit fields. The UI sends the human-edited company + role in the
+      // request body, which is the authoritative source for the commit.
       const { data: run, error: runFetchErr } = await supabase
         .from("analyze_jd_runs")
-        .select(
-          "id, company_name, standardized_title, job_function, job_function_name, job_family, job_family_name, job_industry, job_industry_name, bucket, seniority, geography, company_type, jd_quality, classification_confidence, experience_min, experience_max, min_education, batch_id"
-        )
+        .select("id, batch_id, status")
         .eq("id", analyze_run_id)
         .maybeSingle();
 
@@ -462,8 +469,8 @@ export async function handleCampusUploadRoutes(
         continue;
       }
 
-      const companyName = edited_company_name || run.company_name || "Unknown";
-      const roleTitle = edited_role_title || run.standardized_title || "Unknown Role";
+      const companyName = (edited_company_name || "").trim() || "Unknown";
+      const roleTitle = (edited_role_title || "").trim() || "Unknown Role";
 
       // Upsert company if needed
       let companyId: string | null = null;
@@ -486,33 +493,25 @@ export async function handleCampusUploadRoutes(
         }
       }
 
-      // Create the jobs row
+      // Create the jobs row.
+      // jobs.external_id and jobs.source are NOT NULL (no default) — must supply both.
+      // jobs.source_type does NOT exist; classification fields (function/family/industry/bucket/etc)
+      // are not yet propagated from the analyze pipeline to the DB row — handled by separate analyzer
+      // re-runs once those columns are wired through. For now the campus_upload path stores the
+      // minimum viable shape; downstream enrichment fills the rest.
+      const externalId = `campus-${batchId}-${analyze_run_id}`;
       const { data: job, error: jobError } = await supabase
         .from("jobs")
         .insert({
+          external_id: externalId,
+          source: "campus_upload",
           title: roleTitle,
           company_name: companyName,
           company_id: companyId,
           upload_batch_id: batchId,
-          // Classification fields from run
-          job_function: run.job_function || null,
-          job_function_name: run.job_function_name || null,
-          job_family: run.job_family || null,
-          job_family_name: run.job_family_name || null,
-          job_industry: run.job_industry || null,
-          job_industry_name: run.job_industry_name || null,
-          bucket: run.bucket || null,
-          seniority_level: run.seniority || null,
-          geography: run.geography || null,
-          company_type: run.company_type || null,
-          jd_quality: run.jd_quality || null,
-          classification_confidence: run.classification_confidence || null,
-          experience_min: run.experience_min || null,
-          experience_max: run.experience_max || null,
-          education_req: run.min_education || null,
           analysis_version: "campus_upload_v1",
           analyzed_at: new Date().toISOString(),
-          source_type: "campus_upload",
+          enrichment_status: "partial",
         })
         .select("id")
         .single();
