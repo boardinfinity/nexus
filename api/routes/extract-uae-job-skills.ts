@@ -81,26 +81,27 @@ async function fetchNextSlice(limit: number) {
   // Pull the next slice of UAE/GCC jobs that aren't at v2 yet.
   // Order by id so two parallel ticks (shouldn't happen, but safe) don't
   // collide on the exact same rows.
+  // NOTE: the JD column on jobs is `description`, not `jd_text`.
   const { data, error } = await supabase
     .from("jobs")
-    .select("id, jd_text, title")
+    .select("id, description, title")
     .in("location_country", UAE_GCC_COUNTRIES)
     .or("analysis_version.is.null,analysis_version.neq.v2")
     .order("id", { ascending: true })
     .limit(limit);
   if (error) throw error;
   return (data || []).filter(
-    (j: any) => typeof j.jd_text === "string" && j.jd_text.length >= MIN_JD_CHARS
+    (j: any) => typeof j.description === "string" && j.description.length >= MIN_JD_CHARS
   );
 }
 
-async function processOne(job: { id: string; jd_text: string; title: string }) {
+async function processOne(job: { id: string; description: string; title: string }) {
   // Three retries with exponential backoff.
   let lastErr: any = null;
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       await runAnalyzeJd({
-        text: job.jd_text,
+        text: job.description,
         job_id: job.id,
         source: "async_batch",
       });
@@ -116,7 +117,7 @@ async function processOne(job: { id: string; jd_text: string; title: string }) {
 }
 
 async function processConcurrent(
-  jobs: Array<{ id: string; jd_text: string; title: string }>,
+  jobs: Array<{ id: string; description: string; title: string }>,
   deadlineMs: number
 ): Promise<{ ok: number; fail: number; failedIds: string[] }> {
   let idx = 0;
