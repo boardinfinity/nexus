@@ -2440,9 +2440,11 @@ async function executeJDEnrichment(runId: string, config: any) {
     // Explicit job_ids override (e.g. from a re-run trigger)
     jobQuery = jobQuery.in("id", jobIds);
   } else {
-    // Queue: not yet v2-analyzed, description present
+    // Queue: not yet v2-analyzed, description present.
+    // .or() handles NULL correctly — .not("analysis_version","eq","v2") would
+    // silently exclude NULL rows because NULL != 'v2' evaluates to NULL (falsy).
     jobQuery = jobQuery
-      .not("analysis_version", "eq", "v2")
+      .or("analysis_version.is.null,analysis_version.neq.v2")
       .in("enrichment_status", ["pending", "partial", "imported"])
       .order("created_at", { ascending: false })
       .limit(requestedBatch);
@@ -2461,7 +2463,7 @@ async function executeJDEnrichment(runId: string, config: any) {
     .from("jobs")
     .select("id", { count: "exact", head: true })
     .not("description", "is", null)
-    .not("analysis_version", "eq", "v2")
+    .or("analysis_version.is.null,analysis_version.neq.v2")
     .in("enrichment_status", ["pending", "partial", "imported"]);
 
   if (!validJobs.length) {
