@@ -1,11 +1,14 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { AuthResult, requirePermission, requireReader } from "../lib/auth";
-import { supabase, APIFY_API_KEY, OPENAI_API_KEY } from "../lib/supabase";
+import { supabase, APIFY_API_KEY, OPENAI_API_KEY, CRON_SECRET } from "../lib/supabase";
 import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore, mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel } from "../lib/helpers";
 import { randomUUID } from "crypto";
 import { runAnalyzeJd } from "../lib/analyze-jd";
+
+// Sentinel pipeline_type for the JD auto-drain schedule row.
+const JD_DRAIN_PIPELINE_TYPE = "jd_enrichment_drain";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
@@ -1358,6 +1361,146 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json({ ok: true, discovered_title_id: titleId })
   }
 
+  // ==================== JD AUTO-DRAIN ENDPOINTS ====================
+
+  // POST /pipelines/jd/start-drain
+  // Creates (or re-activates) the jd_enrichment_drain schedule row and fires the first batch.
+  if (path === "/pipelines/jd/start-drain" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return;
+    const batchSize = Math.min(parseInt((req.body || {}).batch_size) || 40, 40);
+
+    // Upsert the sentinel schedule row.
+    const { data: existing } = await supabase
+      .from("pipeline_schedules")
+      .select("id, is_active")
+      .eq("pipeline_type", JD_DRAIN_PIPELINE_TYPE)
+      .maybeSingle();
+
+    let scheduleId: string;
+    if (existing) {
+      await supabase.from("pipeline_schedules")
+        .update({ is_active: true, config: { batch_size: batchSize } })
+        .eq("id", existing.id);
+      scheduleId = existing.id;
+    } else {
+      const { data: created, error: cErr } = await supabase
+        .from("pipeline_schedules")
+        .insert({
+          name: "JD Enrichment Auto-Drain",
+          pipeline_type: JD_DRAIN_PIPELINE_TYPE,
+          frequency: "manual",
+          is_active: true,
+          config: { batch_size: batchSize },
+        })
+        .select("id")
+        .single();
+      if (cErr || !created) return res.status(500).json({ error: cErr?.message || "Failed to create drain schedule" });
+      scheduleId = created.id;
+    }
+
+    // Create the first pipeline_run
+    const { data: run, error: rErr } = await supabase
+      .from("pipeline_runs")
+      .insert({
+        pipeline_type: "jd_enrichment",
+        trigger_type: "scheduled",
+        status: "running",
+        started_at: new Date().toISOString(),
+        triggered_by: "auto_drain",
+        schedule_id: scheduleId,
+        config: { batch_size: batchSize, drain_schedule_id: scheduleId },
+      })
+      .select()
+      .single();
+    if (rErr || !run) return res.status(500).json({ error: rErr?.message || "Failed to create run" });
+
+    const baseUrl = getJdDrainBaseUrl(req);
+    // Execute asynchronously so we can return immediately.
+    executeJDEnrichment(run.id, { batch_size: batchSize }, { baseUrl, drainScheduleId: scheduleId }).catch(console.error);
+
+    return res.json({ ok: true, run_id: run.id, drain_schedule_id: scheduleId, batch_size: batchSize });
+  }
+
+  // POST /pipelines/jd/stop-drain
+  // Sets is_active = false on the drain schedule. The current batch completes, no new batches fire.
+  if (path === "/pipelines/jd/stop-drain" && req.method === "POST") {
+    if (!requirePermission("pipelines", "full")(auth, res)) return;
+    const { error } = await supabase
+      .from("pipeline_schedules")
+      .update({ is_active: false })
+      .eq("pipeline_type", JD_DRAIN_PIPELINE_TYPE);
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ ok: true, message: "Drain stopped. Current batch will complete, then the chain halts." });
+  }
+
+  // GET /pipelines/jd/drain-status
+  // Returns current drain schedule state + queue depth.
+  if (path === "/pipelines/jd/drain-status" && req.method === "GET") {
+    if (!requireReader(auth, "pipelines", res)) return;
+    const { data: sched } = await supabase
+      .from("pipeline_schedules")
+      .select("id, is_active, config")
+      .eq("pipeline_type", JD_DRAIN_PIPELINE_TYPE)
+      .maybeSingle();
+    const { count: queueDepth } = await supabase
+      .from("jobs")
+      .select("id", { count: "exact", head: true })
+      .not("description", "is", null)
+      .or("analysis_version.is.null,analysis_version.neq.v2")
+      .in("enrichment_status", ["pending", "partial", "imported"]);
+    const { count: v2Done } = await supabase
+      .from("jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("analysis_version", "v2");
+    return res.json({
+      drain_active: sched?.is_active === true,
+      drain_schedule_id: sched?.id || null,
+      queue_remaining: queueDepth ?? 0,
+      v2_complete: v2Done ?? 0,
+    });
+  }
+
+  // POST /pipelines/jd/chain  (CRON_SECRET-protected, internal only)
+  // Called by fireJdChain() to start the next batch in the self-drain loop.
+  if (path === "/pipelines/jd/chain" && req.method === "POST") {
+    const providedSecret = (req.headers["x-cron-secret"] as string) || "";
+    if (!CRON_SECRET || providedSecret !== CRON_SECRET) {
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+    const { drain_schedule_id, batch_size = 40 } = req.body || {};
+    if (!drain_schedule_id) return res.status(400).json({ error: "drain_schedule_id required" });
+
+    // Re-check is_active before creating a new run (guard against race).
+    const { data: sched } = await supabase
+      .from("pipeline_schedules")
+      .select("is_active")
+      .eq("id", drain_schedule_id)
+      .maybeSingle();
+    if (!sched?.is_active) {
+      return res.json({ ok: true, skipped: true, reason: "drain stopped" });
+    }
+
+    const { data: run, error: rErr } = await supabase
+      .from("pipeline_runs")
+      .insert({
+        pipeline_type: "jd_enrichment",
+        trigger_type: "scheduled",
+        status: "running",
+        started_at: new Date().toISOString(),
+        triggered_by: "auto_drain",
+        schedule_id: drain_schedule_id,
+        config: { batch_size, drain_schedule_id },
+      })
+      .select()
+      .single();
+    if (rErr || !run) return res.status(500).json({ error: rErr?.message || "Failed to create run" });
+
+    const baseUrl = getJdDrainBaseUrl(req);
+    executeJDEnrichment(run.id, { batch_size }, { baseUrl, drainScheduleId: drain_schedule_id }).catch(console.error);
+
+    return res.json({ ok: true, run_id: run.id });
+  }
+
   return undefined;
 }
 
@@ -2406,6 +2549,28 @@ async function getTaxonomyMap(): Promise<Map<string, { id: string; category: str
   return map;
 }
 
+// ── JD Drain helpers ─────────────────────────────────────────────────────────
+function getJdDrainBaseUrl(req: VercelRequest): string {
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  const host = req.headers["x-forwarded-host"] || req.headers.host;
+  const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+  return `${proto}://${host}`;
+}
+
+/** Fire-and-forget POST to /api/pipelines/jd/chain (CRON_SECRET-protected). */
+function fireJdChain(baseUrl: string, drainScheduleId: string, batchSize: number): void {
+  fetch(`${baseUrl}/api/pipelines/jd/chain`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-cron-secret": CRON_SECRET || "",
+    },
+    body: JSON.stringify({ drain_schedule_id: drainScheduleId, batch_size: batchSize }),
+  }).catch((e) => {
+    console.error("[jd_drain] fireJdChain failed:", e?.message || e);
+  });
+}
+
 // ==================== JD ANALYSIS PIPELINE (v2 — routes through canonical runAnalyzeJd) ====================
 // Replaces the old gpt-4o-mini multi-JD batch approach.
 // Every job now goes through the same runAnalyzeJd() pipeline as the manual /jd-analyzer page:
@@ -2419,7 +2584,12 @@ async function getTaxonomyMap(): Promise<Map<string, { id: string; category: str
 // Vercel budget: 300s max. At ~6s/job, 40 jobs ≈ 240s — safe ceiling per invocation.
 // UI can re-trigger to drain the queue in subsequent runs.
 
-async function executeJDEnrichment(runId: string, config: any) {
+async function executeJDEnrichment(
+  runId: string,
+  config: any,
+  /** Present when called from the auto-drain self-chain. */
+  drainContext?: { baseUrl: string; drainScheduleId: string }
+) {
   // Hard cap at 40 per invocation (Vercel 300s budget: ~6s/job × 40 = 240s)
   const PER_INVOCATION_CAP = 40;
   const requestedBatch = Math.min(parseInt(config.batch_size) || 50, PER_INVOCATION_CAP);
@@ -2525,17 +2695,48 @@ async function executeJDEnrichment(runId: string, config: any) {
     }).eq("id", runId);
   }
 
-  // ── 3. Final pipeline_run update ────────────────────────────────────────────
+  // ── 3. Final pipeline_run update + optional self-chain ──────────────────
   const queueAfter = Math.max(0, (remaining ?? 0) - processed);
+
+  // Check drain schedule stop flag (if running as part of auto-drain chain).
+  let drainActive = false;
+  if (drainContext) {
+    const { data: sched } = await supabase
+      .from("pipeline_schedules")
+      .select("is_active")
+      .eq("id", drainContext.drainScheduleId)
+      .maybeSingle();
+    drainActive = sched?.is_active === true;
+  }
+
+  const chainMsg = drainContext
+    ? (drainActive && queueAfter > 0
+        ? " → Auto-drain active, next batch queued."
+        : drainActive && queueAfter === 0
+        ? " → Queue empty, drain complete."
+        : " → Auto-drain stopped.")
+    : "";
+
   await supabase.from("pipeline_runs").update({
     status: "completed",
     processed_items: processed,
     failed_items: failed,
     completed_at: new Date().toISOString(),
     error_message: queueAfter > 0
-      ? `✓ ${processed} jobs analyzed with v2.2 prompt. ${queueAfter} jobs still in queue — trigger again to continue.`
-      : `✓ ${processed} jobs analyzed with v2.2 prompt. Queue is now empty.`,
+      ? `✓ ${processed} jobs analyzed with v2.2 prompt. ${queueAfter} jobs still in queue.${chainMsg}`
+      : `✓ ${processed} jobs analyzed with v2.2 prompt. Queue is now empty.${chainMsg}`,
   }).eq("id", runId);
+
+  // Auto-drain: fire next batch if still active and jobs remain.
+  if (drainContext && drainActive && queueAfter > 0) {
+    fireJdChain(drainContext.baseUrl, drainContext.drainScheduleId, parseInt(config.batch_size) || 40);
+  } else if (drainContext && queueAfter === 0) {
+    // Queue fully drained — flip schedule to inactive automatically.
+    await supabase.from("pipeline_schedules")
+      .update({ is_active: false })
+      .eq("id", drainContext.drainScheduleId);
+    console.log("[jd_drain] Queue empty — drain schedule auto-stopped.");
+  }
 }
 
 // Maximum number of profiles to process per /poll call. Sized to fit comfortably

@@ -96,6 +96,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
+  // ==================== JD AUTO-DRAIN CHAIN (cron-secret auth, before main auth) ====================
+  if (path === "/pipelines/jd/chain" && req.method === "POST") {
+    // Auth is enforced inside handlePipelineRoutes via x-cron-secret check.
+    const cronAuth = await verifyAuth(req).catch(() => ({ nexusUser: null as any })) as any;
+    const result = await handlePipelineRoutes(path, req, res, cronAuth);
+    if (result) return;
+    return res.status(404).json({ error: "Not found" });
+  }
+
   // ==================== SCHEDULER TICK (cron-secret auth, before main auth) ====================
   if (path === "/scheduler/tick" && (req.method === "POST" || req.method === "GET")) {
     // Tick has its own auth (x-vercel-cron header or CRON_SECRET)
