@@ -25,6 +25,7 @@ import { handleCollegeRoutes } from "./routes/colleges";
 import { handleBucketTestRoutes } from "./routes/bucket-test";
 import { handleMastersRoutes } from "./routes/masters";
 import { handleCampusUploadRoutes } from "./routes/campus-upload";
+import { handleCollegeDashboardRoutes, handlePublicCollegeDashboardRoutes } from "./routes/college-dashboard";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -66,6 +67,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return await handleSurveyRoutes(path, req, res);
     } catch (err: any) {
       console.error("Survey API Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
+
+  // ==================== PUBLIC COLLEGE DASHBOARD (share-token auth, before main auth) ====================
+  if (path.startsWith("/public/college-dashboard/")) {
+    try {
+      const r = await handlePublicCollegeDashboardRoutes(path, req, res);
+      if (r) return r;
+      return res.status(404).json({ error: "Not found" });
+    } catch (err: any) {
+      console.error("Public College Dashboard API Error:", err);
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -119,6 +132,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleScheduleRoutes(path, req, res, auth);
     } else if (path.startsWith("/reports")) {
       result = await handleReportRoutes(path, req, res, auth);
+    } else if (path.startsWith("/college-dashboard")) {
+      result = await handleCollegeDashboardRoutes(path, req, res, auth);
     } else if (path.startsWith("/college") || path.startsWith("/colleges")) {
       result = await handleCollegeRoutes(path, req, res, auth);
     } else if (path.startsWith("/campus-upload")) {

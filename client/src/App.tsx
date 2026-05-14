@@ -42,6 +42,7 @@ import PlacementForm from "@/pages/placement-form";
 import PlaceIntelAdmin from "@/pages/placeintel-admin";
 import MasterData from "@/pages/masters";
 import UsersPage from "@/pages/users";
+import CollegeDashboard from "@/pages/college-dashboard";
 import { Loader2 } from "lucide-react";
 
 function AppRouter() {
@@ -70,6 +71,7 @@ function AppRouter() {
       <Route path="/survey-admin" component={SurveyAdmin} />
       <Route path="/survey-admin/:id">{(params) => <SurveyDetail params={params} />}</Route>
       <Route path="/colleges" component={Colleges} />
+      <Route path="/colleges/:id/dashboard">{(params) => <CollegeDashboard params={params} />}</Route>
       <Route path="/colleges/:id">{(params) => <CollegeDetail params={params} />}</Route>
       <Route path="/colleges/:id/programs/:pid">{(params) => <ProgramDetail params={params} />}</Route>
       <Route path="/colleges/:id/courses/:cid">{(params) => <CourseDetailPage params={params} />}</Route>
@@ -129,6 +131,16 @@ function RootRouter() {
     return (
       <Switch>
         <Route path="/placement-form/:college_id">{(params) => <PlacementForm params={params} />}</Route>
+      </Switch>
+    );
+  }
+
+  // Public college dashboard demo — standalone, no sidebar, no app auth.
+  // URL pattern: /#/c/<slug>/dashboard. Server validates slug against an allow-list.
+  if (location.startsWith("/c/")) {
+    return (
+      <Switch>
+        <Route path="/c/:slug/dashboard">{(params) => <CollegeDashboard params={params} publicSlug={params.slug} />}</Route>
       </Switch>
     );
   }
