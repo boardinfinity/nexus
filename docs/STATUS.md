@@ -45,3 +45,4 @@ Append a 1-line entry after every meaningful ship. Most-recent first. Format:
 2026-05-14 · me-jobs-pipeline · d7cf5c3 · feat: Bayt.com + NaukriGulf executors (executeBaytJobs, executeNaukriGulfJobs, processMEJobResults), mappers (mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel, mapBaytCountryCode), BaytForm + NaukriGulfForm frontend. pipeline_type: bayt_jobs | naukrigulf_jobs. No migration needed.
 2026-05-14 · me-jobs-pipeline · ca8dedb · fix: restored executeBaytJobs/executeNaukriGulfJobs/processMEJobResults clobbered by concurrent push (19f6b17). ME pipeline now live.
 2026-05-14 · 89b6ac0 · Verified discovery + UI clean against Phases 1-3 security baseline (advisors at documented baseline; 0 client supabase.rpc/from; 7 routes boot)
+2026-05-14 · me-jobs-pipeline · 4bc931f · feat: P0 async decouple + timeout raises (all 4 executors), P1 salary currency fix + incrementalMode default, P2 multi-country schedules, tabbed UI (4 tabs)
