@@ -3,6 +3,17 @@ import { AuthResult, requirePermission, requireReader } from "../lib/auth";
 import { supabase } from "../lib/supabase";
 import { normalizeText, mapEmploymentTypeExtended, mapSeniorityFromClay, upsertCompanyByName, normalizeCompanyName, parseDomain } from "../lib/helpers";
 
+// CSV cells frequently contain the literal strings 'undefined' / 'null' / 'NaN'
+// when the upstream export had a missing field. Treat them as empty.
+function sanitizeCsvCell(v: any): string {
+  if (v == null) return "";
+  const s = String(v).trim();
+  if (!s) return "";
+  const low = s.toLowerCase();
+  if (low === "undefined" || low === "null" || low === "nan" || low === "n/a") return "";
+  return s;
+}
+
 async function processUploadBatch(
   rows: any[],
   sourceType: string,
@@ -19,38 +30,44 @@ async function processUploadBatch(
       let jobData: Record<string, any>;
 
       if (sourceType === "clay_linkedin") {
-        const title = (row["Job Title"] || "").trim();
-        const externalId = (row["Job Id"] || "").trim();
+        const title = sanitizeCsvCell(row["Job Title"]);
+        const externalId = sanitizeCsvCell(row["Job Id"]);
         if (!title) throw new Error("Missing required field: Job Title");
         if (!externalId) throw new Error("Missing required field: Job Id");
 
-        const companyName = (row["Company Name"] || "").trim();
+        const companyName = sanitizeCsvCell(row["Company Name"]);
+        const companyUrl = sanitizeCsvCell(row["Company URL"]);
+        const companyLinkedIn = sanitizeCsvCell(row["Company LinkedIn Page"]);
         let companyId = null;
         if (companyName) {
           companyId = await upsertCompanyByName(
             companyName,
-            row["Company URL"] || null,
+            companyUrl || null,
             null
           );
           // Update company LinkedIn URL if provided
-          if (row["Company LinkedIn Page"] && companyId) {
+          if (companyLinkedIn && companyId) {
             await supabase.from("companies")
-              .update({ linkedin_url: row["Company LinkedIn Page"] })
+              .update({ linkedin_url: companyLinkedIn })
               .eq("id", companyId)
               .is("linkedin_url", null);
           }
         }
 
+        const postedOnStr = sanitizeCsvCell(row["Posted On"]);
         let postedAt: string | null = null;
-        if (row["Posted On"]) {
+        if (postedOnStr) {
           try {
-            const d = new Date(row["Posted On"]);
+            const d = new Date(postedOnStr);
             if (!isNaN(d.getTime())) postedAt = d.toISOString();
           } catch { /* leave null */ }
         }
 
         const titleNorm = normalizeText(title);
         const companyNorm = normalizeText(companyName);
+        const sourceUrl = sanitizeCsvCell(row["Job Post - LinkedIn"]);
+        const locationRaw = sanitizeCsvCell(row["Location"]);
+        const senioritySrc = sanitizeCsvCell(row["Seniority"]);
 
         jobData = {
           external_id: externalId,
@@ -60,10 +77,10 @@ async function processUploadBatch(
           company_name_normalized: companyNorm || null,
           company_id: companyId,
           company_name: companyName || null,
-          source_url: row["Job Post - LinkedIn"] || null,
-          location_raw: row["Location"] || null,
+          source_url: sourceUrl || null,
+          location_raw: locationRaw || null,
           posted_at: postedAt,
-          seniority_level: mapSeniorityFromClay(row["Seniority"]),
+          seniority_level: mapSeniorityFromClay(senioritySrc || null),
           enrichment_status: "pending",
           raw_data: row,
         };
