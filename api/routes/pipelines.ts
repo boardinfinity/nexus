@@ -1398,27 +1398,13 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       scheduleId = created.id;
     }
 
-    // Create the first pipeline_run
-    const { data: run, error: rErr } = await supabase
-      .from("pipeline_runs")
-      .insert({
-        pipeline_type: "jd_enrichment",
-        trigger_type: "scheduled",
-        status: "running",
-        started_at: new Date().toISOString(),
-        triggered_by: "auto_drain",
-        schedule_id: scheduleId,
-        config: { batch_size: batchSize, drain_schedule_id: scheduleId },
-      })
-      .select()
-      .single();
-    if (rErr || !run) return res.status(500).json({ error: rErr?.message || "Failed to create run" });
-
     const baseUrl = getJdDrainBaseUrl(req);
-    // Execute asynchronously so we can return immediately.
-    executeJDEnrichment(run.id, { batch_size: batchSize }, { baseUrl, drainScheduleId: scheduleId }).catch(console.error);
+    // Kick off the first batch by firing the /chain endpoint. The /chain handler
+    // runs executeJDEnrichment synchronously with full Vercel 300s budget.
+    // run creation happens inside /chain, not here, to avoid orphaned run rows.
+    fireJdChain(baseUrl, scheduleId, batchSize);
 
-    return res.json({ ok: true, run_id: run.id, drain_schedule_id: scheduleId, batch_size: batchSize });
+    return res.json({ ok: true, drain_schedule_id: scheduleId, batch_size: batchSize, message: "Auto-drain started. First batch is being dispatched." });
   }
 
   // POST /pipelines/jd/stop-drain
@@ -1496,7 +1482,11 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     if (rErr || !run) return res.status(500).json({ error: rErr?.message || "Failed to create run" });
 
     const baseUrl = getJdDrainBaseUrl(req);
-    executeJDEnrichment(run.id, { batch_size }, { baseUrl, drainScheduleId: drain_schedule_id }).catch(console.error);
+    // IMPORTANT: await the full batch synchronously. Vercel keeps this invocation alive
+    // until we return. executeJDEnrichment will fire-and-forget the NEXT chain link
+    // (via fireJdChain) before we return, so the next invocation starts while we
+    // are still finishing — guaranteeing continuity across chain links.
+    await executeJDEnrichment(run.id, { batch_size }, { baseUrl, drainScheduleId: drain_schedule_id }).catch(console.error);
 
     return res.json({ ok: true, run_id: run.id });
   }
