@@ -18,9 +18,17 @@
 
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import mammoth from "mammoth";
-import { supabase } from "../lib/supabase";
+import { supabase, CRON_SECRET } from "../lib/supabase";
 import { runAnalyzeJd } from "../lib/analyze-jd";
 import { AuthResult, requirePermission, hasPermission } from "../lib/auth";
+import {
+  parseExcelBuffer,
+  extractRows,
+  splitVacancyTitle,
+  MAX_EXCEL_ROWS,
+  MIN_DESCRIPTION_CHARS,
+  type ColumnMapping,
+} from "../lib/excel-parse";
 
 // ──────────────────────────────────────────────────────────────────────
 // Constants
@@ -28,7 +36,9 @@ import { AuthResult, requirePermission, hasPermission } from "../lib/auth";
 
 const MAX_FILES = 50;
 const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_EXCEL_BYTES = 25 * 1024 * 1024; // 25 MB — xlsx files compress well
 const ALLOWED_EXTENSIONS = [".pdf", ".docx", ".txt"];
+const ALLOWED_EXCEL_EXTENSIONS = [".xlsx", ".xls"];
 
 // ──────────────────────────────────────────────────────────────────────
 // Multipart helpers (adapted from surveys.ts same-repo pattern)
@@ -400,10 +410,24 @@ export async function handleCampusUploadRoutes(
       return res.status(500).json({ error: runsError.message });
     }
 
+    // For excel-sourced batches, also include the campus_excel_tasks rows so
+    // the frontend can show per-row context (raw_title, excel_row_index) for
+    // each analyze_jd_run. Joined client-side on analyze_run_id.
+    let excelTasks: any[] | undefined;
+    if (batchFull?.batch_type === "excel_jd_analyze") {
+      const { data: tasks } = await supabase
+        .from("campus_excel_tasks")
+        .select("id, excel_row_index, raw_title, raw_employer, status, analyze_run_id, error_message")
+        .eq("batch_id", batchId)
+        .order("excel_row_index", { ascending: true });
+      excelTasks = tasks || [];
+    }
+
     return res.status(200).json({
       batch: batchFull,
       runs: runs || [],
       total_runs: (runs || []).length,
+      ...(excelTasks ? { excel_tasks: excelTasks } : {}),
     });
   }
 
@@ -602,6 +626,410 @@ export async function handleCampusUploadRoutes(
     if (error) return res.status(500).json({ error: error.message });
 
     return res.status(200).json({ data: data || [], total: count || 0, page, limit });
+  }
+
+  // ── POST /campus-upload/excel/parse ──────────────────────────────
+  // Multipart upload: accept a single .xlsx, return detected shape + header
+  // + auto-column-mapping + 5-row preview. Stateless — does NOT touch DB.
+  // The client picks a track, optionally overrides the mapping, then calls
+  // /excel/enqueue (Track A) or /vacancy-log/commit (Track B).
+  if (path === "/campus-upload/excel/parse" && method === "POST") {
+    if (!requirePermission("jobs", "write")(auth, res)) return res;
+
+    const ct = String(req.headers["content-type"] || "");
+    if (!ct.includes("multipart/form-data")) {
+      return res.status(400).json({ error: "Expected multipart/form-data" });
+    }
+    const boundaryMatch = ct.match(/boundary=([^;]+)/);
+    if (!boundaryMatch) return res.status(400).json({ error: "Missing multipart boundary" });
+    const boundary = boundaryMatch[1].replace(/^"|"$/g, "");
+
+    const raw = await readRawBody(req);
+    const fileParts = extractAllFileParts(raw, boundary);
+    if (fileParts.length === 0) return res.status(400).json({ error: "No file in request" });
+    if (fileParts.length > 1) {
+      return res.status(400).json({ error: "Send exactly one .xlsx file to /excel/parse" });
+    }
+    const fp = fileParts[0];
+    const lower = fp.filename.toLowerCase();
+    if (!ALLOWED_EXCEL_EXTENSIONS.some((ext) => lower.endsWith(ext))) {
+      return res.status(400).json({
+        error: `File '${fp.filename}' is not an Excel file. Use .xlsx or .xls`,
+      });
+    }
+    if (fp.content.length > MAX_EXCEL_BYTES) {
+      return res.status(400).json({
+        error: `File '${fp.filename}' exceeds ${MAX_EXCEL_BYTES / 1024 / 1024} MB limit`,
+      });
+    }
+
+    let parsed;
+    try {
+      parsed = parseExcelBuffer(fp.content);
+    } catch (e: any) {
+      return res.status(400).json({ error: `Failed to parse Excel: ${e?.message || String(e)}` });
+    }
+
+    if (parsed.total_rows > MAX_EXCEL_ROWS) {
+      return res.status(400).json({
+        error: `Sheet has ${parsed.total_rows} rows; max supported is ${MAX_EXCEL_ROWS}`,
+      });
+    }
+
+    return res.status(200).json({
+      filename: fp.filename,
+      ...parsed,
+    });
+  }
+
+  // ── POST /campus-upload/excel/enqueue ────────────────────────────
+  // Track A: accept .xlsx + column mapping + batch_id (optional — creates one
+  // if missing). For each non-empty row with a description >= MIN_DESCRIPTION_CHARS,
+  // INSERT a campus_excel_tasks row with status='queued'. Sets batch.batch_type
+  // = 'excel_jd_analyze' and kicks the first worker tick.
+  //
+  // Multipart fields:
+  //   file       — .xlsx
+  //   batch_id   — existing draft batch (optional; if omitted, requires college_id)
+  //   college_id — required when batch_id is omitted
+  //   mapping    — JSON column mapping { title, employer, description, ... }
+  //   header_row_index — 0-based row index of the header (from /excel/parse)
+  if (path === "/campus-upload/excel/enqueue" && method === "POST") {
+    if (!requirePermission("jobs", "write")(auth, res)) return res;
+
+    const ct = String(req.headers["content-type"] || "");
+    if (!ct.includes("multipart/form-data")) {
+      return res.status(400).json({ error: "Expected multipart/form-data" });
+    }
+    const boundaryMatch = ct.match(/boundary=([^;]+)/);
+    if (!boundaryMatch) return res.status(400).json({ error: "Missing multipart boundary" });
+    const boundary = boundaryMatch[1].replace(/^"|"$/g, "");
+
+    const raw = await readRawBody(req);
+    const fileParts = extractAllFileParts(raw, boundary);
+    if (fileParts.length === 0) return res.status(400).json({ error: "No file in request" });
+    const fp = fileParts[0];
+    if (!ALLOWED_EXCEL_EXTENSIONS.some((ext) => fp.filename.toLowerCase().endsWith(ext))) {
+      return res.status(400).json({ error: `File '${fp.filename}' is not an Excel file` });
+    }
+    if (fp.content.length > MAX_EXCEL_BYTES) {
+      return res.status(400).json({ error: `File '${fp.filename}' exceeds size limit` });
+    }
+
+    const mappingStr = extractFormField(raw, boundary, "mapping");
+    if (!mappingStr) return res.status(400).json({ error: "mapping field required" });
+    let mapping: ColumnMapping;
+    try {
+      mapping = JSON.parse(mappingStr);
+    } catch (e: any) {
+      return res.status(400).json({ error: "mapping must be valid JSON" });
+    }
+    if (mapping.title === undefined || mapping.description === undefined) {
+      return res.status(400).json({
+        error: "Track A requires mapping for both 'title' and 'description'",
+      });
+    }
+
+    const headerRowIdxStr = extractFormField(raw, boundary, "header_row_index");
+    const headerRowIdx = headerRowIdxStr !== null ? parseInt(headerRowIdxStr, 10) : 0;
+    if (!Number.isInteger(headerRowIdx) || headerRowIdx < 0) {
+      return res.status(400).json({ error: "header_row_index must be a non-negative integer" });
+    }
+
+    // Resolve / create the batch
+    const providedBatchId = extractFormField(raw, boundary, "batch_id");
+    let batchId: string;
+    let batchCollegeId: string;
+    if (providedBatchId) {
+      const batch = await assertBatchInScope(providedBatchId, auth, res);
+      if (!batch) return res;
+      if (batch.status === "committed" || batch.status === "cancelled") {
+        return res.status(400).json({
+          error: `Cannot enqueue into batch with status '${batch.status}'`,
+        });
+      }
+      batchId = batch.id;
+      batchCollegeId = batch.college_id;
+      // Flip batch_type to excel_jd_analyze
+      await supabase
+        .from("campus_upload_batches")
+        .update({ batch_type: "excel_jd_analyze" })
+        .eq("id", batchId);
+    } else {
+      const collegeId = extractFormField(raw, boundary, "college_id");
+      if (!collegeId) {
+        return res.status(400).json({ error: "Either batch_id or college_id is required" });
+      }
+      // college_rep scope check
+      const u = auth.nexusUser;
+      if (u.role === "college_rep") {
+        const allowed = u.restricted_college_ids || [];
+        if (!allowed.includes(collegeId)) {
+          return res.status(403).json({ error: "Access denied to this college" });
+        }
+      }
+      const { data: newBatch, error: cErr } = await supabase
+        .from("campus_upload_batches")
+        .insert({
+          college_id: collegeId,
+          status: "draft",
+          batch_type: "excel_jd_analyze",
+          uploaded_by: u.auth_uid || null,
+          source: "excel_upload",
+          total_files: 0,
+          jds_committed: 0,
+        })
+        .select("id, college_id")
+        .single();
+      if (cErr || !newBatch) {
+        return res.status(500).json({ error: cErr?.message || "Failed to create batch" });
+      }
+      batchId = newBatch.id;
+      batchCollegeId = newBatch.college_id;
+    }
+
+    // Extract rows + filter to those with usable descriptions
+    let rows;
+    try {
+      rows = extractRows(fp.content, mapping, headerRowIdx);
+    } catch (e: any) {
+      return res.status(400).json({ error: `Failed to extract rows: ${e?.message || String(e)}` });
+    }
+
+    const eligible = rows.filter(
+      (r) => r.description && r.description.length >= MIN_DESCRIPTION_CHARS && r.title
+    );
+    const skipped = rows.length - eligible.length;
+
+    if (eligible.length === 0) {
+      return res.status(400).json({
+        error: `No eligible rows. Need a non-empty title + description with ≥ ${MIN_DESCRIPTION_CHARS} chars`,
+        total_rows: rows.length,
+        skipped,
+      });
+    }
+
+    // Bulk insert task rows. Supabase has a ~1000-row upper bound per insert
+    // in practice; chunk to be safe.
+    const taskRows = eligible.map((r) => ({
+      batch_id: batchId,
+      excel_row_index: r.excel_row_index,
+      raw_title: r.title!,
+      raw_employer: r.employer,
+      raw_description: r.description!,
+      raw_metadata: r.raw_metadata,
+      status: "queued",
+    }));
+
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < taskRows.length; i += CHUNK) {
+      const slice = taskRows.slice(i, i + CHUNK);
+      const { error: insErr, count } = await supabase
+        .from("campus_excel_tasks")
+        .insert(slice, { count: "exact" });
+      if (insErr) {
+        return res.status(500).json({
+          error: `Failed to enqueue tasks: ${insErr.message}`,
+          inserted_so_far: inserted,
+        });
+      }
+      inserted += count || slice.length;
+    }
+
+    // Flip batch to 'reviewing', set total_files = inserted count
+    await supabase
+      .from("campus_upload_batches")
+      .update({ status: "reviewing", total_files: inserted })
+      .eq("id", batchId);
+
+    // Kick the first tick (fire-and-forget)
+    const baseUrl = process.env.VERCEL_URL
+      ? `https://${process.env.VERCEL_URL}`
+      : `https://${req.headers["x-forwarded-host"] || req.headers.host}`;
+    fetch(`${baseUrl}/api/public/campus-excel-worker/tick`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-cron-secret": CRON_SECRET || "",
+      },
+      body: JSON.stringify({ batch_id: batchId }),
+    }).catch((e) => {
+      console.error("[campus-upload/excel/enqueue] kick failed:", e?.message || e);
+    });
+
+    return res.status(202).json({
+      batch_id: batchId,
+      college_id: batchCollegeId,
+      enqueued: inserted,
+      total_rows: rows.length,
+      skipped,
+      status_url: `/api/admin/campus-excel-worker/status?batch_id=${batchId}`,
+      message: "Tasks enqueued. Worker started. Poll the status URL for progress.",
+    });
+  }
+
+  // ── POST /campus-upload/vacancy-log/commit ───────────────────────
+  // Track B: accept .xlsx (no description) + mapping. Bulk-insert directly
+  // into campus_vacancies; no LLM, no analyze pipeline. Creates a batch row
+  // with batch_type='vacancy_log' (or accepts an existing draft batch).
+  if (path === "/campus-upload/vacancy-log/commit" && method === "POST") {
+    if (!requirePermission("jobs", "write")(auth, res)) return res;
+
+    const ct = String(req.headers["content-type"] || "");
+    if (!ct.includes("multipart/form-data")) {
+      return res.status(400).json({ error: "Expected multipart/form-data" });
+    }
+    const boundaryMatch = ct.match(/boundary=([^;]+)/);
+    if (!boundaryMatch) return res.status(400).json({ error: "Missing multipart boundary" });
+    const boundary = boundaryMatch[1].replace(/^"|"$/g, "");
+
+    const raw = await readRawBody(req);
+    const fileParts = extractAllFileParts(raw, boundary);
+    if (fileParts.length === 0) return res.status(400).json({ error: "No file in request" });
+    const fp = fileParts[0];
+    if (!ALLOWED_EXCEL_EXTENSIONS.some((ext) => fp.filename.toLowerCase().endsWith(ext))) {
+      return res.status(400).json({ error: `File '${fp.filename}' is not an Excel file` });
+    }
+    if (fp.content.length > MAX_EXCEL_BYTES) {
+      return res.status(400).json({ error: `File '${fp.filename}' exceeds size limit` });
+    }
+
+    const mappingStr = extractFormField(raw, boundary, "mapping");
+    if (!mappingStr) return res.status(400).json({ error: "mapping field required" });
+    let mapping: ColumnMapping;
+    try {
+      mapping = JSON.parse(mappingStr);
+    } catch (e: any) {
+      return res.status(400).json({ error: "mapping must be valid JSON" });
+    }
+    if (mapping.title === undefined) {
+      return res.status(400).json({ error: "Track B requires mapping for 'title'" });
+    }
+
+    const headerRowIdxStr = extractFormField(raw, boundary, "header_row_index");
+    const headerRowIdx = headerRowIdxStr !== null ? parseInt(headerRowIdxStr, 10) : 0;
+    if (!Number.isInteger(headerRowIdx) || headerRowIdx < 0) {
+      return res.status(400).json({ error: "header_row_index must be a non-negative integer" });
+    }
+
+    // Resolve / create the batch
+    const providedBatchId = extractFormField(raw, boundary, "batch_id");
+    let batchId: string;
+    let batchCollegeId: string;
+    if (providedBatchId) {
+      const batch = await assertBatchInScope(providedBatchId, auth, res);
+      if (!batch) return res;
+      if (batch.status === "committed" || batch.status === "cancelled") {
+        return res.status(400).json({
+          error: `Cannot commit into batch with status '${batch.status}'`,
+        });
+      }
+      batchId = batch.id;
+      batchCollegeId = batch.college_id;
+      await supabase
+        .from("campus_upload_batches")
+        .update({ batch_type: "vacancy_log" })
+        .eq("id", batchId);
+    } else {
+      const collegeId = extractFormField(raw, boundary, "college_id");
+      if (!collegeId) {
+        return res.status(400).json({ error: "Either batch_id or college_id is required" });
+      }
+      const u = auth.nexusUser;
+      if (u.role === "college_rep") {
+        const allowed = u.restricted_college_ids || [];
+        if (!allowed.includes(collegeId)) {
+          return res.status(403).json({ error: "Access denied to this college" });
+        }
+      }
+      const { data: newBatch, error: cErr } = await supabase
+        .from("campus_upload_batches")
+        .insert({
+          college_id: collegeId,
+          status: "draft",
+          batch_type: "vacancy_log",
+          uploaded_by: u.auth_uid || null,
+          source: "excel_vacancy_log",
+          total_files: 0,
+          jds_committed: 0,
+        })
+        .select("id, college_id")
+        .single();
+      if (cErr || !newBatch) {
+        return res.status(500).json({ error: cErr?.message || "Failed to create batch" });
+      }
+      batchId = newBatch.id;
+      batchCollegeId = newBatch.college_id;
+    }
+
+    // Extract rows
+    let rows;
+    try {
+      rows = extractRows(fp.content, mapping, headerRowIdx);
+    } catch (e: any) {
+      return res.status(400).json({ error: `Failed to extract rows: ${e?.message || String(e)}` });
+    }
+
+    const eligible = rows.filter((r) => r.title && r.title.trim().length > 0);
+    const skipped = rows.length - eligible.length;
+
+    if (eligible.length === 0) {
+      return res.status(400).json({ error: "No rows with a non-empty title", total_rows: rows.length });
+    }
+
+    // Map to campus_vacancies rows + split UOWD-style titles
+    const vacancyRows = eligible.map((r) => {
+      const split = splitVacancyTitle(r.title!);
+      return {
+        batch_id: batchId,
+        college_id: batchCollegeId,
+        excel_row_index: r.excel_row_index,
+        raw_title: r.title!,
+        vacancy_external_id: split.vacancy_external_id,
+        parsed_roles: split.parsed_roles,
+        parsed_employer: split.parsed_employer || r.employer,
+        publishing_channel: r.publishing_channel,
+        start_date: r.start_date,
+        end_date: r.end_date,
+        raw_metadata: r.raw_metadata,
+      };
+    });
+
+    const CHUNK = 500;
+    let inserted = 0;
+    for (let i = 0; i < vacancyRows.length; i += CHUNK) {
+      const slice = vacancyRows.slice(i, i + CHUNK);
+      const { error: insErr, count } = await supabase
+        .from("campus_vacancies")
+        .insert(slice, { count: "exact" });
+      if (insErr) {
+        return res.status(500).json({
+          error: `Failed to insert vacancies: ${insErr.message}`,
+          inserted_so_far: inserted,
+        });
+      }
+      inserted += count || slice.length;
+    }
+
+    // Flip batch to 'committed' immediately (no review step for Track B)
+    await supabase
+      .from("campus_upload_batches")
+      .update({
+        status: "committed",
+        total_files: inserted,
+        jds_committed: inserted,
+      })
+      .eq("id", batchId);
+
+    return res.status(200).json({
+      batch_id: batchId,
+      college_id: batchCollegeId,
+      committed: inserted,
+      total_rows: rows.length,
+      skipped,
+      message: "Vacancy log committed.",
+    });
   }
 
   return undefined; // route not matched

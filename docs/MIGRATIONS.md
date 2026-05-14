@@ -33,7 +33,8 @@
 | 041 | `041_discovered_titles_increment_rpc.sql` | 2026-05-13 | amb-jobs-pipeline | `increment_discovered_title_counts(p_run_id, p_country, p_source)` SECURITY DEFINER RPC. Supports the discovery-harvest endpoint by atomically incrementing `discovered_titles.observed_count` and refreshing `last_seen_at` for rows touched within the last 5 minutes. Granted EXECUTE to authenticated. NOT applied yet — pending user CLI apply. |
 | 042 | `042_college_regions.sql` | 2026-05-15 | cd-uowd14 | New `college_regions` table mapping each college to one-or-more `country_variant` strings (raw variants as they appear in `jobs.country`). Cols: id, college_id FK, country_variant, country_label, is_primary, created_at. Unique on (college_id, country_variant). RLS: authenticated read, service_role full. Supports College Dashboard Live Jobs section. NOT applied yet — pending Supabase apply. |
 | 043 | _(applied — see main table)_ | camjdbcab | applied 2026-05-15 |
-| 044 | _(open)_ | TBD | available |
+| 044 | `044_campus_excel_support.sql` | 2026-05-15 | camjdbcab | Campus Excel Upload support. New tables: `campus_vacancies` (Track B title-only vacancy log output) + `campus_excel_tasks` (Track A async work queue for full-JD Excels). Adds `campus_upload_batches.batch_type` column with CHECK ('jd_analyze','excel_jd_analyze','vacancy_log'). Both new tables RLS-enabled, service-role-only (no policies). Applied 2026-05-15. Advisors: 0 ERROR / 1 WARN baseline. |
+| 045 | _(open)_ | TBD | available |
 
 > Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
 
