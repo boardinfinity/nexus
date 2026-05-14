@@ -126,11 +126,11 @@ export default function UploadCampusPage() {
     batch_id: string;
   } | null>(null);
 
-  // Colleges list
-  const { data: colleges, isLoading: collegesLoading } = useQuery<{ data: College[] }>({
+  // Colleges list — /api/masters/colleges returns a raw College[] array, not {data:[]}.
+  const { data: colleges, isLoading: collegesLoading } = useQuery<College[]>({
     queryKey: ["/api/masters/colleges"],
     queryFn: async () => {
-      const res = await authFetch("/api/masters/colleges?limit=200");
+      const res = await authFetch("/api/masters/colleges");
       if (!res.ok) throw new Error("Failed to fetch colleges");
       return res.json();
     },
@@ -359,7 +359,7 @@ export default function UploadCampusPage() {
                     <SelectValue placeholder={collegesLoading ? "Loading…" : "Select college"} />
                   </SelectTrigger>
                   <SelectContent>
-                    {colleges?.data?.map((c) => (
+                    {colleges?.map((c) => (
                       <SelectItem key={c.id} value={c.id} className="text-xs">{c.name}</SelectItem>
                     ))}
                   </SelectContent>
