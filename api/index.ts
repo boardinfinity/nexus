@@ -26,6 +26,7 @@ import { handleBucketTestRoutes } from "./routes/bucket-test";
 import { handleMastersRoutes } from "./routes/masters";
 import { handleCampusUploadRoutes } from "./routes/campus-upload";
 import { handleCollegeDashboardRoutes, handlePublicCollegeDashboardRoutes } from "./routes/college-dashboard";
+import { handleExtractUaeJobSkillsRoutes, handlePublicExtractUaeJobSkillsTick } from "./routes/extract-uae-job-skills";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -79,6 +80,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: "Not found" });
     } catch (err: any) {
       console.error("Public College Dashboard API Error:", err);
+      return res.status(500).json({ error: err.message || "Internal server error" });
+    }
+  }
+
+  // ==================== PUBLIC EXTRACT-UAE-JOB-SKILLS TICK (cron-secret, before main auth) ====================
+  if (path.startsWith("/public/extract-uae-job-skills/")) {
+    try {
+      const r = await handlePublicExtractUaeJobSkillsTick(path, req, res);
+      if (r) return r;
+      return res.status(404).json({ error: "Not found" });
+    } catch (err: any) {
+      console.error("Public Extract UAE Job Skills API Error:", err);
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -142,6 +155,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleMastersRoutes(path, req, res, auth);
     } else if (path.startsWith("/admin/bucket-test")) {
       result = await handleBucketTestRoutes(path, req, res, auth);
+    } else if (path.startsWith("/admin/extract-uae-job-skills")) {
+      result = await handleExtractUaeJobSkillsRoutes(path, req, res, auth);
     } else if (path === "/admin/test-claude") {
       result = await handleReportRoutes("/reports/test-claude", req, res, auth);
     } else if (path.startsWith("/admin/survey")) {
