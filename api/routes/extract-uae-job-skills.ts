@@ -43,10 +43,11 @@ import type { AuthResult } from "../lib/auth";
 import { requireAdmin } from "../lib/auth";
 
 const BATCH_TYPE = "uae_realtime_extraction";
-const TICK_SIZE = 25;          // jobs per tick (~3 min budget under Vercel 300s)
+const TICK_SIZE = 10;           // jobs per tick — small so counter updates reliably
 const CONCURRENCY = 5;          // in-flight runAnalyzeJd calls per tick
-const TICK_BUDGET_MS = 240_000; // 4 min — stop early if approaching Vercel 5min cap
+const TICK_BUDGET_MS = 180_000; // 3 min budget — well under Vercel 5min cap
 const MIN_JD_CHARS = 100;
+const CHECKPOINT_EVERY = 5;     // persist progress every N completed jobs
 
 const UAE_GCC_COUNTRIES = [
   "United Arab Emirates",
@@ -118,11 +119,13 @@ async function processOne(job: { id: string; description: string; title: string 
 
 async function processConcurrent(
   jobs: Array<{ id: string; description: string; title: string }>,
-  deadlineMs: number
+  deadlineMs: number,
+  onCheckpoint?: (ok: number, fail: number) => Promise<void>
 ): Promise<{ ok: number; fail: number; failedIds: string[] }> {
   let idx = 0;
   let ok = 0;
   let fail = 0;
+  let completedSinceCheckpoint = 0;
   const failedIds: string[] = [];
 
   async function worker() {
@@ -134,6 +137,14 @@ async function processConcurrent(
       else {
         fail++;
         failedIds.push(j.id);
+      }
+      completedSinceCheckpoint++;
+      if (onCheckpoint && completedSinceCheckpoint >= CHECKPOINT_EVERY) {
+        completedSinceCheckpoint = 0;
+        // fire-and-forget; don't block the worker
+        onCheckpoint(ok, fail).catch((e) =>
+          console.error("[uae-extract] checkpoint failed:", e?.message || e)
+        );
       }
     }
   }
@@ -358,10 +369,24 @@ async function runTick(req: VercelRequest, res: VercelResponse, batchId: string)
     return res.json({ done: true, remaining, processed: batch.processed_count, failed: batch.failed_count });
   }
 
-  const { ok, fail, failedIds } = await processConcurrent(slice, deadlineMs);
+  const baseProcessed = batch.processed_count || 0;
+  const baseFailed = batch.failed_count || 0;
 
-  const newProcessed = (batch.processed_count || 0) + ok;
-  const newFailed = (batch.failed_count || 0) + fail;
+  // Mid-tick checkpoints so progress is visible even if the tick is killed.
+  const onCheckpoint = async (okSoFar: number, failSoFar: number) => {
+    await supabase
+      .from("batch_jobs")
+      .update({
+        processed_count: baseProcessed + okSoFar,
+        failed_count: baseFailed + failSoFar,
+      })
+      .eq("id", batchId);
+  };
+
+  const { ok, fail, failedIds } = await processConcurrent(slice, deadlineMs, onCheckpoint);
+
+  const newProcessed = baseProcessed + ok;
+  const newFailed = baseFailed + fail;
   const remaining = await countCandidates();
   const isDone = remaining === 0;
 
