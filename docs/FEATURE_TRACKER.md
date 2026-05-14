@@ -28,6 +28,7 @@ Legend: ✅ live · 🟡 in progress · ⚪ not started · 🔴 blocked · 🟣 
 
 | Sub-Feature | Status | Owner Thread | Last Update | Commit | Notes |
 |---|---|---|---|---|---|
+| JD Analysis (Real-time) — /pipelines/jd trigger & UX | ✅ | da29cd30 | 2026-05-15 | 85a47dc | Wire runAnalyzeJd() v2.2 into executeJDEnrichment() bulk pipeline. gpt-4.1-mini + L1/L2 + bucket resolver + analyze_jd_runs. Cap 40/run, concurrency=3, queue-drain pattern. |
 | Wire v2 prompt into pipeline | ⚪ | — | — | — | 3 JDs/call, GPT-4.1 mini Batch |
 | Three-tier extraction (hard/knowledge/competency) | ⚪ | — | — | — | 10 categories, max 15 skills |
 | upsert_skill() integration in extraction | ⚪ | — | — | — | Auto-create as 'unverified' |
