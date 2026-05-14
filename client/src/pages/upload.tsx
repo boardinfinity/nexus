@@ -374,7 +374,7 @@ export default function UploadPage() {
             <p>• Upload CSV files with job data from Clay, LinkedIn exports, Google Jobs, or custom format</p>
             <p>• Select the source type to auto-map columns (each source has different column names)</p>
             <p>• Download the CSV template to see the expected format</p>
-            <p>• Jobs are deduplicated by URL — if a job URL already exists, it's skipped</p>
+            <p>• Jobs are deduplicated by (external job id, source) — if a job already exists, it's skipped</p>
             <p className="pt-1"><strong>Supported sources:</strong></p>
             <p>• Clay LinkedIn — columns: title, company_name, location, url, description, etc.</p>
             <p>• Google Jobs — columns: title, company, location, link, description, etc.</p>
@@ -382,7 +382,8 @@ export default function UploadPage() {
             <p className="pt-1"><strong>Processing:</strong></p>
             <p>• Rows are processed in batches of 100</p>
             <p>• New companies are auto-created if not already in the database</p>
-            <p>• Upload status shows: Imported (success), Failed (bad data), Total Rows</p>
+            <p>• Upload status shows: Imported (new rows), Skipped (already in DB), Failed (bad data), Total Rows</p>
+            <p>• Keep this tab open until the upload completes — the loop runs in your browser. If the tab is closed, the upload will be auto-marked failed within ~30 min; re-upload is safe (duplicates are skipped).</p>
             <p className="pt-1"><strong>Limitations:</strong></p>
             <p>• Max file size: 50,000 rows per upload</p>
             <p>• CSV must be UTF-8 encoded</p>

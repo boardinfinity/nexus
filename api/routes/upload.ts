@@ -166,18 +166,25 @@ async function processUploadBatch(
         };
       }
 
-      // Insert with ON CONFLICT handling via upsert with ignoreDuplicates
-      const { error: insertError } = await supabase
+      // Insert with ON CONFLICT (external_id, source) DO NOTHING.
+      // With ignoreDuplicates:true PostgREST returns error=null AND data=[] on
+      // a silent skip. We use .select() so we can tell insert vs skip apart.
+      // (Previously every row was counted as processed; skipped_rows was dead code.)
+      const { data: inserted, error: insertError } = await supabase
         .from("jobs")
-        .upsert(jobData, { onConflict: "external_id,source", ignoreDuplicates: true });
+        .upsert(jobData, { onConflict: "external_id,source", ignoreDuplicates: true })
+        .select("id");
 
       if (insertError) {
-        // Check if it's a duplicate error
+        // 23505 should not surface under ignoreDuplicates, but keep the guard.
         if (insertError.message?.includes("duplicate") || insertError.code === "23505") {
           skipped++;
         } else {
           throw new Error(insertError.message);
         }
+      } else if (!inserted || inserted.length === 0) {
+        // Row already existed on (external_id, source) — silently deduped.
+        skipped++;
       } else {
         processed++;
       }
@@ -226,8 +233,13 @@ async function finalizeUpload(uploadId: string) {
   const isDone = totalProcessed >= data.total_rows;
 
   if (isDone) {
+    // With truthful counters (insert-vs-skip distinguished), a re-upload that
+    // is entirely deduped looks like processed=0, skipped=N, failed=0 — that
+    // is still a success. Only fail when failures exceed inserts+skips.
+    const succeeded = (data.processed_rows || 0) + (data.skipped_rows || 0);
+    const failedOut = (data.failed_rows || 0) > succeeded;
     await supabase.from("csv_uploads").update({
-      status: data.failed_rows > data.processed_rows ? "failed" : "completed",
+      status: failedOut ? "failed" : "completed",
       completed_at: new Date().toISOString(),
     }).eq("id", uploadId);
 
@@ -246,6 +258,65 @@ async function finalizeUpload(uploadId: string) {
       triggered_by: "csv_upload",
     });
   }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Watchdog: auto-fail csv_uploads that have been stuck in 'processing' too
+// long. The upload loop is currently client-driven (see sendBatchesInBackground
+// in client/src/pages/upload.tsx); if the browser tab dies, the row would
+// otherwise sit at 'processing' forever. Called from /scheduler/tick.
+// ──────────────────────────────────────────────────────────────────────────────
+export const STUCK_UPLOAD_MINUTES = 30;
+
+export async function expireStuckUploads(
+  maxAgeMinutes: number = STUCK_UPLOAD_MINUTES
+): Promise<{ expired: number; ids: string[] }> {
+  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000).toISOString();
+
+  const { data: stuck, error: findErr } = await supabase
+    .from("csv_uploads")
+    .select("id, filename, total_rows, processed_rows, skipped_rows, failed_rows, created_at, error_log")
+    .eq("status", "processing")
+    .lt("created_at", cutoff);
+
+  if (findErr) {
+    console.error("[watchdog] csv_uploads find failed:", findErr.message);
+    return { expired: 0, ids: [] };
+  }
+  if (!stuck || stuck.length === 0) return { expired: 0, ids: [] };
+
+  const now = new Date().toISOString();
+  const ids: string[] = [];
+
+  for (const row of stuck) {
+    const existingErrors = Array.isArray(row.error_log) ? row.error_log : [];
+    const note = {
+      row_index: null,
+      error: `Watchdog expired: status='processing' older than ${maxAgeMinutes} min. Likely client-side abandonment (tab closed, network, sleep). Inserted ${row.processed_rows ?? 0} of ${row.total_rows ?? "?"} rows. Safe to re-upload — upsert(external_id,source) will skip already-inserted rows.`,
+      at: now,
+    };
+
+    const { error: updErr } = await supabase
+      .from("csv_uploads")
+      .update({
+        status: "failed",
+        completed_at: now,
+        error_log: [...existingErrors, note].slice(-500),
+      })
+      .eq("id", row.id)
+      .eq("status", "processing"); // double-check to avoid racing finalize
+
+    if (updErr) {
+      console.error(`[watchdog] failed to expire ${row.id}:`, updErr.message);
+      continue;
+    }
+    ids.push(row.id);
+  }
+
+  if (ids.length > 0) {
+    console.log(`[watchdog] expired ${ids.length} stuck csv_uploads:`, ids.join(", "));
+  }
+  return { expired: ids.length, ids };
 }
 
 export async function handleUploadRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {

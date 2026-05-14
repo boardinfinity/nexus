@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase } from "../lib/supabase";
 import { AuthResult, requireReader, requirePermission, verifyAuth } from "../lib/auth";
 import { executePipeline, resolvePendingMEJobs } from "./pipelines";
+import { expireStuckUploads } from "./upload";
 
 // ── Compute next run time from frequency or cron expression ─────────────────
 function calculateNextRun(frequency: string, cronExpression?: string): string {
@@ -172,6 +173,12 @@ export async function handleSchedulerRoutes(
     const meResolve = await resolvePendingMEJobs().catch((e: any) => ({ resolved: 0, still_pending: 0, errors: [e.message] }));
     if (meResolve.resolved > 0 || meResolve.errors.length > 0) {
       console.log(`[scheduler] ME resolve: ${meResolve.resolved} resolved, ${meResolve.still_pending} pending, errors: ${meResolve.errors.length}`);
+    }
+
+    // Watchdog: auto-fail csv_uploads stuck in 'processing' (client-side abandonment)
+    const uploadWatch = await expireStuckUploads().catch((e: any) => ({ expired: 0, ids: [] as string[] }));
+    if (uploadWatch.expired > 0) {
+      console.log(`[scheduler] csv_upload watchdog: expired ${uploadWatch.expired} stuck uploads:`, uploadWatch.ids.join(", "));
     }
 
     // If there are more due schedules, self-trigger another tick after a delay
