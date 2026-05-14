@@ -12,6 +12,7 @@
  */
 import { useQuery } from "@tanstack/react-query";
 import { authFetch } from "@/lib/queryClient";
+import LiveJobsSection from "./college-dashboard-live-jobs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -378,6 +379,9 @@ export default function CollegeDashboard({ params, publicSlug }: Props) {
             </div>
           </CardContent>
         </Card>
+
+        {/* Live jobs section (timeline + mix) */}
+        <LiveJobsSection collegeId={params.id} slug={slug} />
 
         {/* Gap heatmap — full width */}
         <Card className="lg:col-span-2 border-slate-200">

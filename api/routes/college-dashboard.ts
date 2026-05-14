@@ -550,6 +550,151 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Live Jobs payload — Timeline + Mix (Phase 0 v0)
+// Queries jobs filtered by the college's `college_regions` row set
+// (one row per country_variant, with country_label as the canonical
+// bucket). Returns weekly timeline + 3 mix breakdowns + facets.
+// ─────────────────────────────────────────────────────────────────────
+async function buildLiveJobsPayload(college_id: string): Promise<any> {
+  // 1. Load this college's country variants
+  const { data: regionRows, error: regionsErr } = await supabase
+    .from("college_regions")
+    .select("country_variant, country_label, is_primary")
+    .eq("college_id", college_id);
+
+  if (regionsErr) {
+    throw new Error(`college_regions read failed: ${regionsErr.message}`);
+  }
+
+  const variants = (regionRows || []).map((r: any) => r.country_variant as string);
+  const variantToLabel = new Map<string, string>(
+    (regionRows || []).map((r: any) => [r.country_variant as string, r.country_label as string])
+  );
+  const countryLabels = Array.from(new Set((regionRows || []).map((r: any) => r.country_label as string)));
+
+  if (variants.length === 0) {
+    return {
+      view: "live_jobs",
+      college_id,
+      regions: [],
+      data_quality: "illustrative" as DataQuality,
+      note: "No regions configured for this college yet.",
+      timeline: { weeks: [], window: "all_time", total_jobs: 0 },
+      mix: { by_source: [], by_level: [], by_country: [] },
+      facets: { sources: [], levels: [], countries: [], total_jobs: 0, with_posted_at: 0 },
+    };
+  }
+
+  // 2. Pull every job in scope. We page through in 1000-row chunks because
+  //    Postgrest caps a single response at ~1000 rows. UAE/GCC currently
+  //    sits at ~9k rows so a few pages is fine; once it grows past ~25k
+  //    we should move this to a SQL RPC.
+  const PAGE = 1000;
+  let from = 0;
+  const allJobs: Array<{
+    posted_at: string | null;
+    source: string | null;
+    seniority_level: string | null;
+    location_country: string | null;
+  }> = [];
+  while (true) {
+    const { data: page, error: pageErr } = await supabase
+      .from("jobs")
+      .select("posted_at, source, seniority_level, location_country")
+      .in("location_country", variants)
+      .range(from, from + PAGE - 1);
+    if (pageErr) throw new Error(`jobs read failed: ${pageErr.message}`);
+    if (!page || page.length === 0) break;
+    allJobs.push(...(page as any[]));
+    if (page.length < PAGE) break;
+    from += PAGE;
+    if (from > 50000) break; // safety cap
+  }
+
+  const totalJobs = allJobs.length;
+  const withPostedAt = allJobs.filter((j) => !!j.posted_at).length;
+
+  // 3. Timeline — weekly buckets (Monday-anchored UTC). All-time.
+  const weekMap = new Map<string, { week: string; n: number; by_source: Record<string, number> }>();
+  for (const j of allJobs) {
+    if (!j.posted_at) continue;
+    const d = new Date(j.posted_at);
+    if (Number.isNaN(d.getTime())) continue;
+    // Anchor to Monday UTC
+    const day = d.getUTCDay(); // 0=Sun..6=Sat
+    const diff = (day === 0 ? -6 : 1 - day); // back to Monday
+    const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + diff));
+    const wk = monday.toISOString().slice(0, 10);
+    let bucket = weekMap.get(wk);
+    if (!bucket) {
+      bucket = { week: wk, n: 0, by_source: {} };
+      weekMap.set(wk, bucket);
+    }
+    bucket.n += 1;
+    const src = (j.source || "unknown").toString();
+    bucket.by_source[src] = (bucket.by_source[src] || 0) + 1;
+  }
+  const weeks = Array.from(weekMap.values()).sort((a, b) => a.week.localeCompare(b.week));
+
+  // 4. Mix — by source / by level / by country (canonical label).
+  const countBy = (rows: Array<string | null | undefined>, fallback: string) => {
+    const m = new Map<string, number>();
+    for (const r of rows) {
+      const k = (r && r.toString().trim()) || fallback;
+      m.set(k, (m.get(k) || 0) + 1);
+    }
+    return Array.from(m.entries())
+      .map(([key, n]) => ({ key, n }))
+      .sort((a, b) => b.n - a.n);
+  };
+
+  const by_source = countBy(allJobs.map((j) => j.source), "unknown");
+  const by_level = countBy(allJobs.map((j) => j.seniority_level), "Unspecified");
+  const by_country = countBy(
+    allJobs.map((j) => variantToLabel.get((j.location_country || "").trim()) || j.location_country),
+    "Unspecified"
+  );
+
+  // 5. Facets for future filters
+  const facets = {
+    sources: by_source.map((r) => r.key),
+    levels: by_level.map((r) => r.key),
+    countries: countryLabels,
+    total_jobs: totalJobs,
+    with_posted_at: withPostedAt,
+  };
+
+  // 6. Data quality — Timeline is "live_partial" because 13% of rows
+  //    have no posted_at and pre-March-2026 coverage is thinner.
+  const timelineQuality: DataQuality =
+    withPostedAt / Math.max(totalJobs, 1) >= 0.95 ? "live" : "live_partial";
+  const timelineNote =
+    timelineQuality === "live_partial"
+      ? `${Math.round((withPostedAt / Math.max(totalJobs, 1)) * 100)}% of jobs have a posted date; volume before mid-March 2026 reflects collection ramp, not market trend.`
+      : undefined;
+
+  return {
+    view: "live_jobs",
+    college_id,
+    regions: regionRows || [],
+    timeline: {
+      data_quality: timelineQuality,
+      note: timelineNote,
+      window: "all_time",
+      weeks,
+      total_jobs: withPostedAt,
+    },
+    mix: {
+      data_quality: "live" as DataQuality,
+      by_source,
+      by_level,
+      by_country,
+    },
+    facets,
+  };
+}
+
 // ── Route handler (authenticated) ────────────────────────────────────
 export async function handleCollegeDashboardRoutes(
   path: string,
@@ -557,6 +702,19 @@ export async function handleCollegeDashboardRoutes(
   res: VercelResponse,
   auth: AuthResult
 ): Promise<VercelResponse | undefined> {
+  // GET /college-dashboard/:id/jobs
+  const jobsMatch = path.match(/^\/college-dashboard\/([0-9a-f-]{36})\/jobs$/i);
+  if (jobsMatch && req.method === "GET") {
+    if (!requireReader(auth, "college_dashboard", res)) return;
+    try {
+      const payload = await buildLiveJobsPayload(jobsMatch[1]);
+      return res.json(payload);
+    } catch (e: any) {
+      console.error("[college-dashboard jobs] error:", e);
+      return res.status(500).json({ error: e?.message || "Failed to build live jobs" });
+    }
+  }
+
   // GET /college-dashboard/:id
   const match = path.match(/^\/college-dashboard\/([0-9a-f-]{36})$/i);
   if (match && req.method === "GET") {
@@ -578,6 +736,24 @@ export async function handlePublicCollegeDashboardRoutes(
   req: VercelRequest,
   res: VercelResponse
 ): Promise<VercelResponse | undefined> {
+  // GET /public/college-dashboard/by-slug/:slug/jobs
+  const jobsMatch = path.match(/^\/public\/college-dashboard\/by-slug\/([a-z0-9-]{6,64})\/jobs$/i);
+  if (jobsMatch && req.method === "GET") {
+    const slug = jobsMatch[1].toLowerCase();
+    const collegeId = DEMO_SLUGS[slug];
+    if (!collegeId) {
+      return res.status(404).json({ error: "Unknown share token" });
+    }
+    try {
+      const payload = await buildLiveJobsPayload(collegeId);
+      payload.slug = slug;
+      return res.json(payload);
+    } catch (e: any) {
+      console.error("[public college-dashboard jobs] error:", e);
+      return res.status(500).json({ error: e?.message || "Failed to build live jobs" });
+    }
+  }
+
   // GET /public/college-dashboard/by-slug/:slug
   const match = path.match(/^\/public\/college-dashboard\/by-slug\/([a-z0-9-]{6,64})$/i);
   if (match && req.method === "GET") {
