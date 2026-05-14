@@ -5,6 +5,7 @@ import { PipelineTrigger } from "@/components/pipeline-trigger";
 import { RunHistory } from "./run-history";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+import { authFetch } from "@/lib/queryClient";
 
 interface DrainStatus {
   drain_active: boolean;
@@ -21,7 +22,7 @@ function JDAutoDrain() {
 
   const fetchStatus = useCallback(async () => {
     try {
-      const res = await fetch("/api/pipelines/jd/drain-status");
+      const res = await authFetch("/api/pipelines/jd/drain-status");
       if (res.ok) setStatus(await res.json());
     } catch {
       // silent
@@ -46,9 +47,8 @@ function JDAutoDrain() {
   const startDrain = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/pipelines/jd/start-drain", {
+      const res = await authFetch("/api/pipelines/jd/start-drain", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ batch_size: 40 }),
       });
       const data = await res.json();
@@ -65,7 +65,7 @@ function JDAutoDrain() {
   const stopDrain = async () => {
     setLoading(true);
     try {
-      const res = await fetch("/api/pipelines/jd/stop-drain", { method: "POST" });
+      const res = await authFetch("/api/pipelines/jd/stop-drain", { method: "POST" });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to stop drain");
       toast({ title: "Drain stopping", description: "Current batch will finish, then the chain halts." });
