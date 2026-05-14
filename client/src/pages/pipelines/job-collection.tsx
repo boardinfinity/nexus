@@ -10,8 +10,9 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Play, Loader2, CalendarClock, Link2, Globe, X, Search, Info, ChevronDown } from "lucide-react";
+import { Play, Loader2, CalendarClock, Link2, Globe, X, Search, Info, ChevronDown, Linkedin, MapPin, Briefcase } from "lucide-react";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useToast } from "@/hooks/use-toast";
 import { RunHistory } from "./run-history";
@@ -1340,35 +1341,105 @@ function NaukriGulfForm() {
   );
 }
 
+// ── Tab metadata ─────────────────────────────────────────────────────────────
+
+const TABS = [
+  {
+    value: "linkedin",
+    label: "LinkedIn",
+    region: "India & Global",
+    regionColor: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+    description: "LinkedIn Jobs via Apify — best for India, global tech roles",
+    icon: <Linkedin className="h-3.5 w-3.5" />,
+    pipelineType: "linkedin_jobs",
+  },
+  {
+    value: "google",
+    label: "Google Jobs",
+    region: "India & Global",
+    regionColor: "bg-blue-500/10 text-blue-600 dark:text-blue-400",
+    description: "Google Jobs search — broad coverage, fast, low cost",
+    icon: <Search className="h-3.5 w-3.5" />,
+    pipelineType: "google_jobs",
+  },
+  {
+    value: "bayt",
+    label: "Bayt.com",
+    region: "GCC / MENA",
+    regionColor: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
+    description: "Bayt.com — #1 MENA job board. UAE, Saudi, Qatar, Kuwait, Bahrain, Oman",
+    icon: <Globe className="h-3.5 w-3.5" />,
+    pipelineType: "bayt_jobs",
+  },
+  {
+    value: "naukrigulf",
+    label: "NaukriGulf",
+    region: "GCC / MENA",
+    regionColor: "bg-orange-500/10 text-orange-600 dark:text-orange-400",
+    description: "NaukriGulf — strong UAE & Saudi coverage, fast actor, contact data bonus",
+    icon: <MapPin className="h-3.5 w-3.5" />,
+    pipelineType: "naukrigulf_jobs",
+  },
+] as const;
+
 // ── Page layout ──────────────────────────────────────────────────────────────
 
 export default function JobCollection() {
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Header */}
       <div>
         <Link href="/pipelines"><a className="text-xs text-muted-foreground hover:text-foreground">← Pipelines</a></Link>
         <h1 className="text-2xl font-bold mt-1">Job Collection</h1>
-        <p className="text-sm text-muted-foreground">Configure and run job scrapers — LinkedIn, Google, Bayt.com, NaukriGulf</p>
+        <p className="text-sm text-muted-foreground">Configure and run job scrapers across 4 sources</p>
       </div>
 
-      {/* India + Global */}
-      <div>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">India & Global</h2>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <LinkedInForm />
-          <GoogleJobsForm />
+      {/* Source pills summary */}
+      <div className="flex flex-wrap gap-2">
+        {TABS.map(tab => (
+          <div key={tab.value} className="flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs">
+            {tab.icon}
+            <span className="font-medium">{tab.label}</span>
+            <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-medium ${tab.regionColor}`}>{tab.region}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabbed forms */}
+      <Tabs defaultValue="linkedin" className="w-full">
+        <TabsList className="grid w-full grid-cols-4 h-auto p-1">
+          {TABS.map(tab => (
+            <TabsTrigger
+              key={tab.value}
+              value={tab.value}
+              className="flex flex-col items-center gap-0.5 py-2 px-1 text-xs data-[state=active]:shadow-sm"
+            >
+              <div className="flex items-center gap-1.5">
+                {tab.icon}
+                <span className="font-medium">{tab.label}</span>
+              </div>
+              <span className={`rounded-full px-1.5 py-0.5 text-[10px] ${tab.regionColor}`}>{tab.region}</span>
+            </TabsTrigger>
+          ))}
+        </TabsList>
+
+        <div className="mt-4">
+          <TabsContent value="linkedin" className="mt-0">
+            <LinkedInForm />
+          </TabsContent>
+          <TabsContent value="google" className="mt-0">
+            <GoogleJobsForm />
+          </TabsContent>
+          <TabsContent value="bayt" className="mt-0">
+            <BaytForm />
+          </TabsContent>
+          <TabsContent value="naukrigulf" className="mt-0">
+            <NaukriGulfForm />
+          </TabsContent>
         </div>
-      </div>
+      </Tabs>
 
-      {/* Middle East */}
-      <div>
-        <h2 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-3">Middle East (MENA)</h2>
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-          <BaytForm />
-          <NaukriGulfForm />
-        </div>
-      </div>
-
+      {/* Unified run history across all 4 sources */}
       <RunHistory pipelineTypes={["linkedin_jobs", "google_jobs", "bayt_jobs", "naukrigulf_jobs"]} title="Job Collection Runs" />
     </div>
   );

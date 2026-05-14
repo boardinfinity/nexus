@@ -1870,8 +1870,8 @@ async function executeLinkedInJobs(runId: string, config: any) {
   });
   apifyRuns.push(...(await Promise.all(launchPromises)));
 
-  // Poll until all runs complete (max 4 minutes)
-  const MAX_WAIT = 240000;
+  // Poll until all runs complete (max 10 minutes — supports up to 30 roles)
+  const MAX_WAIT = 600000;
   const startTime = Date.now();
   while (Date.now() - startTime < MAX_WAIT) {
     let allDone = true;
@@ -1998,8 +1998,8 @@ async function executeGoogleJobs(runId: string, config: any) {
 
   const apifyRuns = (await Promise.all(launchPromises)).filter((r: any) => r.runId);
 
-  // Poll all runs until done (max 4 minutes)
-  const MAX_WAIT = 240000;
+  // Poll all runs until done (max 10 minutes — supports 20 queries in parallel)
+  const MAX_WAIT = 600000;
   const startTime = Date.now();
   
   while (Date.now() - startTime < MAX_WAIT) {
@@ -3741,13 +3741,14 @@ async function executeBaytJobs(runId: string, config: any): Promise<void> {
     runs = [{ keywords: config?.keywords || config?.search_keywords || "software engineer" }];
   }
 
-  // Persist run metadata
+  // Persist run metadata (launch phase — apify run IDs added after launch)
   await supabase.from("pipeline_runs").update({
     config: {
       ...config,
       _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
       _provider: "apify",
       _actor: "blackfalcondata/bayt-scraper",
+      _phase: "launched",
     },
   }).eq("id", runId);
 
@@ -3768,7 +3769,7 @@ async function executeBaytJobs(runId: string, config: any): Promise<void> {
         maxResults: parseInt(config?.limit) || 200,
         datePosted,                       // actor field, not daysOld
         includeDetails: true,             // actor field is "includeDetails", not "fetchDetails"
-        incrementalMode: config?.incremental !== false,
+        incrementalMode: config?.incremental === true,  // default false until baseline established
         stateKey: `bayt-${countryCode.toLowerCase()}-${(run.roleName || run.keywords).toLowerCase().replace(/[^a-z0-9]/g, "-").substring(0, 40)}`,
       };
       if (config?.career_level) input.careerLevel = config.career_level;
@@ -3790,37 +3791,31 @@ async function executeBaytJobs(runId: string, config: any): Promise<void> {
     }
   }));
 
-  if (apifyRuns.filter(r => r.runId).length === 0) {
+  const launchedRuns = apifyRuns.filter(r => r.runId);
+  if (launchedRuns.length === 0) {
     throw new Error(`[executeBaytJobs] No Apify runs launched. Roles: ${runs.length}, Sample keywords: ${runs[0]?.keywords?.substring(0, 100)}`);
   }
 
-  // Poll (max 5 min — Bayt detail fetch is slower than LinkedIn)
-  const MAX_WAIT = 300000;
-  const start = Date.now();
-  while (Date.now() - start < MAX_WAIT) {
-    let allDone = true;
-    for (const r of apifyRuns) {
-      if (!r.runId || r._done) continue;
-      try {
-        const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${r.runId}?token=${APIFY_API_KEY}`);
-        const d = await pollRes.json();
-        const st = d.data?.status;
-        if (["SUCCEEDED", "FAILED", "ABORTED"].includes(st)) { r._done = true; r._status = st; }
-        else allDone = false;
-      } catch { allDone = false; }
-    }
-    if (allDone) break;
-    await new Promise(res => setTimeout(res, 6000));
-  }
-
-  // Process succeeded runs
-  for (const r of apifyRuns) {
-    if (r._status === "SUCCEEDED" && r.datasetId) {
-      await processMEJobResults(runId, r.datasetId, "bayt.com", config, {
-        roleId: r.roleId, roleName: r.roleName, synonyms: r.synonyms,
-      });
-    }
-  }
+  // Store apifyRunIds so the scheduler tick can resolve them asynchronously.
+  // This decouples the poll from the Vercel 300s function lifetime — critical for 20K scale.
+  await supabase.from("pipeline_runs").update({
+    config: {
+      ...config,
+      _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
+      _provider: "apify",
+      _actor: "blackfalcondata/bayt-scraper",
+      _phase: "pending_resolve",
+      _apify_run_ids: launchedRuns.map(r => ({
+        runId: r.runId,
+        datasetId: r.datasetId,
+        roleId: r.roleId,
+        roleName: r.roleName,
+        synonyms: r.synonyms || [],
+      })),
+      _launched_at: new Date().toISOString(),
+    },
+  }).eq("id", runId);
+  // Scheduler tick will call resolvePendingMEJobs() to poll + process results.
 }
 
 /**
@@ -3859,6 +3854,7 @@ async function executeNaukriGulfJobs(runId: string, config: any): Promise<void> 
       _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
       _provider: "apify",
       _actor: "blackfalcondata/naukrigulf-scraper",
+      _phase: "launched",
     },
   }).eq("id", runId);
 
@@ -3871,7 +3867,7 @@ async function executeNaukriGulfJobs(runId: string, config: any): Promise<void> 
         location,
         maxResults: parseInt(config?.limit) || 200,
         includeDetails: true,
-        incrementalMode: config?.incremental !== false,
+        incrementalMode: config?.incremental === true,  // default false until baseline established
         stateKey: `ng-${location.toLowerCase().replace(/[^a-z0-9]/g, "-")}-${(run.roleName || run.keywords).toLowerCase().replace(/[^a-z0-9]/g, "-").substring(0, 40)}`,
         proxyConfiguration: { useApifyProxy: true, apifyProxyGroups: ["RESIDENTIAL"] },
       };
@@ -3892,34 +3888,123 @@ async function executeNaukriGulfJobs(runId: string, config: any): Promise<void> 
     }
   }));
 
-  if (apifyRuns.filter(r => r.runId).length === 0) {
+  const launchedRuns = apifyRuns.filter(r => r.runId);
+  if (launchedRuns.length === 0) {
     throw new Error(`[executeNaukriGulfJobs] No Apify runs launched. Roles: ${runs.length}, Sample query: ${runs[0]?.keywords?.substring(0, 100)}`);
   }
 
-  // Poll (max 5 min)
-  const MAX_WAIT = 300000;
-  const start = Date.now();
-  while (Date.now() - start < MAX_WAIT) {
+  // Store apifyRunIds for async resolution by scheduler tick.
+  await supabase.from("pipeline_runs").update({
+    config: {
+      ...config,
+      _job_roles: runs.map(r => ({ id: r.roleId, name: r.roleName })),
+      _provider: "apify",
+      _actor: "blackfalcondata/naukrigulf-scraper",
+      _phase: "pending_resolve",
+      _apify_run_ids: launchedRuns.map(r => ({
+        runId: r.runId,
+        datasetId: r.datasetId,
+        roleId: r.roleId,
+        roleName: r.roleName,
+        synonyms: r.synonyms || [],
+      })),
+      _launched_at: new Date().toISOString(),
+    },
+  }).eq("id", runId);
+  // Scheduler tick will call resolvePendingMEJobs() to poll + process results.
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ASYNC RESOLVE: Called by scheduler tick to poll + process pending ME runs.
+// Handles both bayt_jobs and naukrigulf_jobs pipeline types.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function resolvePendingMEJobs(): Promise<{ resolved: number; still_pending: number; errors: string[] }> {
+  const APIFY_API_KEY = process.env.APIFY_API_KEY;
+  if (!APIFY_API_KEY) return { resolved: 0, still_pending: 0, errors: ["No APIFY_API_KEY"] };
+
+  // Find all ME pipeline runs in pending_resolve state (launched > 90s ago)
+  const cutoff = new Date(Date.now() - 90_000).toISOString();
+  const { data: pendingRuns, error } = await supabase
+    .from("pipeline_runs")
+    .select("id, pipeline_type, config, started_at")
+    .in("pipeline_type", ["bayt_jobs", "naukrigulf_jobs"])
+    .eq("status", "running")
+    .lte("started_at", cutoff);
+
+  if (error || !pendingRuns || pendingRuns.length === 0) {
+    return { resolved: 0, still_pending: 0, errors: error ? [error.message] : [] };
+  }
+
+  const pendingPhase = pendingRuns.filter((r: any) => r.config?._phase === "pending_resolve");
+  let resolved = 0, still_pending = 0;
+  const errors: string[] = [];
+
+  for (const run of pendingPhase) {
+    const apifyRunIds: any[] = run.config?._apify_run_ids || [];
+    if (apifyRunIds.length === 0) continue;
+
     let allDone = true;
-    for (const r of apifyRuns) {
+    for (const r of apifyRunIds) {
       if (!r.runId || r._done) continue;
       try {
         const pollRes = await fetch(`https://api.apify.com/v2/actor-runs/${r.runId}?token=${APIFY_API_KEY}`);
         const d = await pollRes.json();
         const st = d.data?.status;
-        if (["SUCCEEDED", "FAILED", "ABORTED"].includes(st)) { r._done = true; r._status = st; }
-        else allDone = false;
-      } catch { allDone = false; }
+        if (["SUCCEEDED", "FAILED", "ABORTED", "TIMED-OUT"].includes(st)) {
+          r._done = true; r._status = st;
+        } else {
+          allDone = false;
+        }
+      } catch (e: any) {
+        allDone = false;
+        errors.push(`Poll error for run ${run.id}: ${e.message}`);
+      }
     }
-    if (allDone) break;
-    await new Promise(res => setTimeout(res, 6000));
+
+    if (!allDone) {
+      // Check if run has been pending too long (> 30 min = actor likely failed)
+      const launchedAt = run.config?._launched_at ? new Date(run.config._launched_at) : new Date(run.started_at);
+      const ageMins = (Date.now() - launchedAt.getTime()) / 60_000;
+      if (ageMins > 30) {
+        await supabase.from("pipeline_runs").update({
+          status: "failed",
+          error_message: `ME pipeline timed out: Apify runs still pending after ${Math.round(ageMins)} minutes`,
+          completed_at: new Date().toISOString(),
+        }).eq("id", run.id);
+        errors.push(`Run ${run.id} timed out after ${Math.round(ageMins)} min`);
+      } else {
+        still_pending++;
+      }
+      continue;
+    }
+
+    // All Apify runs resolved — process the succeeded ones
+    const source = run.pipeline_type === "bayt_jobs" ? "bayt.com" : "naukrigulf.com";
+    for (const r of apifyRunIds) {
+      if (r._status === "SUCCEEDED" && r.datasetId) {
+        try {
+          await processMEJobResults(run.id, r.datasetId, source as "bayt.com" | "naukrigulf.com", run.config, {
+            roleId: r.roleId, roleName: r.roleName, synonyms: r.synonyms || [],
+          });
+        } catch (e: any) {
+          errors.push(`processMEJobResults error for run ${run.id}: ${e.message}`);
+        }
+      }
+    }
+
+    // processMEJobResults marks the run completed — if none succeeded, mark failed
+    const succeededCount = apifyRunIds.filter((r: any) => r._status === "SUCCEEDED").length;
+    if (succeededCount === 0) {
+      await supabase.from("pipeline_runs").update({
+        status: "failed",
+        error_message: `All ${apifyRunIds.length} Apify runs failed/aborted`,
+        completed_at: new Date().toISOString(),
+      }).eq("id", run.id);
+    }
+
+    resolved++;
   }
 
-  for (const r of apifyRuns) {
-    if (r._status === "SUCCEEDED" && r.datasetId) {
-      await processMEJobResults(runId, r.datasetId, "naukrigulf.com", config, {
-        roleId: r.roleId, roleName: r.roleName, synonyms: r.synonyms,
-      });
-    }
-  }
+  return { resolved, still_pending, errors };
 }

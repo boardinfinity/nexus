@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase } from "../lib/supabase";
 import { AuthResult, requireReader, requirePermission, verifyAuth } from "../lib/auth";
-import { executePipeline } from "./pipelines";
+import { executePipeline, resolvePendingMEJobs } from "./pipelines";
 
 // ── Compute next run time from frequency or cron expression ─────────────────
 function calculateNextRun(frequency: string, cronExpression?: string): string {
@@ -167,6 +167,12 @@ export async function handleSchedulerRoutes(
 
     // Auto-chain jd_enrichment if needed
     await checkAndChainEnrichment().catch(console.error);
+
+    // Resolve pending ME (Bayt / NaukriGulf) Apify runs from prior ticks
+    const meResolve = await resolvePendingMEJobs().catch((e: any) => ({ resolved: 0, still_pending: 0, errors: [e.message] }));
+    if (meResolve.resolved > 0 || meResolve.errors.length > 0) {
+      console.log(`[scheduler] ME resolve: ${meResolve.resolved} resolved, ${meResolve.still_pending} pending, errors: ${meResolve.errors.length}`);
+    }
 
     // If there are more due schedules, self-trigger another tick after a delay
     const remaining = (dueSchedules || []).length - toProcess.length;

@@ -371,7 +371,22 @@ export function mapBaytJob(
     seniority_level: mapBaytCareerLevel(item.careerLevel || null),
     salary_min: typeof item.salaryMin === "number" ? item.salaryMin : null,
     salary_max: typeof item.salaryMax === "number" ? item.salaryMax : null,
-    salary_currency: item.salaryCurrency || null,
+    // Parse currency from actor field; fall back to prefix of salary_text (actor sometimes returns USD for AED salaries)
+    salary_currency: (() => {
+      const raw = item.salaryCurrencyCode || item.salaryCurrency || null;
+      const text = item.salaryText || "";
+      if (raw && raw.length === 3 && raw !== "USD") return raw;  // trust non-USD 3-letter code
+      if (text.startsWith("AED")) return "AED";
+      if (text.startsWith("SAR")) return "SAR";
+      if (text.startsWith("QAR")) return "QAR";
+      if (text.startsWith("KWD")) return "KWD";
+      if (text.startsWith("BHD")) return "BHD";
+      if (text.startsWith("OMR")) return "OMR";
+      if (text.startsWith("EGP")) return "EGP";
+      if (text.startsWith("JOD")) return "JOD";
+      if (text.startsWith("USD") || text.startsWith("$")) return "USD";
+      return raw;  // return whatever actor gave us as last resort
+    })(),
     salary_unit: item.salaryPeriod || null,
     salary_text: item.salaryText || null,
     is_remote: typeof item.isRemote === "boolean" ? item.isRemote : null,
