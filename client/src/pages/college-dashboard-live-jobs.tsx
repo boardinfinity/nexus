@@ -1,36 +1,54 @@
 /**
- * College Dashboard — Live Jobs section (Phase 0 v0)
+ * College Dashboard — Live Jobs section
  *
  * Three tabs:
- *   - Recent          placeholder ("Coming soon")
+ *   - Recent          latest 50 postings with apply links
  *   - Timeline        weekly volume, all-time, stacked by source
  *   - Mix             three horizontal bar charts (source / level / country)
+ *                     bars are clickable → filter applies to all three tabs
  *
  * Reads from:
  *   - GET /api/college-dashboard/:id/jobs              (authenticated)
  *   - GET /api/public/college-dashboard/by-slug/:slug/jobs (public demo)
+ *   Filters: ?source=&country=&level=
  *
  * Honest data quality:
- *   - Timeline carries its own quality chip; today it is "live_partial"
- *     because ~13% of UAE/GCC jobs have no posted_at, and volume before
- *     mid-March 2026 reflects collection ramp, not market trend.
+ *   - Timeline chip auto-set by backend ("live_partial" while <95% of rows
+ *     have posted_at, with a footnote about collection ramp).
  *   - Mix is "live" — counted from raw rows.
+ *   - Seniority levels are rolled up (L0–L5 collapsed into the canonical 6).
+ *     Unspecified is suppressed from the chart with a footnote.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { authFetch } from "@/lib/queryClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, Briefcase, BarChart3, LineChart, CalendarClock } from "lucide-react";
+import {
+  Loader2, Briefcase, BarChart3, LineChart, CalendarClock, ExternalLink, X, MapPin,
+} from "lucide-react";
 
 type DataQuality = "live" | "live_partial" | "illustrative";
 
 interface MixRow { key: string; n: number; }
 
+interface RecentJob {
+  id: string;
+  title: string | null;
+  company_name: string | null;
+  posted_at: string | null;
+  source: string | null;
+  source_url: string | null;
+  seniority_level: string | null;
+  country_label: string | null;
+  location_city: string | null;
+}
+
 interface LiveJobsPayload {
   view: "live_jobs";
   college_id: string;
   regions: Array<{ country_variant: string; country_label: string; is_primary: boolean }>;
+  filters: { source?: string; country?: string; level?: string };
   timeline: {
     data_quality: DataQuality;
     note?: string;
@@ -43,13 +61,18 @@ interface LiveJobsPayload {
     by_source: MixRow[];
     by_level: MixRow[];
     by_country: MixRow[];
+    unspecified_level_n: number;
   };
+  recent: RecentJob[];
   facets: {
     sources: string[];
     levels: string[];
     countries: string[];
     total_jobs: number;
     with_posted_at: number;
+    filtered_total_jobs?: number;
+    filtered_with_posted_at?: number;
+    unspecified_level_n?: number;
   };
 }
 
@@ -70,7 +93,6 @@ function num(n: number) {
   return new Intl.NumberFormat("en-IN").format(n || 0);
 }
 
-// Friendly source labels
 const SOURCE_LABELS: Record<string, string> = {
   linkedin: "LinkedIn",
   google_jobs: "Google Jobs",
@@ -80,11 +102,8 @@ const SOURCE_LABELS: Record<string, string> = {
   "bayt.com": "Bayt",
   unknown: "Unknown",
 };
-function prettySource(s: string) {
-  return SOURCE_LABELS[s] || s;
-}
+function prettySource(s: string) { return SOURCE_LABELS[s] || s; }
 
-// Friendly level labels
 const LEVEL_LABELS: Record<string, string> = {
   entry_level: "Entry level",
   associate: "Associate",
@@ -92,83 +111,105 @@ const LEVEL_LABELS: Record<string, string> = {
   director: "Director",
   executive: "Executive",
   internship: "Internship",
+  other: "Other",
   Unspecified: "Unspecified",
 };
-function prettyLevel(s: string) {
-  return LEVEL_LABELS[s] || s;
-}
+function prettyLevel(s: string) { return LEVEL_LABELS[s] || s; }
 
-// Stable color palette for the timeline stack
 const SOURCE_COLORS = [
-  "#2563eb", // blue-600
-  "#10b981", // emerald-500
-  "#f59e0b", // amber-500
-  "#7c3aed", // violet-600
-  "#ef4444", // red-500
-  "#0891b2", // cyan-600
-  "#84cc16", // lime-500
-  "#a855f7", // purple-500
+  "#2563eb", "#10b981", "#f59e0b", "#7c3aed", "#ef4444", "#0891b2", "#84cc16", "#a855f7",
 ];
 
-// ── Horizontal bar chart (small, CSS-only) ───────────────────────────
-function BarRows({ rows, prettify, max = 8 }: { rows: MixRow[]; prettify?: (k: string) => string; max?: number }) {
+function postedAgo(iso: string | null): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (!t) return "—";
+  const days = Math.floor((Date.now() - t) / 86_400_000);
+  if (days < 0) return "today";
+  if (days === 0) return "today";
+  if (days === 1) return "1d ago";
+  if (days < 30) return `${days}d ago`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}mo ago`;
+  return `${Math.floor(months / 12)}y ago`;
+}
+
+// ── Horizontal bar chart, clickable ──────────────────────────────────
+function BarRows({
+  rows, prettify, max = 8, activeKey, onToggle, ariaLabel,
+}: {
+  rows: MixRow[];
+  prettify?: (k: string) => string;
+  max?: number;
+  activeKey?: string;
+  onToggle?: (key: string) => void;
+  ariaLabel: string;
+}) {
   const shown = rows.slice(0, max);
   const top = shown[0]?.n || 1;
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1.5" aria-label={ariaLabel}>
       {shown.map((r, idx) => {
         const pct = (r.n / top) * 100;
+        const isActive = activeKey === r.key;
+        const isDimmed = !!activeKey && !isActive;
+        const interactive = !!onToggle;
         return (
-          <div key={r.key + idx} className="flex items-center gap-2 text-sm">
-            <span className="w-32 text-slate-700 truncate" title={prettify ? prettify(r.key) : r.key}>
+          <button
+            type="button"
+            key={r.key + idx}
+            onClick={() => onToggle && onToggle(r.key)}
+            disabled={!interactive}
+            className={
+              "w-full flex items-center gap-2 text-sm rounded px-1 py-0.5 transition-colors text-left " +
+              (interactive ? "hover:bg-slate-50 cursor-pointer " : "cursor-default ") +
+              (isDimmed ? "opacity-50 " : "")
+            }
+          >
+            <span className={`w-32 truncate ${isActive ? "text-blue-700 font-medium" : "text-slate-700"}`} title={prettify ? prettify(r.key) : r.key}>
               {prettify ? prettify(r.key) : r.key}
             </span>
             <div className="flex-1 h-2 bg-slate-100 rounded-full overflow-hidden">
-              <div className="h-full bg-blue-500" style={{ width: `${pct}%` }} />
+              <div className={`h-full ${isActive ? "bg-blue-700" : "bg-blue-500"}`} style={{ width: `${pct}%` }} />
             </div>
-            <span className="w-14 text-right text-slate-600 tabular-nums">{num(r.n)}</span>
-          </div>
+            <span className={`w-14 text-right tabular-nums ${isActive ? "text-blue-700 font-medium" : "text-slate-600"}`}>
+              {num(r.n)}
+            </span>
+          </button>
         );
       })}
       {rows.length === 0 && (
-        <p className="text-xs text-slate-500">No data.</p>
+        <p className="text-xs text-slate-500 px-1">No data.</p>
       )}
     </div>
   );
 }
 
 // ── Stacked weekly timeline (SVG) ────────────────────────────────────
-function TimelineChart({ weeks, sources }: { weeks: LiveJobsPayload["timeline"]["weeks"]; sources: string[] }) {
+function TimelineChart({ weeks, sources, activeSource }: {
+  weeks: LiveJobsPayload["timeline"]["weeks"];
+  sources: string[];
+  activeSource?: string;
+}) {
   if (weeks.length === 0) {
     return <p className="text-sm text-slate-500">No weekly volume to plot yet.</p>;
   }
-  // Layout
-  const W = 760;
-  const H = 220;
-  const padL = 36;
-  const padR = 12;
-  const padT = 10;
-  const padB = 28;
+  const W = 760, H = 220, padL = 36, padR = 12, padT = 10, padB = 28;
   const plotW = W - padL - padR;
   const plotH = H - padT - padB;
-
   const maxN = Math.max(1, ...weeks.map((w) => w.n));
   const barW = Math.max(2, Math.floor(plotW / weeks.length) - 1);
-
-  // Top 6 sources globally; everything else becomes "Other"
   const topSources = sources.slice(0, 6);
   const sourceColor = (s: string) => SOURCE_COLORS[topSources.indexOf(s) % SOURCE_COLORS.length] || "#94a3b8";
-
-  // Y axis ticks (4)
   const yTicks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(maxN * t));
-
-  // X axis labels: first, middle, last
   const labelIdx = [0, Math.floor(weeks.length / 2), weeks.length - 1];
+
+  // Legend list: when a source filter is active, only that source remains.
+  const legendSources = activeSource ? [activeSource] : topSources;
 
   return (
     <div className="w-full overflow-x-auto">
       <svg viewBox={`0 0 ${W} ${H}`} width="100%" preserveAspectRatio="none" style={{ height: H }}>
-        {/* Y grid + ticks */}
         {yTicks.map((tv, i) => {
           const y = padT + plotH - (tv / maxN) * plotH;
           return (
@@ -178,7 +219,6 @@ function TimelineChart({ weeks, sources }: { weeks: LiveJobsPayload["timeline"][
             </g>
           );
         })}
-        {/* Bars */}
         {weeks.map((w, idx) => {
           const x = padL + idx * (barW + 1);
           let yCursor = padT + plotH;
@@ -210,7 +250,6 @@ function TimelineChart({ weeks, sources }: { weeks: LiveJobsPayload["timeline"][
             </g>
           );
         })}
-        {/* X labels */}
         {labelIdx.map((idx, i) => {
           if (idx < 0 || idx >= weeks.length) return null;
           const x = padL + idx * (barW + 1) + barW / 2;
@@ -221,19 +260,76 @@ function TimelineChart({ weeks, sources }: { weeks: LiveJobsPayload["timeline"][
           );
         })}
       </svg>
-      {/* Legend */}
       <div className="flex flex-wrap items-center gap-3 mt-2 text-[11px] text-slate-600">
-        {topSources.map((s) => (
+        {legendSources.map((s) => (
           <span key={s} className="inline-flex items-center gap-1.5">
             <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: sourceColor(s) }} />
             {prettySource(s)}
           </span>
         ))}
-        <span className="inline-flex items-center gap-1.5">
-          <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: "#cbd5e1" }} />
-          Other
-        </span>
+        {!activeSource && (
+          <span className="inline-flex items-center gap-1.5">
+            <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: "#cbd5e1" }} />
+            Other
+          </span>
+        )}
       </div>
+    </div>
+  );
+}
+
+// ── Recent feed list ─────────────────────────────────────────────────
+function RecentList({ jobs }: { jobs: RecentJob[] }) {
+  if (jobs.length === 0) {
+    return (
+      <div className="py-10 text-center border border-dashed border-slate-200 rounded-md bg-slate-50/60">
+        <p className="text-sm text-slate-600">No matching postings.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="border border-slate-200 rounded-md max-h-[420px] overflow-y-auto divide-y divide-slate-100">
+      {jobs.map((j) => {
+        const loc = [j.location_city, j.country_label].filter(Boolean).join(", ");
+        return (
+          <div key={j.id} className="px-3 py-2.5 hover:bg-slate-50 flex items-start gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h4 className="text-sm font-medium text-slate-800 truncate" title={j.title || ""}>
+                  {j.title || "Untitled"}
+                </h4>
+                {j.seniority_level && (
+                  <Badge variant="outline" className="text-[10px] font-normal text-slate-600 border-slate-200">
+                    {prettyLevel(j.seniority_level)}
+                  </Badge>
+                )}
+              </div>
+              <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-500 flex-wrap">
+                <span className="font-medium text-slate-600">{j.company_name || "—"}</span>
+                {loc && (
+                  <span className="inline-flex items-center gap-1">
+                    <MapPin className="h-3 w-3" /> {loc}
+                  </span>
+                )}
+                <span>· {postedAgo(j.posted_at)}</span>
+                {j.source && (
+                  <span className="text-slate-400">· {prettySource(j.source)}</span>
+                )}
+              </div>
+            </div>
+            {j.source_url && (
+              <a
+                href={j.source_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="shrink-0 inline-flex items-center gap-1 text-xs font-medium text-blue-600 hover:text-blue-800 px-2 py-1 rounded border border-blue-200 bg-blue-50/40"
+              >
+                Apply <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -241,23 +337,34 @@ function TimelineChart({ weeks, sources }: { weeks: LiveJobsPayload["timeline"][
 // ── Section component ────────────────────────────────────────────────
 interface Props {
   collegeId?: string;
-  slug?: string; // public demo
+  slug?: string;
 }
 
 type Tab = "recent" | "timeline" | "mix";
+interface Filters { source?: string; country?: string; level?: string; }
 
 export default function LiveJobsSection({ collegeId, slug }: Props) {
   const [tab, setTab] = useState<Tab>("timeline");
+  const [filters, setFilters] = useState<Filters>({});
 
   const isPublic = Boolean(slug);
-  const url = isPublic
+  const baseUrl = isPublic
     ? `/api/public/college-dashboard/by-slug/${slug}/jobs`
     : `/api/college-dashboard/${collegeId}/jobs`;
 
-  const { data, isLoading, error } = useQuery<LiveJobsPayload>({
-    queryKey: [url],
+  const queryUrl = useMemo(() => {
+    const qs = new URLSearchParams();
+    if (filters.source) qs.set("source", filters.source);
+    if (filters.country) qs.set("country", filters.country);
+    if (filters.level) qs.set("level", filters.level);
+    const s = qs.toString();
+    return s ? `${baseUrl}?${s}` : baseUrl;
+  }, [baseUrl, filters]);
+
+  const { data, isLoading, isFetching, error } = useQuery<LiveJobsPayload>({
+    queryKey: [queryUrl],
     queryFn: async () => {
-      const res = isPublic ? await fetch(url) : await authFetch(url);
+      const res = isPublic ? await fetch(queryUrl) : await authFetch(queryUrl);
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
@@ -266,22 +373,41 @@ export default function LiveJobsSection({ collegeId, slug }: Props) {
   });
 
   const totalJobs = data?.facets?.total_jobs || 0;
-  const withPosted = data?.facets?.with_posted_at || 0;
+  const filteredTotal = data?.facets?.filtered_total_jobs ?? totalJobs;
+  const filteredWithPosted = data?.facets?.filtered_with_posted_at ?? data?.facets?.with_posted_at ?? 0;
   const regionLabels = Array.from(new Set((data?.regions || []).map((r) => r.country_label)));
+  const hasFilters = !!(filters.source || filters.country || filters.level);
+
+  const toggle = (k: keyof Filters) => (v: string) => {
+    setFilters((prev) => ({ ...prev, [k]: prev[k] === v ? undefined : v }));
+  };
+
+  const clearAll = () => setFilters({});
 
   return (
     <Card className="lg:col-span-2 border-slate-200">
       <CardHeader className="pb-3">
         <div className="flex items-start justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <div className="text-slate-500"><Briefcase className="h-4 w-4" /></div>
             <CardTitle className="text-base font-semibold">
               Live jobs · {regionLabels.length > 0 ? regionLabels.join(" / ") : "Region"}
             </CardTitle>
             {data && (
               <span className="text-xs text-slate-500">
-                · {num(totalJobs)} jobs · {num(withPosted)} with posted date
+                ·{" "}
+                {hasFilters ? (
+                  <>
+                    <span className="font-medium text-slate-700">{num(filteredTotal)}</span> of {num(totalJobs)} jobs
+                    {" · "}{num(filteredWithPosted)} with posted date
+                  </>
+                ) : (
+                  <>{num(totalJobs)} jobs · {num(filteredWithPosted)} with posted date</>
+                )}
               </span>
+            )}
+            {isFetching && !isLoading && (
+              <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
             )}
           </div>
           <div className="flex items-center gap-1">
@@ -290,6 +416,27 @@ export default function LiveJobsSection({ collegeId, slug }: Props) {
             <TabBtn active={tab === "mix"} onClick={() => setTab("mix")} icon={<BarChart3 className="h-3.5 w-3.5" />} label="Mix" />
           </div>
         </div>
+        {hasFilters && (
+          <div className="flex items-center gap-1.5 flex-wrap mt-2">
+            <span className="text-[11px] text-slate-500">Filtering by:</span>
+            {filters.source && (
+              <FilterChip label={`Source: ${prettySource(filters.source)}`} onClear={() => toggle("source")(filters.source!)} />
+            )}
+            {filters.country && (
+              <FilterChip label={`Country: ${filters.country}`} onClear={() => toggle("country")(filters.country!)} />
+            )}
+            {filters.level && (
+              <FilterChip label={`Level: ${prettyLevel(filters.level)}`} onClear={() => toggle("level")(filters.level!)} />
+            )}
+            <button
+              type="button"
+              onClick={clearAll}
+              className="text-[11px] text-slate-500 hover:text-slate-800 underline underline-offset-2 ml-1"
+            >
+              Clear all
+            </button>
+          </div>
+        )}
       </CardHeader>
       <CardContent className="pt-0">
         {isLoading && (
@@ -301,11 +448,12 @@ export default function LiveJobsSection({ collegeId, slug }: Props) {
           <p className="text-sm text-rose-600">Could not load live jobs: {(error as Error).message}</p>
         )}
         {data && tab === "recent" && (
-          <div className="py-10 text-center border border-dashed border-slate-200 rounded-md bg-slate-50/60">
-            <p className="text-sm font-medium text-slate-700">Recent jobs feed</p>
-            <p className="text-xs text-slate-500 mt-1">
-              Coming soon — a scrollable list of the newest postings with apply links.
+          <div>
+            <p className="text-xs text-slate-500 mb-2">
+              Latest {Math.min(data.recent.length, 50)} postings{hasFilters ? " matching your filter" : ""}.
+              Sorted by posted date.
             </p>
+            <RecentList jobs={data.recent} />
           </div>
         )}
         {data && tab === "timeline" && (
@@ -319,38 +467,73 @@ export default function LiveJobsSection({ collegeId, slug }: Props) {
             {data.timeline.note && (
               <p className="text-[11px] text-slate-500 mb-3 leading-relaxed">{data.timeline.note}</p>
             )}
-            <TimelineChart weeks={data.timeline.weeks} sources={data.facets.sources} />
+            <TimelineChart weeks={data.timeline.weeks} sources={data.facets.sources} activeSource={filters.source} />
           </div>
         )}
         {data && tab === "mix" && (
           <div>
             <div className="flex items-center gap-2 mb-3">
               {qualityChip(data.mix.data_quality)}
-              <span className="text-xs text-slate-500">Counted from {num(totalJobs)} raw rows</span>
+              <span className="text-xs text-slate-500">
+                Counted from {num(filteredTotal)} {hasFilters ? "matching" : "raw"} rows · click a bar to filter
+              </span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
               <div>
                 <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">By source</h4>
-                <BarRows rows={data.mix.by_source} prettify={prettySource} />
+                <BarRows
+                  rows={data.mix.by_source}
+                  prettify={prettySource}
+                  activeKey={filters.source}
+                  onToggle={toggle("source")}
+                  ariaLabel="Jobs by source"
+                />
               </div>
               <div>
                 <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">By seniority level</h4>
-                <BarRows rows={data.mix.by_level} prettify={prettyLevel} />
-                {data.facets.total_jobs > 0 && (
+                <BarRows
+                  rows={data.mix.by_level}
+                  prettify={prettyLevel}
+                  activeKey={filters.level}
+                  onToggle={toggle("level")}
+                  ariaLabel="Jobs by seniority level"
+                />
+                {data.mix.unspecified_level_n > 0 && filteredTotal > 0 && (
                   <p className="text-[10px] text-slate-400 mt-2">
-                    {Math.round(((data.mix.by_level.find((r) => r.key === "Unspecified")?.n || 0) / data.facets.total_jobs) * 100)}% of jobs do not declare a level.
+                    {Math.round((data.mix.unspecified_level_n / filteredTotal) * 100)}% of jobs do not declare a level — excluded from this chart.
                   </p>
                 )}
               </div>
               <div>
                 <h4 className="text-xs font-semibold text-slate-700 uppercase tracking-wide mb-2">By country</h4>
-                <BarRows rows={data.mix.by_country} />
+                <BarRows
+                  rows={data.mix.by_country}
+                  activeKey={filters.country}
+                  onToggle={toggle("country")}
+                  ariaLabel="Jobs by country"
+                />
               </div>
             </div>
           </div>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function FilterChip({ label, onClear }: { label: string; onClear: () => void; }) {
+  return (
+    <span className="inline-flex items-center gap-1 text-[11px] font-medium px-2 py-0.5 rounded-full border border-blue-200 bg-blue-50 text-blue-700">
+      {label}
+      <button
+        type="button"
+        onClick={onClear}
+        className="text-blue-500 hover:text-blue-800"
+        aria-label={`Clear ${label}`}
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
   );
 }
 

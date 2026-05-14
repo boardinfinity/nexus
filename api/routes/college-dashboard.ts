@@ -556,7 +556,35 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
 // (one row per country_variant, with country_label as the canonical
 // bucket). Returns weekly timeline + 3 mix breakdowns + facets.
 // ─────────────────────────────────────────────────────────────────────
-async function buildLiveJobsPayload(college_id: string): Promise<any> {
+// Seniority rollup — collapse L0–L5 + variants into 6 canonical buckets.
+const LEVEL_ROLLUP: Record<string, string> = {
+  entry_level: "entry_level",
+  L0: "entry_level",
+  associate: "associate",
+  L1: "associate",
+  L2: "associate",
+  mid_senior: "mid_senior",
+  L3: "mid_senior",
+  L4: "mid_senior",
+  director: "director",
+  L5: "director",
+  executive: "executive",
+  internship: "internship",
+  intern: "internship",
+  other: "other",
+};
+function rollupLevel(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  return LEVEL_ROLLUP[raw.trim()] || raw.trim();
+}
+
+interface LiveJobsFilters {
+  source?: string;
+  country?: string;
+  level?: string;
+}
+
+async function buildLiveJobsPayload(college_id: string, filters: LiveJobsFilters = {}): Promise<any> {
   // 1. Load this college's country variants
   const { data: regionRows, error: regionsErr } = await supabase
     .from("college_regions")
@@ -578,10 +606,12 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
       view: "live_jobs",
       college_id,
       regions: [],
+      filters,
       data_quality: "illustrative" as DataQuality,
       note: "No regions configured for this college yet.",
       timeline: { weeks: [], window: "all_time", total_jobs: 0 },
       mix: { by_source: [], by_level: [], by_country: [] },
+      recent: [],
       facets: { sources: [], levels: [], countries: [], total_jobs: 0, with_posted_at: 0 },
     };
   }
@@ -590,18 +620,26 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
   //    Postgrest caps a single response at ~1000 rows. UAE/GCC currently
   //    sits at ~9k rows so a few pages is fine; once it grows past ~25k
   //    we should move this to a SQL RPC.
+  //    NOTE: We pull the unfiltered set so we can compute facets that
+  //    reflect what is achievable, then apply filters client-side here
+  //    for the timeline/mix/recent buckets.
   const PAGE = 1000;
   let from = 0;
   const allJobs: Array<{
+    id: string;
+    title: string | null;
+    company_name: string | null;
     posted_at: string | null;
     source: string | null;
+    source_url: string | null;
     seniority_level: string | null;
     location_country: string | null;
+    location_city: string | null;
   }> = [];
   while (true) {
     const { data: page, error: pageErr } = await supabase
       .from("jobs")
-      .select("posted_at, source, seniority_level, location_country")
+      .select("id, title, company_name, posted_at, source, source_url, seniority_level, location_country, location_city")
       .in("location_country", variants)
       .range(from, from + PAGE - 1);
     if (pageErr) throw new Error(`jobs read failed: ${pageErr.message}`);
@@ -612,12 +650,29 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
     if (from > 50000) break; // safety cap
   }
 
-  const totalJobs = allJobs.length;
-  const withPostedAt = allJobs.filter((j) => !!j.posted_at).length;
+  // 2b. Apply filters (post-pull, in-memory — dataset is small enough).
+  const matchSource = (s: string | null) => !filters.source || (s || "unknown") === filters.source;
+  const matchCountry = (lc: string | null) => {
+    if (!filters.country) return true;
+    const label = variantToLabel.get((lc || "").trim()) || lc || "";
+    return label === filters.country;
+  };
+  const matchLevel = (lv: string | null) => {
+    if (!filters.level) return true;
+    const rolled = rollupLevel(lv);
+    if (filters.level === "Unspecified") return !rolled;
+    return rolled === filters.level;
+  };
+  const filteredJobs = allJobs.filter((j) => matchSource(j.source) && matchCountry(j.location_country) && matchLevel(j.seniority_level));
+
+  const totalJobs = filteredJobs.length;
+  const withPostedAt = filteredJobs.filter((j) => !!j.posted_at).length;
+  const totalJobsAll = allJobs.length;
+  const withPostedAtAll = allJobs.filter((j) => !!j.posted_at).length;
 
   // 3. Timeline — weekly buckets (Monday-anchored UTC). All-time.
   const weekMap = new Map<string, { week: string; n: number; by_source: Record<string, number> }>();
-  for (const j of allJobs) {
+  for (const j of filteredJobs) {
     if (!j.posted_at) continue;
     const d = new Date(j.posted_at);
     if (Number.isNaN(d.getTime())) continue;
@@ -638,6 +693,7 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
   const weeks = Array.from(weekMap.values()).sort((a, b) => a.week.localeCompare(b.week));
 
   // 4. Mix — by source / by level / by country (canonical label).
+  //    Computed on filtered set so the bars reflect the active filter.
   const countBy = (rows: Array<string | null | undefined>, fallback: string) => {
     const m = new Map<string, number>();
     for (const r of rows) {
@@ -649,20 +705,50 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
       .sort((a, b) => b.n - a.n);
   };
 
-  const by_source = countBy(allJobs.map((j) => j.source), "unknown");
-  const by_level = countBy(allJobs.map((j) => j.seniority_level), "Unspecified");
+  const by_source = countBy(filteredJobs.map((j) => j.source), "unknown");
+  // Level chart: roll up + suppress Unspecified (it dominates honest signal).
+  const by_level_full = countBy(filteredJobs.map((j) => rollupLevel(j.seniority_level)), "Unspecified");
+  const unspecified_level_n = by_level_full.find((r) => r.key === "Unspecified")?.n || 0;
+  const by_level = by_level_full.filter((r) => r.key !== "Unspecified");
   const by_country = countBy(
-    allJobs.map((j) => variantToLabel.get((j.location_country || "").trim()) || j.location_country),
+    filteredJobs.map((j) => variantToLabel.get((j.location_country || "").trim()) || j.location_country),
     "Unspecified"
   );
 
-  // 5. Facets for future filters
+  // 4b. Recent feed — latest 50 by posted_at desc (NULLs sink to bottom).
+  const recent = [...filteredJobs]
+    .sort((a, b) => {
+      const ta = a.posted_at ? Date.parse(a.posted_at) : 0;
+      const tb = b.posted_at ? Date.parse(b.posted_at) : 0;
+      return tb - ta;
+    })
+    .slice(0, 50)
+    .map((j) => ({
+      id: j.id,
+      title: j.title,
+      company_name: j.company_name,
+      posted_at: j.posted_at,
+      source: j.source,
+      source_url: j.source_url,
+      seniority_level: rollupLevel(j.seniority_level),
+      country_label: variantToLabel.get((j.location_country || "").trim()) || j.location_country,
+      location_city: j.location_city,
+    }));
+
+  // 5. Facets — stable across filters (computed from unfiltered set) so the
+  //    UI can show the full list of choices the user could pick.
   const facets = {
-    sources: by_source.map((r) => r.key),
-    levels: by_level.map((r) => r.key),
+    sources: countBy(allJobs.map((j) => j.source), "unknown").map((r) => r.key),
+    // Canonical level list (rolled up), excluding Unspecified.
+    levels: countBy(allJobs.map((j) => rollupLevel(j.seniority_level)), "Unspecified")
+      .filter((r) => r.key !== "Unspecified")
+      .map((r) => r.key),
     countries: countryLabels,
-    total_jobs: totalJobs,
-    with_posted_at: withPostedAt,
+    total_jobs: totalJobsAll,
+    with_posted_at: withPostedAtAll,
+    filtered_total_jobs: totalJobs,
+    filtered_with_posted_at: withPostedAt,
+    unspecified_level_n,
   };
 
   // 6. Data quality — Timeline is "live_partial" because 13% of rows
@@ -678,6 +764,7 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
     view: "live_jobs",
     college_id,
     regions: regionRows || [],
+    filters,
     timeline: {
       data_quality: timelineQuality,
       note: timelineNote,
@@ -690,8 +777,26 @@ async function buildLiveJobsPayload(college_id: string): Promise<any> {
       by_source,
       by_level,
       by_country,
+      unspecified_level_n,
     },
+    recent,
     facets,
+  };
+}
+
+// Parse ?source=&country=&level= from a request path/url
+function parseLiveJobsFilters(req: VercelRequest): LiveJobsFilters {
+  const q = (req.query || {}) as Record<string, string | string[] | undefined>;
+  const pick = (k: string) => {
+    const v = q[k];
+    if (!v) return undefined;
+    const s = Array.isArray(v) ? v[0] : v;
+    return s && s.length > 0 && s.length < 64 ? s : undefined;
+  };
+  return {
+    source: pick("source"),
+    country: pick("country"),
+    level: pick("level"),
   };
 }
 
@@ -707,7 +812,7 @@ export async function handleCollegeDashboardRoutes(
   if (jobsMatch && req.method === "GET") {
     if (!requireReader(auth, "college_dashboard", res)) return;
     try {
-      const payload = await buildLiveJobsPayload(jobsMatch[1]);
+      const payload = await buildLiveJobsPayload(jobsMatch[1], parseLiveJobsFilters(req));
       return res.json(payload);
     } catch (e: any) {
       console.error("[college-dashboard jobs] error:", e);
@@ -745,7 +850,7 @@ export async function handlePublicCollegeDashboardRoutes(
       return res.status(404).json({ error: "Unknown share token" });
     }
     try {
-      const payload = await buildLiveJobsPayload(collegeId);
+      const payload = await buildLiveJobsPayload(collegeId, parseLiveJobsFilters(req));
       payload.slug = slug;
       return res.json(payload);
     } catch (e: any) {
