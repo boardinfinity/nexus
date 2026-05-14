@@ -5,6 +5,7 @@ import { callGPT } from "../lib/openai";
 import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore, mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel } from "../lib/helpers";
 import { randomUUID } from "crypto";
+import { runAnalyzeJd } from "../lib/analyze-jd";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
@@ -2405,254 +2406,133 @@ async function getTaxonomyMap(): Promise<Map<string, { id: string; category: str
   return map;
 }
 
-// ==================== JD ANALYSIS PIPELINE (Feature 5 — Enhanced jd_enrichment) ====================
+// ==================== JD ANALYSIS PIPELINE (v2 — routes through canonical runAnalyzeJd) ====================
+// Replaces the old gpt-4o-mini multi-JD batch approach.
+// Every job now goes through the same runAnalyzeJd() pipeline as the manual /jd-analyzer page:
+//   - Prompt v2.2 (function/family/industry/seniority/bucket/skills with L1+L2)
+//   - Model: gpt-4.1-mini
+//   - upsert_skill() RPC + fuzzy match (pg_trgm similarity ≥ 0.7 + Levenshtein ≤ 2)
+//   - Bucket resolver (auto_assign at ≥0.80 confidence)
+//   - Instrumentation written to analyze_jd_runs (per-job run log)
+//   - jobs.analysis_version set to 'v2' on success
+//
+// Vercel budget: 300s max. At ~6s/job, 40 jobs ≈ 240s — safe ceiling per invocation.
+// UI can re-trigger to drain the queue in subsequent runs.
 
 async function executeJDEnrichment(runId: string, config: any) {
-  const batchSize = Math.min(parseInt(config.batch_size) || 200, 2000);
-  const GPT_BATCH = parseInt(config.gpt_batch_size) || 3; // jobs per GPT call (default 3, configurable)
-  const CONCURRENCY = 3; // parallel GPT calls
+  // Hard cap at 40 per invocation (Vercel 300s budget: ~6s/job × 40 = 240s)
+  const PER_INVOCATION_CAP = 40;
+  const requestedBatch = Math.min(parseInt(config.batch_size) || 50, PER_INVOCATION_CAP);
+  const CONCURRENCY = 3; // parallel runAnalyzeJd() calls
 
   const jobIds: string[] = config.job_ids || [];
 
-  // If specific job IDs passed (single-job "Analyze JD" button), fetch those directly.
-  // Otherwise process queue: pending/partial enrichment status.
+  // ── 1. Fetch jobs to process ────────────────────────────────────────────────
+  // Default queue: jobs that have never been v2-analyzed.
+  // Includes 'partial', 'imported', 'pending' — skips already complete v2 jobs.
   let jobQuery = supabase
     .from("jobs")
-    .select("id, title, company_name, description");
+    .select("id, title, company_name, description")
+    .not("description", "is", null)
+    .filter("description", "neq", "");
 
   if (jobIds.length > 0) {
-    jobQuery = jobQuery.in("id", jobIds).not("description", "is", null);
+    // Explicit job_ids override (e.g. from a re-run trigger)
+    jobQuery = jobQuery.in("id", jobIds);
   } else {
+    // Queue: not yet v2-analyzed, description present
     jobQuery = jobQuery
-      .in("enrichment_status", ["pending", "partial"])
-      .not("description", "is", null)
+      .not("analysis_version", "eq", "v2")
+      .in("enrichment_status", ["pending", "partial", "imported"])
       .order("created_at", { ascending: false })
-      .limit(batchSize);
+      .limit(requestedBatch);
   }
 
-  const { data: jobs, error } = await jobQuery;
+  const { data: fetchedJobs, error: fetchError } = await jobQuery;
+  if (fetchError) throw fetchError;
 
-  if (error) throw error;
-  if (!jobs?.length) {
+  // Filter out stubs with very short descriptions (< 100 chars)
+  const validJobs = (fetchedJobs || []).filter(
+    j => j.description && j.description.length > 100
+  );
+
+  // Count total remaining in queue (for progress reporting)
+  const { count: remaining } = await supabase
+    .from("jobs")
+    .select("id", { count: "exact", head: true })
+    .not("description", "is", null)
+    .not("analysis_version", "eq", "v2")
+    .in("enrichment_status", ["pending", "partial", "imported"]);
+
+  if (!validJobs.length) {
     await supabase.from("pipeline_runs").update({
       status: "completed",
       total_items: 0,
+      processed_items: 0,
+      failed_items: 0,
+      error_message: `Queue empty — no jobs pending v2 analysis. Total remaining: 0.`,
       completed_at: new Date().toISOString(),
     }).eq("id", runId);
     return;
   }
 
-  // Filter out jobs with very short descriptions
-  const validJobs = jobs.filter(j => j.description && j.description.length > 100);
-  await supabase.from("pipeline_runs").update({ total_items: validJobs.length }).eq("id", runId);
+  await supabase.from("pipeline_runs").update({
+    total_items: validJobs.length,
+    error_message: `Remaining in queue after this run: ~${Math.max(0, (remaining ?? 0) - validJobs.length)}`,
+  }).eq("id", runId);
 
   let processed = 0;
   let failed = 0;
 
-  // Helper: process a batch of jobs in a single GPT call (batch skill + field extraction)
-  async function processBatchGPT(batch: typeof validJobs) {
-    const descriptions = batch.map(j =>
-      `[JOB_ID:${j.id}]\nTitle: ${j.title}\nCompany: ${j.company_name || "Unknown"}\nDescription: ${j.description!.slice(0, 2000)}`
-    ).join("\n\n===\n\n");
+  // ── 2. Process jobs in concurrency-3 waves ──────────────────────────────────
+  // Each job goes through the canonical runAnalyzeJd() — same as /jd-analyzer manual path.
+  for (let i = 0; i < validJobs.length; i += CONCURRENCY) {
+    const wave = validJobs.slice(i, i + CONCURRENCY);
 
-    const response = await fetch("https://api.openai.com/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "Authorization": `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are an expert job description analyst. Extract structured information from EACH job description below and return JSON.
-
-Return a JSON object with:
-{ "jobs": [
-  {
-    "job_id": "the JOB_ID from the input",
-    "skills": [{ "name": string, "type": "technical"|"soft"|"domain"|"tool", "required": boolean, "confidence": number (0-1) }],
-    "experience": { "min_years": number|null, "max_years": number|null, "level": "entry"|"mid"|"senior"|"lead"|"executive"|null },
-    "education": string[],
-    "certifications": string[],
-    "industry": string|null,
-    "tools_platforms": string[],
-    "work_mode": "remote"|"hybrid"|"onsite"|null,
-    "responsibilities": string[],
-    "seniority": "intern"|"entry"|"mid"|"senior"|"lead"|"manager"|"director"|"executive"|null,
-    "functions": string[]
-  }
-]}
-
-Extract 10-40 skills per job. Be specific (e.g. "React.js" not "frontend", "PostgreSQL" not "database").`,
-          },
-          {
-            role: "user",
-            content: descriptions,
-          },
-        ],
-        temperature: 0.2,
-        max_completion_tokens: 4000,
-        response_format: { type: "json_object" },
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`OpenAI API error: ${response.status} ${errText}`);
-    }
-
-    const aiData = await response.json();
-    const tokenUsage = aiData.usage || {};
-    const content = aiData.choices?.[0]?.message?.content || "{}";
-    const parsed = JSON.parse(content);
-    const jobResults: any[] = parsed.jobs || [];
-
-    // Map results back to individual jobs
-    const resultMap = new Map<string, any>();
-    for (const jr of jobResults) {
-      if (jr.job_id) resultMap.set(jr.job_id, jr);
-    }
-
-    // Pre-load taxonomy for in-memory matching
-    const taxMap = await getTaxonomyMap();
-
-    // Process each job's extracted data
-    for (const job of batch) {
-      const extracted = resultMap.get(job.id);
-      if (!extracted) {
-        failed++;
-        continue;
-      }
-
-      // Match extracted skills against taxonomy using in-memory map
-      const skills = extracted.skills || [];
-      const skillRows: any[] = [];
-      const unmatchedSkills: string[] = [];
-
-      for (const skill of skills) {
-        if (skill.confidence < 0.6) continue;
-
-        const normalizedName = (skill.name || "").toLowerCase();
-        const taxMatch = taxMap.get(normalizedName);
-        let taxonomySkillId: string | null = taxMatch?.id || null;
-
-        if (!taxonomySkillId) {
-          unmatchedSkills.push(skill.name);
-        }
-
-        skillRows.push({
+    const waveResults = await Promise.allSettled(
+      wave.map(job =>
+        runAnalyzeJd({
+          text: job.description!,
           job_id: job.id,
-          skill_name: skill.name,
-          skill_category: skill.type || "technical",
-          confidence_score: skill.confidence,
-          extraction_method: "ai_enhanced",
-          taxonomy_skill_id: taxonomySkillId,
-          is_required: skill.required ?? null,
-        });
-      }
-
-      // Bulk auto-create unmatched skills as 'unverified' (replaces per-skill RPC N+1)
-      if (unmatchedSkills.length > 0) {
-        try {
-          // Step 1: Bulk insert new skills (ON CONFLICT DO NOTHING = safe)
-          await supabase.from("taxonomy_skills").upsert(
-            unmatchedSkills.map(name => ({
-              name: name.trim(),
-              status: "unverified",
-              is_auto_created: true,
-              created_at: new Date().toISOString(),
-            })),
-            { onConflict: "name", ignoreDuplicates: true }
-          );
-          
-          // Step 2: Fetch IDs for ALL unmatched skills in ONE query
-          const { data: newSkillRows } = await supabase
-            .from("taxonomy_skills")
-            .select("id, name")
-            .in("name", unmatchedSkills.map(n => n.trim()));
-          
-          // Step 3: Update skillRows with the fetched IDs
-          for (const s of newSkillRows || []) {
-            const row = skillRows.find(r => r.skill_name?.toLowerCase() === s.name?.toLowerCase());
-            if (row) row.taxonomy_skill_id = s.id;
-          }
-        } catch (e) {
-          // Skip if taxonomy_skills schema mismatch — skills still inserted without ID
-        }
-      }
-
-      // Batch upsert all skills for this job
-      if (skillRows.length > 0) {
-        await supabase.from("job_skills").upsert(skillRows, { onConflict: "job_id,skill_name" });
-      }
-
-      // Update job record with structured fields
-      const updateFields: any = {
-        enrichment_status: "complete",
-      };
-      if (extracted.experience?.min_years != null) updateFields.min_experience_years = extracted.experience.min_years;
-      if (extracted.experience?.max_years != null) updateFields.max_experience_years = extracted.experience.max_years;
-      if (extracted.education?.length) updateFields.education_requirements = extracted.education;
-      if (extracted.certifications?.length) updateFields.certifications_required = extracted.certifications;
-      if (extracted.work_mode) updateFields.work_mode = extracted.work_mode;
-      if (extracted.industry) updateFields.industry_domain = extracted.industry;
-      if (extracted.tools_platforms?.length) updateFields.tools_platforms = extracted.tools_platforms;
-      if (extracted.seniority) updateFields.seniority_level = extracted.seniority;
-
-      await supabase.from("jobs").update(updateFields).eq("id", job.id);
-
-      await supabase.from("enrichment_logs").insert({
-        entity_type: "job",
-        entity_id: job.id,
-        provider: "openai",
-        operation: "jd_analysis",
-        status: "success",
-        credits_used: Math.round((tokenUsage.total_tokens || 0) / batch.length),
-        details: { skills_extracted: skills.length, model: "gpt-4.1-mini", tokens: tokenUsage, batch_size: batch.length },
-      });
-
-      processed++;
-    }
-  }
-
-  // Split jobs into GPT batches of 5, then run 3 GPT calls concurrently
-  const gptBatches: (typeof validJobs)[] = [];
-  for (let i = 0; i < validJobs.length; i += GPT_BATCH) {
-    gptBatches.push(validJobs.slice(i, i + GPT_BATCH));
-  }
-
-  for (let i = 0; i < gptBatches.length; i += CONCURRENCY) {
-    const concurrentBatches = gptBatches.slice(i, i + CONCURRENCY);
-    const results = await Promise.allSettled(
-      concurrentBatches.map(batch => processBatchGPT(batch))
+          batch_id: runId, // group all runs for this pipeline invocation
+          source: "async_batch",
+          created_by: undefined,
+        })
+      )
     );
 
-    for (const r of results) {
-      if (r.status === "rejected") {
-        // Count all jobs in the failed batch as failures
-        failed += GPT_BATCH;
-        console.error("[JD Analysis] Batch error:", r.reason?.message || r.reason);
+    for (const r of waveResults) {
+      if (r.status === "fulfilled") {
+        const result = r.value;
+        if (result.status === "failed") {
+          failed++;
+          console.error("[jd_enrichment] runAnalyzeJd failed for job:", result.error);
+        } else {
+          processed++;
+        }
+      } else {
+        failed++;
+        console.error("[jd_enrichment] wave error:", r.reason?.message || r.reason);
       }
     }
 
+    // Live progress update
     await supabase.from("pipeline_runs").update({
       processed_items: processed,
       failed_items: failed,
     }).eq("id", runId);
-
-    // Rate limit: 2 second delay between concurrent rounds
-    if (i + CONCURRENCY < gptBatches.length) {
-      await new Promise(r => setTimeout(r, 2000));
-    }
   }
 
+  // ── 3. Final pipeline_run update ────────────────────────────────────────────
+  const queueAfter = Math.max(0, (remaining ?? 0) - processed);
   await supabase.from("pipeline_runs").update({
     status: "completed",
     processed_items: processed,
     failed_items: failed,
     completed_at: new Date().toISOString(),
+    error_message: queueAfter > 0
+      ? `✓ ${processed} jobs analyzed with v2.2 prompt. ${queueAfter} jobs still in queue — trigger again to continue.`
+      : `✓ ${processed} jobs analyzed with v2.2 prompt. Queue is now empty.`,
   }).eq("id", runId);
 }
 
