@@ -81,6 +81,37 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
 }
 
 // ── JD Analysis stateless cron: 40 jobs per tick, no chaining ────────────────
+async function checkAndRunJdFetchCron(): Promise<void> {
+  // Pick up jobs with jd_fetch_status = 'pending' or 'failed'
+  const { count } = await supabase
+    .from("jobs")
+    .select("id", { count: "exact", head: true })
+    .in("jd_fetch_status", ["pending", "failed"]);
+
+  if ((count || 0) === 0) {
+    console.log("[scheduler] JD fetch queue empty — nothing to run.");
+    return;
+  }
+
+  console.log(`[scheduler] JD fetch queue: ${count} jobs — triggering jd_fetch (8 jobs)`);
+  const { data: run } = await supabase
+    .from("pipeline_runs")
+    .insert({
+      pipeline_type: "jd_fetch",
+      trigger_type: "scheduled",
+      config: { batch_size: 8 },
+      status: "running",
+      started_at: new Date().toISOString(),
+      triggered_by: "scheduler_cron",
+    })
+    .select()
+    .single();
+
+  if (run) {
+    await executePipeline(run.id, "jd_fetch", { batch_size: 8 }).catch(console.error);
+  }
+}
+
 async function checkAndRunJdAnalysisCron(): Promise<void> {
   // NULL-safe filter: picks up jobs with analysis_version IS NULL or != 'v2'
   const { count } = await supabase
@@ -185,6 +216,9 @@ export async function handleSchedulerRoutes(
         .in("id", zombies.map((z: any) => z.id));
       console.log(`[scheduler] Zombie watchdog: killed ${zombies.length} stuck run(s)`);
     }
+
+    // ── JD fetch cron: AI-based fetch for pending/failed jobs ─────────────────
+    await checkAndRunJdFetchCron().catch(console.error);
 
     // ── JD enrichment cron: process 40 jobs if queue non-empty ───────────────
     await checkAndRunJdAnalysisCron().catch(console.error);
