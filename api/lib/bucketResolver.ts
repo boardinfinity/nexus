@@ -152,18 +152,27 @@ export async function resolveBucket(
     if (!includeCandidates && b.status !== "validated") continue;
     if (matchesExclusion(b, classification)) continue;
 
+    // Hard-filter: if the bucket has a function/family/industry set AND the
+    // classification has those fields set, they MUST match. A mismatch means
+    // this bucket is for a completely different domain — don't score it at all.
+    // This prevents a 0-contribution signal from dragging down the normalized
+    // score and blocking the Tier-3 auto-create path.
+    if (b.function_id && classification.job_function &&
+        b.function_id !== classification.job_function) continue;
+    if (b.family_id && classification.job_family &&
+        b.family_id !== classification.job_family) continue;
+    if (b.industry_id && classification.job_industry &&
+        b.industry_id !== classification.job_industry) continue;
+
     const reasons: BucketMatchReasonEntry[] = [];
 
-    // Function / Family / Industry — soft gates with partial credit.
-    pushReason(reasons, "function", b.function_id && classification.job_function
-      ? (b.function_id === classification.job_function ? 1 : 0)
-      : null);
-    pushReason(reasons, "family", b.family_id && classification.job_family
-      ? (b.family_id === classification.job_family ? 1 : 0)
-      : null);
-    pushReason(reasons, "industry", b.industry_id && classification.job_industry
-      ? (b.industry_id === classification.job_industry ? 1 : 0)
-      : null);
+    // Function / Family / Industry — positive signal only (mismatches already excluded above).
+    pushReason(reasons, "function",
+      b.function_id && classification.job_function ? 1 : null);
+    pushReason(reasons, "family",
+      b.family_id && classification.job_family ? 1 : null);
+    pushReason(reasons, "industry",
+      b.industry_id && classification.job_industry ? 1 : null);
 
     // Title + aliases
     const aliasList = aliasesByBucket.get(b.id) || [];
@@ -304,7 +313,15 @@ export async function resolveBucket(
     };
   }
 
-  // Truly unclassified
+  // Truly unclassified (jd_quality poor, or missing function/family/industry)
+  const missingFields: string[] = [];
+  if (!classification.job_function) missingFields.push("function");
+  if (!classification.job_family) missingFields.push("family");
+  if (!classification.job_industry) missingFields.push("industry");
+  const unclassifiedReason = missingFields.length > 0
+    ? `Cannot create candidate — missing classification fields: ${missingFields.join(", ")}.`
+    : `No compatible bucket found (best: ${(top1Score * 100).toFixed(0)}%). JD quality (${classification.jd_quality}) too low for auto-creation.`;
+
   return {
     selected: null,
     confidence: top1Score,
@@ -312,7 +329,7 @@ export async function resolveBucket(
     top_candidates: top,
     candidate_needed: false,
     mismatch_flags,
-    reason_summary: `No bucket match (best: ${(top1Score * 100).toFixed(0)}%). JD quality too low for candidate creation.`,
+    reason_summary: unclassifiedReason,
   };
 }
 
