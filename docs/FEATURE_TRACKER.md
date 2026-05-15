@@ -48,7 +48,7 @@ Legend: ✅ live · 🟡 in progress · ⚪ not started · 🔴 blocked · 🟣 
 
 | Sub-Feature | Status | Owner Thread | Last Update | Commit | Notes |
 |---|---|---|---|---|---|
-| Job Collection Scheduler — 90-role cadence rollout | 🟡 | job90sch | 2026-05-15 | cef419b | Code support shipped: Google role-query compaction, Bayt/NaukriGulf + monthly accepted in schedules API/UI, reproducible seed script. Live activation pending confirmation because recurring schedules consume provider credits. |
+| Job Collection Scheduler — 90-role cadence rollout | ✅ | job90sch | 2026-05-15 | cef419b + live-db | Activated 64 active Nexus 90 schedules in Supabase. Coverage verified: 90 distinct roles, 56 daily / 21 weekly / 13 monthly cadence tiers; India LinkedIn + Google Jobs; UAE/Saudi LinkedIn + Google Jobs + Bayt + NaukriGulf. |
 
 ## P4 — Frontend Intelligence
 
