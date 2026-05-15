@@ -18,14 +18,15 @@ export function calculateNextRun(frequency: string, cronExpression?: string | nu
     every_6h: 6 * 60 * 60 * 1000,
     daily: 24 * 60 * 60 * 1000,
     weekly: 7 * 24 * 60 * 60 * 1000,
+    monthly: 30 * 24 * 60 * 60 * 1000,
   };
   const ms = intervals[frequency] || intervals.daily;
   return new Date(now.getTime() + ms).toISOString();
 }
 
 export async function handleScheduleRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
-  const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "alumni", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment", "deduplication", "cooccurrence"];
-  const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "custom"];
+  const VALID_PIPELINE_TYPES = ["linkedin_jobs", "google_jobs", "bayt_jobs", "naukrigulf_jobs", "alumni", "company_enrichment", "jd_enrichment", "jd_fetch", "people_enrichment", "deduplication", "cooccurrence"];
+  const VALID_FREQUENCIES = ["hourly", "every_6h", "daily", "weekly", "monthly", "custom"];
 
   if (path.match(/^\/schedules\/?$/) && req.method === "GET") {
     if (!requireReader(auth, "schedules", res)) return;

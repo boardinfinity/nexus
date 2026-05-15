@@ -2199,7 +2199,27 @@ async function executeGoogleJobs(runId: string, config: any) {
   // Each query carries its roleId so the resulting jobs are tagged at insert time.
   type GoogleQuery = { query: string; roleId?: string; roleName?: string; synonyms?: string[] };
   let queries: GoogleQuery[] = [];
-  let roleSynonymMap = new Map<string, string[]>(); // roleId -> synonyms (for match scoring)
+
+  // Google Jobs schedules need to handle many roles without losing role coverage.
+  // Earlier logic emitted one query per synonym and then capped at 20 queries, so
+  // a 10-role schedule could silently cover only the first 1-2 roles. Instead,
+  // emit one compact OR query per role, mirroring the LinkedIn/Bayt strategy.
+  const buildRoleGoogleQuery = (roleName: string, synonyms: string[]): string => {
+    const terms = Array.from(new Set([roleName, ...synonyms].filter(Boolean)));
+    const QUERY_CAP = 420;
+    const selected: string[] = [];
+    let length = 0;
+
+    for (const term of terms) {
+      const piece = `"${term}"`;
+      const add = (selected.length ? " OR " : "").length + piece.length;
+      if (selected.length > 0 && length + add > QUERY_CAP) break;
+      selected.push(term);
+      length += add;
+    }
+
+    return selected.length > 0 ? selected.map(t => `"${t}"`).join(" OR ") : roleName;
+  };
 
   const jobRoleIds = config.job_role_ids as string[] | undefined;
   if (jobRoleIds && jobRoleIds.length > 0) {
@@ -2210,10 +2230,12 @@ async function executeGoogleJobs(runId: string, config: any) {
     if (roles && roles.length > 0) {
       for (const role of roles) {
         const synonyms = ((role.synonyms as string[]) || [role.name]).filter(Boolean);
-        roleSynonymMap.set(role.id, synonyms);
-        for (const syn of synonyms) {
-          queries.push({ query: syn, roleId: role.id, roleName: role.name, synonyms });
-        }
+        queries.push({
+          query: buildRoleGoogleQuery(role.name, synonyms),
+          roleId: role.id,
+          roleName: role.name,
+          synonyms: synonyms.length ? synonyms : [role.name],
+        });
       }
     }
   }
@@ -2225,8 +2247,8 @@ async function executeGoogleJobs(runId: string, config: any) {
   }
   if (!queries.length) queries = [{ query: config.query || "software engineer" }];
 
-  // Cap at 20 queries to stay within Vercel 300s timeout
-  const MAX_QUERIES = 20;
+  // Cap at 20 role queries to stay within Vercel 300s timeout.
+  const MAX_QUERIES = Math.max(1, Math.min(parseInt(config?.max_queries) || 20, 20));
   if (queries.length > MAX_QUERIES) queries = queries.slice(0, MAX_QUERIES);
 
   // Country mapping for igview-owner actor (uses ISO codes)

@@ -53,6 +53,8 @@ interface Schedule {
 const PIPELINE_TYPES = [
   { value: "google_jobs", label: "Google Jobs" },
   { value: "linkedin_jobs", label: "LinkedIn Jobs" },
+  { value: "bayt_jobs", label: "Bayt.com Jobs" },
+  { value: "naukrigulf_jobs", label: "NaukriGulf Jobs" },
   { value: "alumni", label: "Alumni Search" },
   { value: "jd_enrichment", label: "JD Enrichment" },
   { value: "people_enrichment", label: "People Enrichment" },
@@ -64,6 +66,7 @@ const FREQUENCIES = [
   { value: "every_6h", label: "Every 6 Hours" },
   { value: "daily", label: "Daily" },
   { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
   { value: "custom", label: "Custom Cron" },
 ];
 
