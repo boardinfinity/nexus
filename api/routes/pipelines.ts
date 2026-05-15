@@ -6,6 +6,7 @@ import { submitJDBatch, pollBatch, processBatchResults } from "../lib/batch";
 import { normalizeText, mapEmploymentType, mapEmploymentTypeExtended, mapSeniority, mapOnetJobZone, upsertCompanyByName, findEducationEntry, formatUniversityName, mapPersonSeniority, mapPersonFunction, generatePeopleSearchStub, computeRoleMatchScore, mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel } from "../lib/helpers";
 import { randomUUID } from "crypto";
 import { runAnalyzeJd } from "../lib/analyze-jd";
+import { resolveBucket } from "../lib/bucketResolver";
 
 export async function handlePipelineRoutes(path: string, req: VercelRequest, res: VercelResponse, auth: AuthResult): Promise<VercelResponse | undefined> {
   // ==================== PIPELINES ====================
