@@ -170,6 +170,20 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
   const taxMap = new Map<string, string>();
   for (const s of taxData || []) taxMap.set(s.name.toLowerCase().trim(), s.id);
 
+  // Pre-load bucket catalog ONCE — avoids 3 DB round-trips per job inside the loop.
+  // Pass via overrideBuckets so resolveBucket skips its own loadCatalog().
+  const [{ data: catalogBuckets }, { data: catalogAliases }, { data: catalogSkillMap }] = await Promise.all([
+    supabase.from("job_buckets").select("id, bucket_code, name, description, bucket_scope, function_id, family_id, industry_id, seniority_level, standardized_title, company_type, geography_scope, nature_of_work, exclusion_rules, status").neq("status", "merged").neq("status", "deprecated"),
+    supabase.from("job_bucket_aliases").select("bucket_id, alias_norm"),
+    supabase.from("job_bucket_skill_map").select("bucket_id, taxonomy_skill_id, requirement_type"),
+  ]);
+  const bucketCatalogOpts = {
+    overrideBuckets: (catalogBuckets || []) as any[],
+    overrideAliases: (catalogAliases || []) as any[],
+    overrideSkillMap: (catalogSkillMap || []) as any[],
+  };
+  console.log(`[batch] Catalog loaded: ${(catalogBuckets || []).length} buckets, ${(catalogAliases || []).length} aliases`);
+
   // Process in chunks
   const CHUNK = 50;
   for (let i = 0; i < lines.length; i += CHUNK) {
@@ -229,7 +243,7 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
             classification_confidence: (parsed.classification_confidence || "medium") as any,
             classification_confidence_score: confidenceToScore(parsed.classification_confidence || "medium"),
           };
-          bucketMapping = await resolveBucket(classification);
+          bucketMapping = await resolveBucket(classification, bucketCatalogOpts);
         } catch (e: any) {
           console.error(`[batch] resolver failed for ${jobId}:`, e?.message);
         }
