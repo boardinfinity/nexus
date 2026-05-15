@@ -2497,6 +2497,8 @@ async function executeJDFetch(runId: string, config: any) {
 
   let processed = 0;
   let failed = 0;
+  let fetched = 0;
+  let noJdFound = 0;
 
   for (const job of jobs) {
     try {
@@ -2706,10 +2708,12 @@ async function executeJDFetch(runId: string, config: any) {
         });
 
         processed++;
+        fetched++;
       } else {
         // Neither strategy found a real JD with sufficient confidence.
         // Mark as no_jd_found — do NOT write a hallucinated description.
         await supabase.from("jobs").update({ jd_fetch_status: "no_jd_found" }).eq("id", job.id);
+        noJdFound++;
 
         await supabase.from("enrichment_logs").insert({
           entity_type: "job",
@@ -2750,6 +2754,16 @@ async function executeJDFetch(runId: string, config: any) {
     processed_items: processed,
     failed_items: failed,
     completed_at: new Date().toISOString(),
+  }).eq("id", runId);
+
+  // Write breakdown into config so run-history can surface it
+  await supabase.from("pipeline_runs").update({
+    config: {
+      _fetched: fetched,
+      _no_jd_found: noJdFound,
+      _failed: failed,
+      batch_size: batchSize,
+    },
   }).eq("id", runId);
 }
 

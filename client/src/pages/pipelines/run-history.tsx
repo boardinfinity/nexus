@@ -73,9 +73,13 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
       linkedin_jobs: "LinkedIn Jobs",
       google_jobs: "Google Jobs",
       alumni: "Alumni Search",
-      jd_enrichment: "JD Enrichment",
+      jd_enrichment: "JD Analysis",
+      jd_fetch: "JD Fetch",
       company_enrichment: "Company Enrichment",
-      jd_batch_submit: "JD Batch",
+      jd_batch_submit: "JD Batch Submit",
+      jd_batch_poll: "JD Batch Poll",
+      jd_batch_poll_cron: "JD Batch Poll (Auto)",
+      backfill_buckets: "Bucket Backfill",
     };
     return labels[type] || type;
   };
@@ -155,48 +159,63 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                     )}
                   </div>
 
-                  {/* Row 3: Stats */}
-                  <div className="flex items-center justify-between">
-                    <div className="flex gap-3 text-[10px]">
-                      {(run.total_items != null) && (
-                        <span className="text-muted-foreground">Scraped: <span className="text-foreground font-medium">{run.total_items}</span></span>
+                  {/* Row 3: Stats + Actions */}
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div className="flex flex-wrap gap-3 text-[10px]">
+                      {run.total_items != null && (
+                        <span className="text-muted-foreground">Total: <span className="text-foreground font-medium">{run.total_items}</span></span>
                       )}
                       {run.config?._validated_count != null && run.config._validated_count !== run.total_items && (
                         <span className="text-blue-600">Matched: <span className="font-medium">{run.config._validated_count}</span></span>
                       )}
-                      {(run.processed_items != null && run.processed_items > 0) && (
-                        <span className="text-green-600">Processed: <span className="font-medium">{run.processed_items}</span></span>
-                      )}
-                      {(run.skipped_items != null && run.skipped_items > 0) && (
-                        <span className="text-amber-600">Duplicates: <span className="font-medium">{run.skipped_items}</span></span>
-                      )}
-                      {(run.failed_items != null && run.failed_items > 0) && (
-                        <span className="text-red-600">Failed: <span className="font-medium">{run.failed_items}</span></span>
+                      {run.pipeline_type === "jd_fetch" ? (
+                        <>
+                          {run.config?._fetched != null && (
+                            <span className="text-green-600">Fetched: <span className="font-medium">{run.config._fetched}</span></span>
+                          )}
+                          {run.config?._no_jd_found != null && (
+                            <span className="text-slate-500">No JD: <span className="font-medium">{run.config._no_jd_found}</span></span>
+                          )}
+                          {(run.failed_items != null && run.failed_items > 0) && (
+                            <span className="text-red-600">Errors: <span className="font-medium">{run.failed_items}</span></span>
+                          )}
+                        </>
+                      ) : run.pipeline_type === "jd_enrichment" ? (
+                        <>
+                          {(run.processed_items != null && run.processed_items > 0) && (
+                            <span className="text-green-600">Analyzed: <span className="font-medium">{run.processed_items}</span></span>
+                          )}
+                          {(run.failed_items != null && run.failed_items > 0) && (
+                            <span className="text-red-600">Failed: <span className="font-medium">{run.failed_items}</span></span>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {(run.processed_items != null && run.processed_items > 0) && (
+                            <span className="text-green-600">Processed: <span className="font-medium">{run.processed_items}</span></span>
+                          )}
+                          {(run.skipped_items != null && run.skipped_items > 0) && (
+                            <span className="text-amber-600">Duplicates: <span className="font-medium">{run.skipped_items}</span></span>
+                          )}
+                          {(run.failed_items != null && run.failed_items > 0) && (
+                            <span className="text-red-600">Failed: <span className="font-medium">{run.failed_items}</span></span>
+                          )}
+                        </>
                       )}
                       {run.error_message && (
-                        <span className="text-red-600 truncate max-w-[200px]" title={run.error_message}>{run.error_message}</span>
+                        <span className="text-red-600 truncate max-w-[240px]" title={run.error_message}>{run.error_message}</span>
                       )}
                     </div>
                     <div className="flex items-center gap-1.5">
                       {isRunning && (
                         <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 text-[10px] px-2"
-                            disabled={pollMutation.isPending}
-                            onClick={() => pollMutation.mutate(run.id)}
-                          >
+                          <Button variant="outline" size="sm" className="h-6 text-[10px] px-2"
+                            disabled={pollMutation.isPending} onClick={() => pollMutation.mutate(run.id)}>
                             {pollMutation.isPending ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : <Play className="h-3 w-3 mr-1" />}
                             Check Status
                           </Button>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="h-6 text-[10px] px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
-                            disabled={cancelMutation.isPending}
-                            onClick={() => cancelMutation.mutate(run.id)}
-                          >
+                          <Button variant="outline" size="sm" className="h-6 text-[10px] px-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                            disabled={cancelMutation.isPending} onClick={() => cancelMutation.mutate(run.id)}>
                             <XCircle className="h-3 w-3 mr-1" />
                             Cancel
                           </Button>
@@ -204,25 +223,25 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                       )}
                       {run.status === "completed" && (run.processed_items || 0) > 0 && (() => {
                         const isPeopleRun = ["alumni", "alumni_bulk_upload", "people_enrichment"].includes(run.pipeline_type);
-                        const isJdAnalysis = run.pipeline_type === "jd_enrichment";
+                        const isJdRun = ["jd_enrichment", "jd_fetch"].includes(run.pipeline_type);
                         let href: string;
                         if (isPeopleRun) {
                           href = `/people`;
-                        } else if (isJdAnalysis) {
-                          // Link to jobs page filtered to v2_complete jobs analyzed after this run started
-                          href = `/jobs?status=complete&added=${encodeURIComponent(run.started_at)}`;
+                        } else if (isJdRun) {
+                          href = `/jobs`;
                         } else {
                           const sourceMap: Record<string, string> = {
                             linkedin_jobs: "linkedin",
                             google_jobs: "google_jobs",
                           };
                           const src = sourceMap[run.pipeline_type] || "";
-                          href = `/jobs?${src ? `source=${src}&` : ""}added=${encodeURIComponent(run.started_at)}`;
+                          href = `/jobs${src ? `?source=${src}` : ""}`;
                         }
                         return (
                           <Link href={href}>
                             <Button variant="outline" size="sm" className="h-6 text-[10px] px-2">
-                              <ExternalLink className="h-3 w-3 mr-1" /> {isPeopleRun ? "View People" : "View Jobs"}
+                              <ExternalLink className="h-3 w-3 mr-1" />
+                              {isPeopleRun ? "View People" : "View Jobs"}
                             </Button>
                           </Link>
                         );
