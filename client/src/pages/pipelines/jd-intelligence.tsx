@@ -7,11 +7,18 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { authFetch } from "@/lib/queryClient";
 
+interface ActiveBatch {
+  run_id: string;
+  batch_id: string | null;
+  started_at: string;
+  processed: number;
+}
+
 interface QueueStatus {
   fetch_queue: number;
   analysis_queue: number;
   v2_complete: number;
-  active_batch: string | null;
+  active_batch: ActiveBatch | null;
 }
 
 function JDBatchStatus() {
@@ -118,7 +125,7 @@ function JDBatchStatus() {
           )}
           {status.active_batch && (
             <p className="text-xs text-muted-foreground">
-              Active batch: <code className="font-mono">{status.active_batch.slice(0, 16)}…</code> — polling every 15 min
+              Active batch: <code className="font-mono">{(status.active_batch.batch_id ?? status.active_batch.run_id).slice(0, 16)}…</code> — {status.active_batch.processed} ingested — polling every 15 min
             </p>
           )}
         </div>
