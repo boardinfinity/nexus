@@ -1392,6 +1392,126 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     });
   }
 
+  // ── Backfill bucket resolver for existing v2 jobs (no GPT — resolver only) ──
+  if (path === "/pipelines/jd/backfill-buckets" && req.method === "POST") {
+    if (!requireWriter(auth, "pipelines", res)) return;
+
+    // Remap stale prompt codes → correct DB FK codes
+    const FUNCTION_REMAP: Record<string, string> = {
+      "FN-PDM": "FN-PRD", // Product Management
+      "FN-CUS": "FN-CSU", // Customer Success
+      "FN-ITE": "FN-ITS", // Information Technology
+      "FN-LEG": "FN-LGL", // Legal
+      "FN-QAS": "FN-QAL", // Quality Assurance
+      "FN-RES": "FN-REL", // Real Estate (old FN-RES was Real Estate, now FN-REL)
+      "FN-RSC": "FN-RES", // Research (old FN-RSC, now FN-RES)
+    };
+
+    const PAGE = parseInt((req.body as any)?.page_size) || 100;
+    const offset = parseInt((req.body as any)?.offset) || 0;
+
+    // Fetch a page of v2 jobs with no bucket_id
+    const { data: jobs, error: jobsErr } = await supabase
+      .from("jobs")
+      .select("id, job_function, job_family, job_industry, seniority_level, company_type, geography, standardized_title, sub_role, jd_quality, classification_confidence")
+      .eq("analysis_version", "v2")
+      .is("bucket_id", null)
+      .not("job_function", "is", null)
+      .order("analyzed_at", { ascending: true })
+      .range(offset, offset + PAGE - 1);
+
+    if (jobsErr) return res.status(500).json({ error: jobsErr.message });
+    if (!jobs || jobs.length === 0) return res.json({ done: true, processed: 0, offset });
+
+    // Pre-load catalog once for this page
+    const [{ data: catalogBuckets }, { data: catalogAliases }, { data: catalogSkillMap }] = await Promise.all([
+      supabase.from("job_buckets").select("id, bucket_code, name, description, bucket_scope, function_id, family_id, industry_id, seniority_level, standardized_title, company_type, geography_scope, nature_of_work, exclusion_rules, status").neq("status", "merged").neq("status", "deprecated"),
+      supabase.from("job_bucket_aliases").select("bucket_id, alias_norm"),
+      supabase.from("job_bucket_skill_map").select("bucket_id, taxonomy_skill_id, requirement_type"),
+    ]);
+    const catalogOpts = {
+      overrideBuckets: (catalogBuckets || []) as any[],
+      overrideAliases: (catalogAliases || []) as any[],
+      overrideSkillMap: (catalogSkillMap || []) as any[],
+    };
+
+    let resolved = 0, skipped = 0, failed = 0;
+
+    for (const job of jobs) {
+      try {
+        // Remap stale function codes
+        const fn = FUNCTION_REMAP[job.job_function] ?? job.job_function;
+
+        const classification = {
+          job_function: fn,
+          job_function_name: null,
+          job_family: job.job_family || null,
+          job_family_name: null,
+          job_industry: job.job_industry || null,
+          job_industry_name: null,
+          seniority: job.seniority_level || null,
+          company_type: job.company_type || null,
+          geography: job.geography || null,
+          standardized_title: job.standardized_title || null,
+          sub_role: job.sub_role || null,
+          company_name: null,
+          ctc_min: null, ctc_max: null,
+          experience_min: null, experience_max: null,
+          min_education: null, preferred_fields: [],
+          bucket_label: null,
+          skills: [],
+          jd_quality: job.jd_quality || null,
+          classification_confidence: "medium" as any,
+          classification_confidence_score: parseFloat(job.classification_confidence) || 0.7,
+        };
+
+        const result = await resolveBucket(classification, catalogOpts);
+
+        const assignable = result.selected &&
+          (result.action === "auto_assign" || result.action === "tentative" || result.action === "auto_created");
+
+        if (assignable && result.selected) {
+          const { error: updateErr } = await supabase.from("jobs").update({
+            bucket_id: result.selected.bucket_id,
+            bucket_match_confidence: result.confidence,
+            bucket_match_reason: {
+              action: result.action,
+              mismatch_flags: result.mismatch_flags,
+              reason_summary: result.reason_summary,
+              auto_created_bucket_id: result.auto_created_bucket_id ?? null,
+            },
+            bucket_status_at_assignment: result.selected.status,
+            bucket_assigned_at: new Date().toISOString(),
+          }).eq("id", job.id);
+          if (updateErr) { failed++; console.error(`[backfill] update failed ${job.id}:`, updateErr.message); }
+          else resolved++;
+        } else {
+          skipped++; // unclassified — no bucket to assign
+        }
+      } catch (e: any) {
+        failed++;
+        console.error(`[backfill] job ${job.id} failed:`, e?.message);
+      }
+    }
+
+    const remaining = await supabase
+      .from("jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("analysis_version", "v2")
+      .is("bucket_id", null)
+      .not("job_function", "is", null);
+
+    return res.json({
+      done: jobs.length < PAGE,
+      processed: jobs.length,
+      resolved,
+      skipped,
+      failed,
+      next_offset: offset + jobs.length,
+      remaining: remaining.count ?? 0,
+    });
+  }
+
   return undefined;
 }
 
