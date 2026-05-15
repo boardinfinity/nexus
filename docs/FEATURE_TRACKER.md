@@ -44,6 +44,12 @@ Legend: ✅ live · 🟡 in progress · ⚪ not started · 🔴 blocked · 🟣 
 | Apollo company-level enrichment | ⚪ | — | — | — | Free 1K/month |
 | Propagation logic | ⚪ | — | — | — | Title × Seniority × Company fanout |
 
+## Schedulers
+
+| Sub-Feature | Status | Owner Thread | Last Update | Commit | Notes |
+|---|---|---|---|---|---|
+| Job Collection Scheduler — 90-role cadence rollout | 🟡 | job90sch | 2026-05-15 | cef419b | Code support shipped: Google role-query compaction, Bayt/NaukriGulf + monthly accepted in schedules API/UI, reproducible seed script. Live activation pending confirmation because recurring schedules consume provider credits. |
+
 ## P4 — Frontend Intelligence
 
 | Sub-Feature | Status | Owner Thread | Last Update | Commit | Notes |
