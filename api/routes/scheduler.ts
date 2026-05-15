@@ -80,35 +80,37 @@ async function triggerSchedule(schedule: any): Promise<{ success: boolean; run_i
   }
 }
 
-// ── Auto-chaining: if jd_enrichment has more jobs to process, queue another ──
-async function checkAndChainEnrichment(): Promise<void> {
-  const utcHour = new Date().getUTCHours();
-  if (utcHour >= 5) return; // Only chain before 5 AM UTC to avoid next-day overlap
-
+// ── JD Analysis stateless cron: 40 jobs per tick, no chaining ────────────────
+async function checkAndRunJdAnalysisCron(): Promise<void> {
+  // NULL-safe filter: picks up jobs with analysis_version IS NULL or != 'v2'
   const { count } = await supabase
     .from("jobs")
     .select("id", { count: "exact", head: true })
-    .is("analysis_version", null)
-    .not("description", "is", null);
+    .not("description", "is", null)
+    .or("analysis_version.is.null,analysis_version.neq.v2")
+    .in("enrichment_status", ["pending", "partial", "imported"]);
 
-  if ((count || 0) > 0) {
-    console.log(`[scheduler] Auto-chaining jd_enrichment: ${count} jobs pending`);
-    const { data: run } = await supabase
-      .from("pipeline_runs")
-      .insert({
-        pipeline_type: "jd_enrichment",
-        trigger_type: "auto_chain",
-        config: { batch_size: 200 },
-        status: "running",
-        started_at: new Date().toISOString(),
-        triggered_by: "scheduler_chain",
-      })
-      .select()
-      .single();
+  if ((count || 0) === 0) {
+    console.log("[scheduler] JD analysis queue empty — nothing to run.");
+    return;
+  }
 
-    if (run) {
-      await executePipeline(run.id, "jd_enrichment", { batch_size: 200 }).catch(console.error);
-    }
+  console.log(`[scheduler] JD analysis queue: ${count} jobs — triggering jd_enrichment (40 jobs)`);
+  const { data: run } = await supabase
+    .from("pipeline_runs")
+    .insert({
+      pipeline_type: "jd_enrichment",
+      trigger_type: "scheduled",
+      config: { batch_size: 40 },
+      status: "running",
+      started_at: new Date().toISOString(),
+      triggered_by: "scheduler_cron",
+    })
+    .select()
+    .single();
+
+  if (run) {
+    await executePipeline(run.id, "jd_enrichment", { batch_size: 40 }).catch(console.error);
   }
 }
 
@@ -166,8 +168,54 @@ export async function handleSchedulerRoutes(
       results.push({ schedule_name: schedule.name, ...result, next_run_at: nextRunAt });
     }
 
-    // Auto-chain jd_enrichment if needed
-    await checkAndChainEnrichment().catch(console.error);
+    // ── Zombie watchdog: kill pipeline_runs stuck in 'running' > 8 minutes ─────
+    const { data: zombies } = await supabase
+      .from("pipeline_runs")
+      .select("id")
+      .eq("status", "running")
+      .lt("started_at", new Date(Date.now() - 8 * 60 * 1000).toISOString());
+    if (zombies && zombies.length > 0) {
+      await supabase
+        .from("pipeline_runs")
+        .update({
+          status: "failed",
+          error_message: "Watchdog: killed after 8 min with no completion",
+          completed_at: new Date().toISOString(),
+        })
+        .in("id", zombies.map((z: any) => z.id));
+      console.log(`[scheduler] Zombie watchdog: killed ${zombies.length} stuck run(s)`);
+    }
+
+    // ── JD enrichment cron: process 40 jobs if queue non-empty ───────────────
+    await checkAndRunJdAnalysisCron().catch(console.error);
+
+    // ── JD batch poll: if an active jd_batch_submit run exists, poll it ──────
+    const { data: activeBatch } = await supabase
+      .from("pipeline_runs")
+      .select("id, config")
+      .eq("pipeline_type", "jd_batch_submit")
+      .in("status", ["running", "completed"])
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (activeBatch?.config?._batch_id) {
+      console.log(`[scheduler] Active OpenAI batch found — triggering jd_batch_poll_cron`);
+      const { data: pollRun } = await supabase
+        .from("pipeline_runs")
+        .insert({
+          pipeline_type: "jd_batch_poll_cron",
+          trigger_type: "scheduled",
+          config: {},
+          status: "running",
+          started_at: new Date().toISOString(),
+          triggered_by: "scheduler_cron",
+        })
+        .select()
+        .single();
+      if (pollRun) {
+        await executePipeline(pollRun.id, "jd_batch_poll_cron", {}).catch(console.error);
+      }
+    }
 
     // Resolve pending ME (Bayt / NaukriGulf) Apify runs from prior ticks
     const meResolve = await resolvePendingMEJobs().catch((e: any) => ({ resolved: 0, still_pending: 0, errors: [e.message] }));

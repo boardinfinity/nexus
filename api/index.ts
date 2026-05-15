@@ -27,7 +27,6 @@ import { handleMastersRoutes } from "./routes/masters";
 import { handleCampusUploadRoutes } from "./routes/campus-upload";
 import { handleCollegeDashboardRoutes, handlePublicCollegeDashboardRoutes } from "./routes/college-dashboard";
 import { handleExtractUaeJobSkillsRoutes, handlePublicExtractUaeJobSkillsTick } from "./routes/extract-uae-job-skills";
-import { handleCampusExcelWorkerRoutes, handlePublicCampusExcelWorkerTick } from "./routes/campus-excel-worker";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Enable CORS — restrict to known domains
@@ -97,27 +96,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
   }
 
-  // ==================== PUBLIC CAMPUS-EXCEL-WORKER TICK (cron-secret, before main auth) ====================
-  if (path.startsWith("/public/campus-excel-worker/")) {
-    try {
-      const r = await handlePublicCampusExcelWorkerTick(path, req, res);
-      if (r) return r;
-      return res.status(404).json({ error: "Not found" });
-    } catch (err: any) {
-      console.error("Public Campus Excel Worker API Error:", err);
-      return res.status(500).json({ error: err.message || "Internal server error" });
-    }
-  }
-
-  // ==================== JD AUTO-DRAIN CHAIN (cron-secret auth, before main auth) ====================
-  if (path === "/pipelines/jd/chain" && req.method === "POST") {
-    // Auth is enforced inside handlePipelineRoutes via x-cron-secret check.
-    const cronAuth = await verifyAuth(req).catch(() => ({ nexusUser: null as any })) as any;
-    const result = await handlePipelineRoutes(path, req, res, cronAuth);
-    if (result) return;
-    return res.status(404).json({ error: "Not found" });
-  }
-
   // ==================== SCHEDULER TICK (cron-secret auth, before main auth) ====================
   if (path === "/scheduler/tick" && (req.method === "POST" || req.method === "GET")) {
     // Tick has its own auth (x-vercel-cron header or CRON_SECRET)
@@ -179,8 +157,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       result = await handleBucketTestRoutes(path, req, res, auth);
     } else if (path.startsWith("/admin/extract-uae-job-skills")) {
       result = await handleExtractUaeJobSkillsRoutes(path, req, res, auth);
-    } else if (path.startsWith("/admin/campus-excel-worker")) {
-      result = await handleCampusExcelWorkerRoutes(path, req, res, auth);
     } else if (path === "/admin/test-claude") {
       result = await handleReportRoutes("/reports/test-claude", req, res, auth);
     } else if (path.startsWith("/admin/survey")) {

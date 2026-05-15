@@ -22,7 +22,7 @@
   "crons": [
     {
       "path": "/api/scheduler/tick",
-      "schedule": "*/15 * * * *"
+      "schedule": "*/5 * * * *"
     }
   ]
 }
