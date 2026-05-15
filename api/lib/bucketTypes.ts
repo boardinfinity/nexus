@@ -65,11 +65,12 @@ export interface ClassificationResult {
 // ─────────────────────────────────────────────────────────────────────
 
 export type BucketMatchAction =
-  | "auto_assign"        // confidence >= 0.80, validated bucket
-  | "tentative"          // confidence 0.65-0.79, may route to review
-  | "show_candidates"    // 0.50-0.64, do not auto-assign
-  | "needs_candidate"    // < 0.50 but high JD quality → propose candidate
-  | "unclassified";      // < 0.50 and JD too poor
+  | "auto_assign"        // confidence >= 0.50, validated bucket (first-pass)
+  | "tentative"          // confidence >= 0.50, candidate bucket (second-pass)
+  | "show_candidates"    // multiple candidates close in score, human pick needed
+  | "needs_candidate"    // < 0.50 but high JD quality → new candidate auto-created
+  | "auto_created"       // new candidate bucket was created from classification fields
+  | "unclassified";      // < 0.50 and JD too poor to create a candidate
 
 export interface BucketCandidate {
   bucket_id: string;
@@ -110,6 +111,8 @@ export interface BucketResolverResult {
   candidate_needed: boolean;
   mismatch_flags: string[];
   reason_summary: string;
+  /** Set when action === 'auto_created' — the newly inserted bucket row id */
+  auto_created_bucket_id?: string | null;
 }
 
 // ─────────────────────────────────────────────────────────────────────

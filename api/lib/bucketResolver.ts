@@ -47,9 +47,12 @@ const WEIGHTS: Record<BucketSignalKey, number> = {
   geography: 0.05,
 };
 
-const AUTO_THRESHOLD = 0.80;
-const TENTATIVE_THRESHOLD = 0.65;
-const SHOW_THRESHOLD = 0.50;
+// ── 3-tier matching thresholds ────────────────────────────────────────────
+// Tier 1: validated bucket   ≥ 0.50 → auto_assign
+// Tier 2: candidate bucket   ≥ 0.50 → tentative
+// Tier 3: neither qualifies  + well_structured|adequate JD → auto-create candidate
+const VALIDATED_THRESHOLD = 0.50;
+const CANDIDATE_THRESHOLD = 0.50;
 
 interface BucketRow {
   id: string;
@@ -211,16 +214,18 @@ export async function resolveBucket(
   scored.sort((a, b) => b.score - a.score);
   const top = scored.slice(0, limit);
 
-  // ── 3. Decide action band ─────────────────────────────────────────
-  const top1 = top[0];
+  // ── 3. Three-tier matching ─────────────────────────────────────────
+  // Tier 1: best score ≥ 0.50 against a VALIDATED bucket → auto_assign
+  // Tier 2: best score ≥ 0.50 against a CANDIDATE bucket → tentative
+  // Tier 3: nothing qualifies → auto-create a new candidate bucket
+
+  const topValidated = top.find(b => b.status === "validated" && b.score >= VALIDATED_THRESHOLD) ?? null;
+  const topCandidate = !topValidated
+    ? (top.find(b => b.status === "candidate" && b.score >= CANDIDATE_THRESHOLD) ?? null)
+    : null;
+
+  const top1 = topValidated ?? topCandidate ?? top[0] ?? null;
   const top1Score = top1?.score ?? 0;
-  const top1IsValidated = top1?.status === "validated";
-
-  const action = decideAction(top1Score, top1IsValidated, classification.jd_quality);
-
-  const candidate_needed =
-    action === "needs_candidate" ||
-    (top1Score < TENTATIVE_THRESHOLD && classification.jd_quality === "well_structured");
 
   const mismatch_flags: string[] = [];
   if (top1 && classification.job_function && top1.function_id && top1.function_id !== classification.job_function) {
@@ -230,17 +235,182 @@ export async function resolveBucket(
     mismatch_flags.push(`industry_mismatch:${classification.job_industry}!=${top1.industry_id}`);
   }
 
-  const selected = action === "auto_assign" || action === "tentative" ? top1 ?? null : null;
+  // Tier 1 hit
+  if (topValidated) {
+    return {
+      selected: topValidated,
+      confidence: topValidated.score,
+      action: "auto_assign",
+      top_candidates: top,
+      candidate_needed: false,
+      mismatch_flags,
+      reason_summary: `Auto-assigned to validated bucket ${topValidated.bucket_code} (${(topValidated.score * 100).toFixed(0)}% match).`,
+    };
+  }
 
+  // Tier 2 hit
+  if (topCandidate) {
+    return {
+      selected: topCandidate,
+      confidence: topCandidate.score,
+      action: "tentative",
+      top_candidates: top,
+      candidate_needed: false,
+      mismatch_flags,
+      reason_summary: `Tentative match to candidate bucket ${topCandidate.bucket_code} (${(topCandidate.score * 100).toFixed(0)}% match). Pending admin validation.`,
+    };
+  }
+
+  // Tier 3: neither qualifies — auto-create a candidate if JD is good enough
+  const jdGoodEnough = classification.jd_quality === "well_structured" || classification.jd_quality === "adequate";
+  const hasRequiredFields = !!(classification.job_function && classification.job_family && classification.job_industry);
+
+  if (jdGoodEnough && hasRequiredFields) {
+    let newBucketId: string | null = null;
+    let newBucket: BucketCandidate | null = null;
+    try {
+      const created = await createCandidateBucket(classification);
+      if (created) {
+        newBucketId = created.id;
+        newBucket = {
+          bucket_id: created.id,
+          bucket_code: created.bucket_code,
+          name: created.name,
+          status: "candidate",
+          score: 0,
+          reasons: [],
+          function_id: classification.job_function,
+          family_id: classification.job_family,
+          industry_id: classification.job_industry,
+          seniority_level: classification.seniority,
+          geography_scope: classification.geography,
+        };
+      }
+    } catch (e: any) {
+      console.error("[bucketResolver] auto-create failed:", e?.message);
+    }
+
+    return {
+      selected: newBucket,
+      confidence: 0,
+      action: "auto_created",
+      top_candidates: top,
+      candidate_needed: true,
+      mismatch_flags,
+      auto_created_bucket_id: newBucketId,
+      reason_summary: newBucket
+        ? `No existing bucket matched (best: ${(top1Score * 100).toFixed(0)}%). New candidate bucket "${newBucket.name}" auto-created for admin review.`
+        : `No existing bucket matched. Candidate creation failed — needs manual bucketing.`,
+    };
+  }
+
+  // Truly unclassified
   return {
-    selected,
+    selected: null,
     confidence: top1Score,
-    action,
+    action: "unclassified",
     top_candidates: top,
-    candidate_needed,
+    candidate_needed: false,
     mismatch_flags,
-    reason_summary: summarize(top1 ?? null, action),
+    reason_summary: `No bucket match (best: ${(top1Score * 100).toFixed(0)}%). JD quality too low for candidate creation.`,
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────
+// createCandidateBucket — auto-generates a new candidate bucket row
+// from the LLM's classification fields when no existing bucket qualifies.
+// Structure: code, name, scope, function, family, industry, geography, company_type.
+// ─────────────────────────────────────────────────────────────────────
+
+async function createCandidateBucket(
+  c: ClassificationResult
+): Promise<{ id: string; bucket_code: string; name: string } | null> {
+  // Build a deterministic bucket_code from classification fields
+  // Format: AUTO-{FN}-{SENIORITY}-{IND_SHORT}-{GEO_SHORT}
+  const fnShort = (c.job_function || "GEN").replace("FN-", "");
+  const senShort = (c.seniority || "LX").replace("L", "L");
+  const indShort = (c.job_industry || "IND-15").replace("IND-", "I").padEnd(3, "X");
+  const geoShort = geoToShort(c.geography);
+  const compShort = companyTypeToShort(c.company_type);
+  const bucket_code = `AUTO-${fnShort}-${senShort}-${indShort}-${geoShort}-${compShort}`.toUpperCase().slice(0, 60);
+
+  // Check if this exact code already exists (idempotent)
+  const { data: existing } = await supabase
+    .from("job_buckets")
+    .select("id, bucket_code, name")
+    .eq("bucket_code", bucket_code)
+    .maybeSingle();
+  if (existing) return existing;
+
+  // Build human-readable name from classification names
+  const fnName = c.job_function_name || fnShort;
+  const indName = c.job_industry_name || indShort;
+  const senLabel = seniorityLabel(c.seniority);
+  const geoLabel = c.geography || "India";
+  const compLabel = c.company_type || "";
+  const name = [senLabel, fnName, "—", indName, compLabel ? `(${compLabel})` : "", geoLabel]
+    .filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
+
+  const row = {
+    bucket_code,
+    name,
+    description: `Auto-created candidate bucket from JD analysis. Function: ${fnName}, Industry: ${indName}, Seniority: ${c.seniority || "unknown"}, Geography: ${geoLabel}. Requires admin validation.`,
+    bucket_scope: "candidate",
+    function_id: c.job_function,
+    family_id: c.job_family,
+    industry_id: c.job_industry,
+    seniority_level: c.seniority,
+    company_type: c.company_type,
+    geography_scope: c.geography,
+    standardized_title: c.standardized_title,
+    nature_of_work: c.sub_role,
+    status: "candidate",
+    source: "auto_jd_analysis",
+    first_seen_at: new Date().toISOString(),
+    mention_count: 1,
+    evidence_count: 1,
+  };
+
+  const { data: inserted, error } = await supabase
+    .from("job_buckets")
+    .insert(row)
+    .select("id, bucket_code, name")
+    .single();
+
+  if (error) {
+    console.error("[bucketResolver] insert new bucket failed:", error.message);
+    return null;
+  }
+  console.log(`[bucketResolver] Auto-created candidate bucket: ${inserted.bucket_code} — "${inserted.name}"`);
+  return inserted;
+}
+
+function geoToShort(geo: string | null): string {
+  if (!geo) return "IN";
+  const map: Record<string, string> = {
+    "Metro-Mumbai": "MUM", "Metro-Delhi-NCR": "DEL", "Metro-Bangalore": "BLR",
+    "Metro-Hyderabad": "HYD", "Metro-Chennai": "CHN", "Metro-Pune": "PNE",
+    "Metro-Kolkata": "KOL", "Metro-Ahmedabad": "AMD", "Tier-2-India": "T2",
+    "Remote-India": "REM", "UAE-Dubai": "UAE", "International-Other": "INT",
+  };
+  return map[geo] || "IN";
+}
+
+function companyTypeToShort(ct: string | null): string {
+  if (!ct) return "GEN";
+  const map: Record<string, string> = {
+    "MNC": "MNC", "Indian Enterprise": "IE", "Startup": "STP",
+    "Government-PSU": "GOV", "Consulting Firm": "CON",
+  };
+  return map[ct] || "GEN";
+}
+
+function seniorityLabel(s: string | null): string {
+  const map: Record<string, string> = {
+    "L0": "Fresher", "L1": "Junior", "L2": "Associate",
+    "L3": "Mid-Level", "L4": "Senior", "L5": "Lead/Director",
+  };
+  return s ? (map[s] || s) : "";
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -378,33 +548,5 @@ function geographyMatch(scope: string, geo: string): boolean {
   return false;
 }
 
-function decideAction(
-  score: number,
-  isValidated: boolean,
-  jdQuality: string | null,
-): BucketMatchAction {
-  if (score >= AUTO_THRESHOLD && isValidated) return "auto_assign";
-  if (score >= TENTATIVE_THRESHOLD) return "tentative";
-  if (score >= SHOW_THRESHOLD) return "show_candidates";
-  if (jdQuality === "well_structured" || jdQuality === "adequate") return "needs_candidate";
-  return "unclassified";
-}
+// decideAction + summarize replaced by inline 3-tier logic above
 
-function summarize(top: BucketCandidate | null, action: BucketMatchAction): string {
-  if (!top) {
-    if (action === "needs_candidate") return "No close match — JD is high-quality, candidate bucket suggested.";
-    return "No bucket candidates found.";
-  }
-  switch (action) {
-    case "auto_assign":
-      return `Auto-assigned to validated bucket ${top.bucket_code} (${top.score.toFixed(2)}).`;
-    case "tentative":
-      return `Tentative match: ${top.bucket_code} (${top.score.toFixed(2)}). Recommend admin review.`;
-    case "show_candidates":
-      return `Top candidate ${top.bucket_code} below auto-threshold (${top.score.toFixed(2)}).`;
-    case "needs_candidate":
-      return `Best score ${top.score.toFixed(2)} below show threshold; high-quality JD → candidate creation suggested.`;
-    case "unclassified":
-      return `No confident match (${top.score.toFixed(2)}).`;
-  }
-}

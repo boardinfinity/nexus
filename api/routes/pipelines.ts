@@ -3408,7 +3408,7 @@ async function executePeopleEnrichment(runId: string, config: any) {
 // ==================== JD BATCH API PIPELINE ====================
 
 async function executeJDBatchSubmit(runId: string, config: any) {
-  const batchSize = Math.min(parseInt(config.batch_size) || 2000, 5000);
+  const batchSize = Math.min(parseInt(config.batch_size) || 100, 100);
   
   // Fetch jobs needing enrichment
   const { data: jobs, error } = await supabase

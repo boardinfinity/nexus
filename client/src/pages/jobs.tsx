@@ -13,6 +13,10 @@ import { Search, ExternalLink, Circle, FileText, Brain, Download, Play, Loader2,
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { useToast } from "@/hooks/use-toast";
 import type { Job } from "@shared/schema";
+import { ClassificationCard } from "@/components/jd-analyzer/ClassificationCard";
+import { BucketMappingCard } from "@/components/jd-analyzer/BucketMappingCard";
+import { SkillsCard } from "@/components/jd-analyzer/SkillsCard";
+import type { AnalyzeResult } from "@/components/jd-analyzer/types";
 
 interface JobSkill {
   id: string;
@@ -32,6 +36,7 @@ export default function Jobs() {
   const [addedDate, setAddedDate] = useState(urlParams.get("added") || "all");
   const [page, setPage] = useState(1);
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
+  const [analyzeResult, setAnalyzeResult] = useState<AnalyzeResult | null>(null);
   const queryClient = useQueryClient();
   const { toast } = useToast();
 
@@ -105,14 +110,17 @@ export default function Jobs() {
 
   const analyzeJdMutation = useMutation({
     mutationFn: async (jobId: string) => {
-      const res = await apiRequest("POST", "/api/pipelines/run", {
-        pipeline_type: "jd_enrichment",
-        config: { batch_size: 1, job_ids: [jobId] },
+      const res = await authFetch("/api/analyze-jd", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ job_id: jobId }),
       });
-      return res.json();
+      if (!res.ok) throw new Error(await res.text());
+      return res.json() as Promise<AnalyzeResult>;
     },
-    onSuccess: () => {
-      toast({ title: "JD Analysis started", description: "Job description analysis has been triggered." });
+    onSuccess: (result: AnalyzeResult) => {
+      setAnalyzeResult(result);
+      toast({ title: "JD Analysis complete", description: `${result.skills?.length ?? 0} skills extracted` });
       queryClient.invalidateQueries({ queryKey: ["/api/jobs"] });
     },
     onError: (err: Error) => {
@@ -259,7 +267,7 @@ export default function Jobs() {
           ]}
           data={data?.data ?? []}
           isLoading={isLoading}
-          onRowClick={(row) => setSelectedJob(row)}
+          onRowClick={(row) => { setSelectedJob(row); setAnalyzeResult(null); }}
           emptyMessage="No jobs match your filters"
         />
       </div>
@@ -288,7 +296,7 @@ export default function Jobs() {
         </div>
       )}
 
-      <Sheet open={!!selectedJob} onOpenChange={(open) => !open && setSelectedJob(null)}>
+      <Sheet open={!!selectedJob} onOpenChange={(open) => { if (!open) { setSelectedJob(null); setAnalyzeResult(null); } }}>
         <SheetContent className="sm:max-w-lg overflow-y-auto">
           <SheetHeader>
             <SheetTitle className="text-lg">{jobDetail?.title || selectedJob?.title}</SheetTitle>
@@ -502,40 +510,6 @@ export default function Jobs() {
                 </CardContent>
               </Card>
 
-              {/* Extracted Skills */}
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
-                    <Brain className="h-3 w-3" /> Extracted Skills ({jobDetail?.skills?.length ?? 0})
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  {jobDetail?.skills && jobDetail.skills.length > 0 ? (
-                    <div className="flex flex-wrap gap-1.5">
-                      {jobDetail.skills.map((skill: JobSkill) => (
-                        <Badge
-                          key={skill.id}
-                          variant="secondary"
-                          className="text-xs"
-                          title={skill.confidence_score ? `Confidence: ${Math.round(skill.confidence_score * 100)}%` : undefined}
-                        >
-                          {skill.taxonomy_skill?.name || skill.skill_name}
-                          {skill.category && (
-                            <span className="ml-1 opacity-60 text-[10px]">({skill.category})</span>
-                          )}
-                        </Badge>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="flex flex-col items-center justify-center py-6 text-center">
-                      <Brain className="h-8 w-8 text-muted-foreground/40 mb-2" />
-                      <p className="text-sm text-muted-foreground">No skills extracted</p>
-                      <p className="text-xs text-muted-foreground">Use "Analyze JD" to extract skills</p>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
-
               {/* Actions */}
               <Card>
                 <CardHeader className="pb-2">
@@ -572,6 +546,53 @@ export default function Jobs() {
                   </Button>
                 </CardContent>
               </Card>
+
+              {/* Full Analysis Result — shown after Analyze JD button completes */}
+              {analyzeResult ? (
+                <div className="space-y-3">
+                  <ClassificationCard result={analyzeResult} />
+                  {analyzeResult.bucket_mapping && (
+                    <BucketMappingCard result={analyzeResult} />
+                  )}
+                  <SkillsCard result={analyzeResult} />
+                </div>
+              ) : (
+                /* Fallback: simple skill badges from stored job_skills when no live result yet */
+                jobDetail?.skills && jobDetail.skills.length > 0 ? (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-xs text-muted-foreground uppercase flex items-center gap-1">
+                        <Brain className="h-3 w-3" /> Extracted Skills ({jobDetail.skills.length})
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex flex-wrap gap-1.5">
+                        {jobDetail.skills.map((skill: JobSkill) => (
+                          <Badge
+                            key={skill.id}
+                            variant="secondary"
+                            className="text-xs"
+                            title={skill.confidence_score ? `Confidence: ${Math.round(skill.confidence_score * 100)}%` : undefined}
+                          >
+                            {skill.taxonomy_skill?.name || skill.skill_name}
+                            {skill.category && (
+                              <span className="ml-1 opacity-60 text-[10px]">({skill.category})</span>
+                            )}
+                          </Badge>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  <Card>
+                    <CardContent className="flex flex-col items-center justify-center py-6 text-center">
+                      <Brain className="h-8 w-8 text-muted-foreground/40 mb-2" />
+                      <p className="text-sm text-muted-foreground">No skills extracted yet</p>
+                      <p className="text-xs text-muted-foreground">Hit "Analyze JD" above to extract skills, classification &amp; bucket mapping</p>
+                    </CardContent>
+                  </Card>
+                )
+              )}
             </div>
           )}
         </SheetContent>

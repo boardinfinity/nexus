@@ -253,7 +253,10 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
           company_type: parsed.company_type || null,
           geography: parsed.geography || null,
         };
-        if (bucketMapping?.action === "auto_assign" && bucketMapping.selected) {
+        // Wire bucket_id for auto_assign, tentative, AND auto_created
+        const bucketAssignable = bucketMapping?.selected &&
+          (bucketMapping.action === "auto_assign" || bucketMapping.action === "tentative" || bucketMapping.action === "auto_created");
+        if (bucketAssignable && bucketMapping && bucketMapping.selected) {
           updateFields.bucket_id = bucketMapping.selected.bucket_id;
           updateFields.bucket_match_confidence = bucketMapping.confidence;
           updateFields.bucket_match_reason = {
@@ -261,6 +264,7 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
             top_candidates: bucketMapping.top_candidates,
             mismatch_flags: bucketMapping.mismatch_flags,
             reason_summary: bucketMapping.reason_summary,
+            auto_created_bucket_id: bucketMapping.auto_created_bucket_id ?? null,
           };
           updateFields.bucket_status_at_assignment = bucketMapping.selected.status;
           updateFields.bucket_assigned_at = new Date().toISOString();
@@ -271,6 +275,7 @@ export async function processBatchResults(outputFileId: string, batchRunId: stri
             top_candidates: bucketMapping.top_candidates,
             mismatch_flags: bucketMapping.mismatch_flags,
             reason_summary: bucketMapping.reason_summary,
+            auto_created_bucket_id: bucketMapping.auto_created_bucket_id ?? null,
           };
         }
 

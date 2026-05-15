@@ -204,9 +204,21 @@ export function RunHistory({ pipelineTypes, limit = 20, title = "Recent Runs" }:
                       )}
                       {run.status === "completed" && (run.processed_items || 0) > 0 && (() => {
                         const isPeopleRun = ["alumni", "alumni_bulk_upload", "people_enrichment"].includes(run.pipeline_type);
-                        const href = isPeopleRun
-                          ? `/people`
-                          : `/jobs?source=${run.pipeline_type === "linkedin_jobs" ? "linkedin" : run.pipeline_type === "google_jobs" ? "google_jobs" : ""}&added=${encodeURIComponent(run.started_at)}`;
+                        const isJdAnalysis = run.pipeline_type === "jd_enrichment";
+                        let href: string;
+                        if (isPeopleRun) {
+                          href = `/people`;
+                        } else if (isJdAnalysis) {
+                          // Link to jobs page filtered to v2_complete jobs analyzed after this run started
+                          href = `/jobs?status=complete&added=${encodeURIComponent(run.started_at)}`;
+                        } else {
+                          const sourceMap: Record<string, string> = {
+                            linkedin_jobs: "linkedin",
+                            google_jobs: "google_jobs",
+                          };
+                          const src = sourceMap[run.pipeline_type] || "";
+                          href = `/jobs?${src ? `source=${src}&` : ""}added=${encodeURIComponent(run.started_at)}`;
+                        }
                         return (
                           <Link href={href}>
                             <Button variant="outline" size="sm" className="h-6 text-[10px] px-2">
