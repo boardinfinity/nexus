@@ -368,14 +368,28 @@ async function createCandidateBucket(
   const name = [senLabel, fnName, "—", indName, compLabel ? `(${compLabel})` : "", geoLabel]
     .filter(Boolean).join(" ").replace(/\s+/g, " ").trim().slice(0, 120);
 
+  // Validate FK references exist before inserting — null out any that don't
+  // to avoid FK constraint failures from prompt/DB drift.
+  const VALID_FUNCTIONS = new Set(["FN-ACC","FN-ADM","FN-ART","FN-BDV","FN-CON","FN-CSU","FN-DAT","FN-EDU","FN-ENG","FN-ENT","FN-FIN","FN-GEN","FN-HLT","FN-HRM","FN-ITS","FN-LGL","FN-MED","FN-MKT","FN-OPS","FN-PGM","FN-PRD","FN-PUR","FN-QAL","FN-REL","FN-RES","FN-SAL"]);
+  const VALID_FAMILIES = new Set(["JF-01","JF-02","JF-03","JF-04","JF-05","JF-06","JF-07","JF-08","JF-09","JF-10","JF-11","JF-12","JF-13","JF-14","JF-15","JF-16","JF-17","JF-18","JF-19","JF-20"]);
+  const VALID_INDUSTRIES = new Set(["IND-01","IND-02","IND-03","IND-04","IND-05","IND-06","IND-07","IND-08","IND-09","IND-10","IND-11","IND-12","IND-13","IND-14","IND-15"]);
+
+  const safe_function_id = c.job_function && VALID_FUNCTIONS.has(c.job_function) ? c.job_function : null;
+  const safe_family_id   = c.job_family   && VALID_FAMILIES.has(c.job_family)   ? c.job_family   : null;
+  const safe_industry_id = c.job_industry && VALID_INDUSTRIES.has(c.job_industry) ? c.job_industry : null;
+
+  if (!safe_function_id) console.warn(`[bucketResolver] Unknown function_id: ${c.job_function} — inserting NULL`);
+  if (!safe_family_id)   console.warn(`[bucketResolver] Unknown family_id: ${c.job_family} — inserting NULL`);
+  if (!safe_industry_id) console.warn(`[bucketResolver] Unknown industry_id: ${c.job_industry} — inserting NULL`);
+
   const row = {
     bucket_code,
     name,
     description: `Auto-created candidate bucket from JD analysis. Function: ${fnName}, Industry: ${indName}, Seniority: ${c.seniority || "unknown"}, Geography: ${geoLabel}. Requires admin validation.`,
     bucket_scope: "candidate",
-    function_id: c.job_function,
-    family_id: c.job_family,
-    industry_id: c.job_industry,
+    function_id: safe_function_id,
+    family_id: safe_family_id,
+    industry_id: safe_industry_id,
     seniority_level: c.seniority,
     company_type: c.company_type,
     geography_scope: c.geography,

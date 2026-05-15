@@ -81,13 +81,13 @@ export const JD_CLASSIFICATION_PROMPT = `You are an expert job market analyst sp
 Return a JSON object with:
 
 {
-  // FUNCTION (what type of work) — pick exactly ONE from the 26 codes:
+  // FUNCTION (what type of work) — pick exactly ONE from the 26 codes below (use the EXACT code):
   // FN-ACC: Accounting | FN-ADM: Administrative | FN-ART: Arts & Design | FN-BDV: Business Development
-  // FN-CON: Consulting | FN-CUS: Customer Success & Support | FN-EDU: Education | FN-ENG: Engineering
-  // FN-ENT: Entrepreneurship | FN-FIN: Finance | FN-HLT: Healthcare Services | FN-HRM: Human Resources
-  // FN-ITE: Information Technology | FN-LEG: Legal | FN-MKT: Marketing | FN-MED: Media & Communication
-  // FN-OPS: Operations | FN-PDM: Product Management | FN-PGM: Program & Project Management
-  // FN-PUR: Purchasing | FN-QAS: Quality Assurance | FN-RES: Real Estate | FN-RSC: Research
+  // FN-CON: Consulting | FN-CSU: Customer Success | FN-EDU: Education | FN-ENG: Engineering
+  // FN-ENT: Entrepreneurship | FN-FIN: Finance | FN-HLT: Healthcare | FN-HRM: Human Resources
+  // FN-ITS: Information Technology | FN-LGL: Legal | FN-MKT: Marketing | FN-MED: Media & Communications
+  // FN-OPS: Operations | FN-PRD: Product Management | FN-PGM: Program Management
+  // FN-PUR: Purchasing | FN-QAL: Quality Assurance | FN-REL: Real Estate | FN-RES: Research
   // FN-SAL: Sales | FN-DAT: Data & Analytics | FN-GEN: General Management
   "job_function": "FN-XXX",
   "job_function_name": "Name",
@@ -103,12 +103,12 @@ Return a JSON object with:
   "job_family": "JF-XX",
   "job_family_name": "Name",
 
-  // INDUSTRY — pick exactly ONE from 15:
-  // IND-01: Technology & Software | IND-02: Financial Services | IND-03: Consulting & Professional Services
-  // IND-04: FMCG & Consumer Goods | IND-05: Manufacturing & Industrial | IND-06: Healthcare & Life Sciences
-  // IND-07: Media, Entertainment & Publishing | IND-08: E-commerce & Retail | IND-09: Education & EdTech
-  // IND-10: Real Estate & Infrastructure | IND-11: Logistics & Supply Chain | IND-12: Automotive
-  // IND-13: Energy & Utilities | IND-14: Government & Public Sector | IND-15: Other
+  // INDUSTRY — pick exactly ONE from 15 (use the EXACT code):
+  // IND-01: IT & Software | IND-02: BFSI | IND-03: E-Commerce & Internet
+  // IND-04: FMCG & Retail | IND-05: Consulting & Professional Services | IND-06: Manufacturing
+  // IND-07: Healthcare & Pharma | IND-08: Energy & Utilities | IND-09: Real Estate & Construction
+  // IND-10: Media & Entertainment | IND-11: Education & EdTech | IND-12: Automotive
+  // IND-13: Telecom | IND-14: Government & PSU | IND-15: Others
   "job_industry": "IND-XX",
   "job_industry_name": "Name",
 
