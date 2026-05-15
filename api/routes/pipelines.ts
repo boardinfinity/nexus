@@ -2310,23 +2310,54 @@ async function executeCompanyEnrichment(runId: string, config: any) {
 }
 
 // ==================== JD FETCH PIPELINE (Feature 4) ====================
+// AI-based JD Fetch — Phase 3 redesign.
+//
+// Strategy 1: Direct URL fetch via Apify web-scraper (any source with source_url).
+// Strategy 2: Google Search + GPT-4.1 mini extraction using job title, company, location.
+//             Only writes the JD if GPT is ≥80% confident it found the real posting.
+// No hallucination: if neither strategy yields a real JD, mark jd_fetch_status='no_jd_found'.
+//
+// Targets: jd_fetch_status IN ('pending', 'failed').
+
+// Geography code → human-readable location for search queries
+function geoToSearchLocation(geo: string | null): string | null {
+  if (!geo) return null;
+  const map: Record<string, string> = {
+    "Metro-Mumbai": "Mumbai",
+    "Metro-Delhi-NCR": "Delhi NCR",
+    "Metro-Bangalore": "Bangalore",
+    "Metro-Hyderabad": "Hyderabad",
+    "Metro-Chennai": "Chennai",
+    "Metro-Pune": "Pune",
+    "Metro-Kolkata": "Kolkata",
+    "Metro-Ahmedabad": "Ahmedabad",
+    "Metro-Dubai": "Dubai",
+    "Metro-Riyadh": "Riyadh",
+    "Tier-2-India": "India",
+    "Remote-India": "India",
+    "UAE-Dubai": "Dubai",
+    "UAE": "UAE",
+    "International-Other": null,
+    "any": null,
+  };
+  return map[geo] ?? null;
+}
 
 async function executeJDFetch(runId: string, config: any) {
   const batchSize = Math.min(parseInt(config.batch_size) || 8, 8);
   const jobIds: string[] = config.job_ids || [];
 
   // If specific job IDs provided (e.g. from single-job "Fetch JD" button), use those.
-  // Otherwise fall back to queue-based fetch (jd_fetch_status = pending).
+  // Otherwise fetch from queue: pending OR previously failed.
   let query = supabase
     .from("jobs")
-    .select("id, title, company_name, source, source_url, description");
+    .select("id, title, company_name, source, source_url, description, geography");
 
   if (jobIds.length > 0) {
     query = query.in("id", jobIds);
   } else {
     query = query
-      .eq("jd_fetch_status", "pending")
-      .or("description.is.null,description.lt.100")
+      .in("jd_fetch_status", ["pending", "failed"])
       .order("created_at", { ascending: false })
       .limit(batchSize);
   }
@@ -2351,12 +2382,15 @@ async function executeJDFetch(runId: string, config: any) {
   for (const job of jobs) {
     try {
       let fetchedDescription: string | null = null;
+      let fetchStrategy = "none";
 
-      // Strategy 1: Apify for LinkedIn jobs with source_url
-      if (job.source === "linkedin" && job.source_url && APIFY_API_KEY) {
+      // ── Strategy 1: Direct URL fetch via Apify ──────────────────────────────
+      // Works for any source that has a real source_url (LinkedIn, NaukriGulf, Bayt, etc.)
+      if (job.source_url && APIFY_API_KEY &&
+          !job.source_url.includes("google.com/search")) { // skip Google SERP URLs
         try {
           const apifyRes = await fetch(
-            `https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}&timeout=30`,
+            `https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}&timeout=45`,
             {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -2365,57 +2399,163 @@ async function executeJDFetch(runId: string, config: any) {
                 maxRequestsPerCrawl: 1,
                 pageFunction: `async function pageFunction(context) {
                   const $ = context.jQuery;
-                  const desc = $(".description__text, .show-more-less-html__markup, [class*='description'], .job-description").text().trim();
-                  return { description: desc || document.body.innerText.substring(0, 8000) };
+                  // Try known JD selectors first (LinkedIn, NaukriGulf, Bayt, Indeed)
+                  const selectors = [
+                    '.description__text',
+                    '.show-more-less-html__markup',
+                    '.job-description',
+                    '#job-description',
+                    '[class*="description"]',
+                    '.dsc-txt-html',
+                    '.JobDescription',
+                    '.jobDescriptionContent',
+                  ];
+                  let desc = '';
+                  for (const sel of selectors) {
+                    desc = $(sel).first().text().trim();
+                    if (desc.length > 200) break;
+                  }
+                  if (desc.length < 200) desc = document.body.innerText.substring(0, 10000);
+                  return { description: desc, url: window.location.href };
                 }`,
               }),
             }
           );
           if (apifyRes.ok) {
             const items = await apifyRes.json();
-            const desc = items?.[0]?.description;
-            if (desc && desc.length > 100) {
+            const desc = items?.[0]?.description?.trim();
+            if (desc && desc.length >= 300) {
               fetchedDescription = desc;
+              fetchStrategy = "direct_url";
             }
           }
         } catch (apifyErr: any) {
-          console.error(`[JD Fetch] Apify failed for job ${job.id}:`, apifyErr.message);
+          console.error(`[JD Fetch] Strategy 1 (Apify) failed for ${job.id}:`, apifyErr.message);
         }
       }
 
-      // Strategy 2: OpenAI fallback — reconstruct JD from what we know
-      if (!fetchedDescription && OPENAI_API_KEY) {
+      // ── Strategy 2: Google Search + GPT extraction ──────────────────────────
+      // Builds a targeted search query including job title, company, and location.
+      // Fetches the top result pages and asks GPT to extract the real JD text.
+      // Only writes if GPT reports ≥80% confidence — never hallucinates.
+      if (!fetchedDescription && OPENAI_API_KEY && APIFY_API_KEY) {
         try {
-          const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              "Authorization": `Bearer ${OPENAI_API_KEY}`,
-            },
-            body: JSON.stringify({
-              model: "gpt-4o-mini",
-              messages: [{
-                role: "user",
-                content: `Find or reconstruct the full job description for the role "${job.title}" at ${job.company_name || "unknown company"}. ${job.source_url ? `Original posting: ${job.source_url}` : ""}\n\nReturn ONLY the full job description text. If you cannot find it, construct a realistic job description based on the role title and company. Start directly with the job description content.`,
-              }],
-              temperature: 0.3,
-              max_completion_tokens: 2000,
-            }),
-          });
-          if (openaiRes.ok) {
-            const openaiData = await openaiRes.json();
-            const content = openaiData.choices?.[0]?.message?.content;
-            if (content && content.length > 100 && !content.includes("NOT_FOUND")) {
-              fetchedDescription = content;
+          const location = geoToSearchLocation(job.geography);
+          const locationPart = location ? ` "${location}"` : "";
+          const sitesFilter = "site:linkedin.com OR site:naukri.com OR site:indeed.com OR site:glassdoor.com OR site:naukrigulf.com OR site:bayt.com OR site:instahyre.com";
+          const searchQuery = `"${job.title}" "${job.company_name || ""}"${locationPart} job description ${sitesFilter}`;
+
+          // Fetch Google search results via Apify Google Search scraper
+          const searchRes = await fetch(
+            `https://api.apify.com/v2/acts/apify~google-search-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}&timeout=45`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                queries: searchQuery,
+                maxPagesPerQuery: 1,
+                resultsPerPage: 5,
+                countryCode: "in",
+                languageCode: "en",
+              }),
+            }
+          );
+
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            const results: Array<{ title: string; url: string; description: string }> =
+              searchData?.[0]?.organicResults?.slice(0, 3) || [];
+
+            if (results.length > 0) {
+              // Build context from search snippets for GPT
+              const searchContext = results.map((r, i) =>
+                `[Result ${i + 1}]\nTitle: ${r.title}\nURL: ${r.url}\nSnippet: ${r.description || ""}`
+              ).join("\n\n");
+
+              // Fetch the top result page for full JD text if snippet looks promising
+              let pageText = "";
+              const topUrl = results[0]?.url;
+              if (topUrl && !topUrl.includes("glassdoor.com")) { // Glassdoor blocks fetches
+                try {
+                  const pageRes = await fetch(
+                    `https://api.apify.com/v2/acts/apify~web-scraper/run-sync-get-dataset-items?token=${APIFY_API_KEY}&timeout=30`,
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        startUrls: [{ url: topUrl }],
+                        maxRequestsPerCrawl: 1,
+                        pageFunction: `async function pageFunction(context) {
+                          const $ = context.jQuery;
+                          const selectors = ['.description__text','.show-more-less-html__markup','.job-description','#job-description','[class*="description"]','.dsc-txt-html','.JobDescription'];
+                          let desc = '';
+                          for (const sel of selectors) { desc = $(sel).first().text().trim(); if (desc.length > 200) break; }
+                          if (desc.length < 200) desc = document.body.innerText.substring(0, 8000);
+                          return { text: desc };
+                        }`,
+                      }),
+                    }
+                  );
+                  if (pageRes.ok) {
+                    const pageData = await pageRes.json();
+                    pageText = pageData?.[0]?.text?.trim() || "";
+                  }
+                } catch { /* ignore page fetch failures */ }
+              }
+
+              // Ask GPT-4.1 mini to extract the JD with explicit confidence gate
+              const gptPrompt = [
+                `You are extracting a real job description from search results.`,
+                `Job title: "${job.title}"`,
+                `Company: "${job.company_name || "unknown"}"`,
+                location ? `Location: "${location}"` : "",
+                ``,
+                `Search results (snippets):`,
+                searchContext,
+                pageText ? `\nTop result full page text:\n${pageText.substring(0, 4000)}` : "",
+                ``,
+                `TASK: Extract the complete, real job description for this role.`,
+                `RULES:`,
+                `- Only use text that is clearly the actual job posting for "${job.title}" at "${job.company_name || "the company"}".`,
+                `- Do NOT fabricate, reconstruct, or infer any part of the JD.`,
+                `- If you are less than 80% confident this is the correct, real JD, respond with exactly: NOT_FOUND`,
+                `- If confident, return ONLY the job description text (no preamble, no explanation).`,
+              ].filter(Boolean).join("\n");
+
+              const gptRes = await fetch("https://api.openai.com/v1/chat/completions", {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                  "Authorization": `Bearer ${OPENAI_API_KEY}`,
+                },
+                body: JSON.stringify({
+                  model: "gpt-4.1-mini",
+                  messages: [{ role: "user", content: gptPrompt }],
+                  temperature: 0.0,
+                  max_completion_tokens: 2500,
+                }),
+              });
+
+              if (gptRes.ok) {
+                const gptData = await gptRes.json();
+                const content = gptData.choices?.[0]?.message?.content?.trim();
+                if (content && content.length >= 300 && content !== "NOT_FOUND" && !content.startsWith("NOT_FOUND")) {
+                  fetchedDescription = content;
+                  fetchStrategy = "google_search_gpt";
+                } else {
+                  console.log(`[JD Fetch] GPT returned NOT_FOUND or short response for ${job.id} — marking no_jd_found`);
+                }
+              }
             }
           }
-        } catch (oaiErr: any) {
-          console.error(`[JD Fetch] OpenAI fallback failed for job ${job.id}:`, oaiErr.message);
+        } catch (searchErr: any) {
+          console.error(`[JD Fetch] Strategy 2 (Google+GPT) failed for ${job.id}:`, searchErr.message);
         }
       }
 
-      if (fetchedDescription && fetchedDescription.length > 100) {
-        // Extract implicit data from the JD
+      // ── Outcome ─────────────────────────────────────────────────────────────
+      if (fetchedDescription && fetchedDescription.length >= 300) {
+        // Extract implicit data from the JD (work_mode, experience, salary, etc.)
         const implicitData = await extractImplicitData(fetchedDescription, job.title, job.company_name);
 
         await supabase.from("jobs").update({
@@ -2440,23 +2580,25 @@ async function executeJDFetch(runId: string, config: any) {
         await supabase.from("enrichment_logs").insert({
           entity_type: "job",
           entity_id: job.id,
-          provider: "apify+openai",
+          provider: fetchStrategy,
           operation: "jd_fetch",
           status: "success",
-          details: { description_length: fetchedDescription.length, implicit_fields_extracted: Object.keys(implicitData).length },
+          details: { description_length: fetchedDescription.length, strategy: fetchStrategy, implicit_fields_extracted: Object.keys(implicitData).length },
         });
 
         processed++;
       } else {
-        await supabase.from("jobs").update({ jd_fetch_status: "failed" }).eq("id", job.id);
+        // Neither strategy found a real JD with sufficient confidence.
+        // Mark as no_jd_found — do NOT write a hallucinated description.
+        await supabase.from("jobs").update({ jd_fetch_status: "no_jd_found" }).eq("id", job.id);
 
         await supabase.from("enrichment_logs").insert({
           entity_type: "job",
           entity_id: job.id,
-          provider: "apify+openai",
+          provider: "ai_jd_fetch",
           operation: "jd_fetch",
-          status: "failed",
-          details: { error: "Could not fetch or reconstruct JD" },
+          status: "no_jd_found",
+          details: { error: "No reliable JD found via direct URL or Google+GPT search" },
         });
 
         failed++;
@@ -2474,7 +2616,7 @@ async function executeJDFetch(runId: string, config: any) {
       await supabase.from("enrichment_logs").insert({
         entity_type: "job",
         entity_id: job.id,
-        provider: "apify+openai",
+        provider: "ai_jd_fetch",
         operation: "jd_fetch",
         status: "failed",
         details: { error: jobErr.message },
