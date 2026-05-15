@@ -125,13 +125,13 @@ function StageHeader({ num, label, sub, icon: Icon, badgeColor = "bg-primary/20 
   );
 }
 
-function Stage1Sources({ data }: { data: QueueStatus }) {
+function Stage1Sources({ qd }: { qd: QueueStatus }) {
   const sources = [
-    { name: "LinkedIn", count: data.source_linkedin, color: "bg-blue-500" },
-    { name: "Clay LinkedIn", count: data.source_clay_linkedin, color: "bg-purple-500" },
-    { name: "NaukriGulf", count: data.source_naukrigulf, color: "bg-orange-400" },
-    { name: "Google Jobs", count: data.source_google_jobs, color: "bg-yellow-400" },
-    { name: "Bayt.com", count: data.source_bayt, color: "bg-red-400" },
+    { name: "LinkedIn", count: qd.source_linkedin, color: "bg-blue-500" },
+    { name: "Clay LinkedIn", count: qd.source_clay_linkedin, color: "bg-purple-500" },
+    { name: "NaukriGulf", count: qd.source_naukrigulf, color: "bg-orange-400" },
+    { name: "Google Jobs", count: qd.source_google_jobs, color: "bg-yellow-400" },
+    { name: "Bayt.com", count: qd.source_bayt, color: "bg-red-400" },
   ];
   const maxCount = Math.max(...sources.map(x => x.count), 1);
   return (
@@ -152,14 +152,14 @@ function Stage1Sources({ data }: { data: QueueStatus }) {
       </div>
       <div className="mt-4 pt-3 border-t border-border/50">
         <p className="text-[10px] uppercase tracking-wider text-muted-foreground">Total</p>
-        <p className="text-2xl font-bold tabular-nums">{fmt(data.total_jobs)} <span className="text-sm font-normal text-muted-foreground">jobs</span></p>
+        <p className="text-2xl font-bold tabular-nums">{fmt(qd.total_jobs)} <span className="text-sm font-normal text-muted-foreground">jobs</span></p>
       </div>
     </div>
   );
 }
 
-function Stage2Repository({ data }: { data: QueueStatus }) {
-  const pct = data.enriched_pct;
+function Stage2Repository({ qd }: { qd: QueueStatus }) {
+  const pct = qd.enriched_pct;
   const r = 40;
   const circ = 2 * Math.PI * r;
   const dash = (pct / 100) * circ;
@@ -181,15 +181,15 @@ function Stage2Repository({ data }: { data: QueueStatus }) {
         </div>
         <div className="space-y-2 flex-1">
           <div className="text-xs text-muted-foreground uppercase tracking-wider">Total Jobs</div>
-          <div className="text-3xl font-bold tabular-nums">{fmt(data.total_jobs)}</div>
+          <div className="text-3xl font-bold tabular-nums">{fmt(qd.total_jobs)}</div>
           <div className="space-y-1.5 pt-1">
             <div className="flex items-center justify-between rounded bg-emerald-500/10 border border-emerald-500/20 px-2.5 py-1.5">
               <span className="text-xs text-emerald-400">With Description</span>
-              <span className="text-sm font-bold text-emerald-400">{fmt(data.with_description)}</span>
+              <span className="text-sm font-bold text-emerald-400">{fmt(qd.with_description)}</span>
             </div>
             <div className="flex items-center justify-between rounded bg-amber-500/10 border border-amber-500/20 px-2.5 py-1.5">
               <span className="text-xs text-amber-400">No Description</span>
-              <span className="text-sm font-bold text-amber-400">{fmt(data.no_description)}</span>
+              <span className="text-sm font-bold text-amber-400">{fmt(qd.no_description)}</span>
             </div>
           </div>
         </div>
@@ -198,34 +198,34 @@ function Stage2Repository({ data }: { data: QueueStatus }) {
   );
 }
 
-function Stage3AFetch({ data, onTriggerFetch, fetchLoading }: { data: QueueStatus; onTriggerFetch: () => void; fetchLoading: boolean }) {
-  const bySource = data.fetch_by_source ?? {};
+function Stage3AFetch({ qd, onTriggerFetch, fetchLoading }: { qd: QueueStatus; onTriggerFetch: () => void; fetchLoading: boolean }) {
+  const bySource = qd.fetch_by_source ?? {};
   const sourceOrder = ["linkedin", "clay_linkedin", "naukrigulf", "google_jobs", "bayt"];
   const sourceLabel: Record<string, string> = {
     linkedin: "LinkedIn", clay_linkedin: "Clay", naukrigulf: "NaukriGulf",
     google_jobs: "Google", bayt: "Bayt",
   };
-  const total = data.fetch_pending + data.fetch_failed;
+  const total = qd.fetch_pending + qd.fetch_failed;
   return (
     <div className="flex flex-col h-full">
       <StageHeader num="Stage 3A" label="JD Fetch" sub="AI-powered description retrieval" icon={ArrowUpRight} badgeColor="bg-amber-500/20 text-amber-400" />
       <div className="space-y-3 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-4xl font-bold tabular-nums text-amber-400">{fmt(data.fetch_pending)}</span>
+          <span className="text-4xl font-bold tabular-nums text-amber-400">{fmt(qd.fetch_pending)}</span>
           <span className="text-sm text-muted-foreground">pending</span>
         </div>
         <div className="grid grid-cols-3 gap-1.5 text-xs">
           <div className="rounded bg-muted/40 px-2 py-1.5 text-center">
             <div className="text-muted-foreground text-[10px]">Pending</div>
-            <div className="font-bold">{fmt(data.fetch_pending)}</div>
+            <div className="font-bold">{fmt(qd.fetch_pending)}</div>
           </div>
           <div className="rounded bg-red-500/10 px-2 py-1.5 text-center">
             <div className="text-muted-foreground text-[10px]">Failed</div>
-            <div className="font-bold text-red-400">{fmt(data.fetch_failed)}</div>
+            <div className="font-bold text-red-400">{fmt(qd.fetch_failed)}</div>
           </div>
           <div className="rounded bg-slate-500/10 px-2 py-1.5 text-center">
             <div className="text-muted-foreground text-[10px]">No JD</div>
-            <div className="font-bold text-slate-400">{fmt(data.fetch_no_jd_found)}</div>
+            <div className="font-bold text-slate-400">{fmt(qd.fetch_no_jd_found)}</div>
           </div>
         </div>
         {total > 0 && (
@@ -257,29 +257,29 @@ function Stage3AFetch({ data, onTriggerFetch, fetchLoading }: { data: QueueStatu
   );
 }
 
-function Stage3BAnalysis({ data, onSubmitBatch, batchLoading }: { data: QueueStatus; onSubmitBatch: () => void; batchLoading: boolean }) {
-  const total = data.analysis_queue + data.v2_complete;
-  const pct = total > 0 ? Math.round((data.v2_complete / total) * 100) : 0;
-  const runs = data.recent_runs ?? [];
+function Stage3BAnalysis({ qd, onSubmitBatch, batchLoading }: { qd: QueueStatus; onSubmitBatch: () => void; batchLoading: boolean }) {
+  const total = qd.analysis_queue + qd.v2_complete;
+  const pct = total > 0 ? Math.round((qd.v2_complete / total) * 100) : 0;
+  const runs = qd.recent_runs ?? [];
   const maxItems = Math.max(...runs.map(r => r.processed_items ?? 0), 1);
   return (
     <div className="flex flex-col h-full">
       <StageHeader num="Stage 3B" label="JD Analysis" sub="GPT-4.1-mini classification" icon={Brain} badgeColor="bg-violet-500/20 text-violet-400" />
       <div className="space-y-3 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-4xl font-bold tabular-nums text-violet-400">{fmt(data.analysis_queue)}</span>
+          <span className="text-4xl font-bold tabular-nums text-violet-400">{fmt(qd.analysis_queue)}</span>
           <span className="text-sm text-muted-foreground">in queue</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <Pill label="gpt-4.1-mini" color="bg-violet-500/20 text-violet-300" />
           <Pill label="Cron · 40 jobs/tick · 5 min" color="bg-muted text-muted-foreground" />
-          {data.active_batch && (
+          {qd.active_batch && (
             <Pill label="Batch active" color="bg-green-500/20 text-green-400" />
           )}
         </div>
         <div className="space-y-1">
           <div className="flex justify-between text-[10px] text-muted-foreground">
-            <span>{fmt(data.v2_complete)} v2-complete</span>
+            <span>{fmt(qd.v2_complete)} v2-complete</span>
             <span>{pct}%</span>
           </div>
           <div className="h-2 rounded-full bg-muted overflow-hidden">
@@ -299,15 +299,15 @@ function Stage3BAnalysis({ data, onSubmitBatch, batchLoading }: { data: QueueSta
             </div>
           </div>
         )}
-        {data.active_batch && (
+        {qd.active_batch && (
           <p className="text-[10px] text-muted-foreground">
-            Batch: <code className="font-mono">{(data.active_batch.batch_id ?? data.active_batch.run_id).slice(0, 16)}…</code> — {fmt(data.active_batch.processed)} ingested
+            Batch: <code className="font-mono">{(qd.active_batch.batch_id ?? qd.active_batch.run_id).slice(0, 16)}…</code> — {fmt(qd.active_batch.processed)} ingested
           </p>
         )}
       </div>
       <div className="mt-3 pt-3 border-t border-border/50 flex items-center gap-2">
         <Button size="sm" className="h-7 text-xs gap-1" onClick={onSubmitBatch}
-          disabled={batchLoading || !!data.active_batch}>
+          disabled={batchLoading || !!qd.active_batch}>
           {batchLoading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Play className="h-3 w-3" />}
           Submit Batch
         </Button>
@@ -317,20 +317,20 @@ function Stage3BAnalysis({ data, onSubmitBatch, batchLoading }: { data: QueueSta
   );
 }
 
-function Stage4Intelligence({ data }: { data: QueueStatus }) {
+function Stage4Intelligence({ qd }: { qd: QueueStatus }) {
   const tags = ["Bucket", "Skills", "Seniority", "Industry"];
   return (
     <div className="flex flex-col h-full">
       <StageHeader num="Stage 4" label="Intelligence Ready" sub="v2.2 analyzed" icon={CheckCircle2} badgeColor="bg-green-500/20 text-green-400" />
       <div className="space-y-3 flex-1">
         <div className="flex items-baseline gap-2">
-          <span className="text-4xl font-bold tabular-nums text-green-400">{fmt(data.v2_complete)}</span>
+          <span className="text-4xl font-bold tabular-nums text-green-400">{fmt(qd.v2_complete)}</span>
           <span className="text-sm text-muted-foreground">jobs enriched</span>
         </div>
-        {data.trend_7d_delta != null && (
+        {qd.trend_7d_delta != null && (
           <div className="flex items-center gap-1 text-xs text-green-400">
             <TrendingUp className="h-3.5 w-3.5" />
-            <span>+{fmt(data.trend_7d_delta)} in last 7 days</span>
+            <span>+{fmt(qd.trend_7d_delta)} in last 7 days</span>
           </div>
         )}
         <div className="flex flex-wrap gap-1.5">
@@ -344,14 +344,14 @@ function Stage4Intelligence({ data }: { data: QueueStatus }) {
               <Layers className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-muted-foreground">Jobs Bucketed</span>
             </div>
-            <span className="font-bold">{fmt(data.bucket_count)}</span>
+            <span className="font-bold">{fmt(qd.bucket_count)}</span>
           </div>
           <div className="flex items-center justify-between rounded bg-muted/40 px-3 py-2 text-xs">
             <div className="flex items-center gap-2">
               <Hash className="h-3.5 w-3.5 text-muted-foreground" />
               <span className="text-muted-foreground">Bucket Candidates</span>
             </div>
-            <span className="font-bold">{fmt(data.bucket_candidates)}</span>
+            <span className="font-bold">{fmt(qd.bucket_candidates)}</span>
           </div>
           <div className="flex items-center justify-between rounded bg-muted/40 px-3 py-2 text-xs">
             <div className="flex items-center gap-2">
@@ -360,15 +360,15 @@ function Stage4Intelligence({ data }: { data: QueueStatus }) {
             </div>
             <Link href="/discovered-titles">
               <a className="flex items-center gap-0.5 font-bold hover:text-primary transition-colors">
-                {fmt(data.discovered_pending)} <ChevronRight className="h-3 w-3" />
+                {fmt(qd.discovered_pending)} <ChevronRight className="h-3 w-3" />
               </a>
             </Link>
           </div>
         </div>
-        {data.avg_analysis_ms != null && (
+        {qd.avg_analysis_ms != null && (
           <div className="rounded bg-muted/40 px-3 py-2 text-xs flex justify-between">
             <span className="text-muted-foreground">Avg analysis time</span>
-            <span className="font-bold">{(data.avg_analysis_ms / 1000).toFixed(1)}s / job</span>
+            <span className="font-bold">{(qd.avg_analysis_ms / 1000).toFixed(1)}s / job</span>
           </div>
         )}
       </div>
@@ -522,42 +522,42 @@ export default function NexusFlow() {
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
             {/* Stage 1 */}
             <div className="rounded-xl border border-border/60 bg-card p-5 shadow-sm">
-              <Stage1Sources data={status} />
+              <Stage1Sources qd={status} />
             </div>
             {/* Stage 2 */}
             <div className="rounded-xl border border-border/60 bg-card p-5 shadow-sm">
-              <Stage2Repository data={status} />
+              <Stage2Repository qd={status} />
             </div>
             {/* Stage 3A */}
             <div className="rounded-xl border border-amber-500/20 bg-card p-5 shadow-sm">
-              <Stage3AFetch data={status} onTriggerFetch={triggerFetch} fetchLoading={fetchLoading} />
+              <Stage3AFetch qd={status} onTriggerFetch={triggerFetch} fetchLoading={fetchLoading} />
             </div>
             {/* Stage 3B */}
             <div className="rounded-xl border border-violet-500/20 bg-card p-5 shadow-sm">
-              <Stage3BAnalysis data={status} onSubmitBatch={submitBatch} batchLoading={batchLoading} />
+              <Stage3BAnalysis qd={status} onSubmitBatch={submitBatch} batchLoading={batchLoading} />
             </div>
           </div>
 
           {/* Stage 4 — full width on mobile, spans 4 on xl but grouped differently */}
           <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
             <div className="xl:col-span-1 rounded-xl border border-green-500/20 bg-card p-5 shadow-sm">
-              <Stage4Intelligence data={status} />
+              <Stage4Intelligence qd={status} />
             </div>
             {/* Quick-action stat cards */}
             <div className="xl:col-span-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 content-start">
-              <StatCard label="Total Jobs" value={fmt(data.total_jobs)} sub="all sources" />
-              <StatCard label="With JD" value={fmt(data.with_description)} sub={`${statudata.enriched_pct}% enriched`} accent />
-              <StatCard label="Fetch Queue" value={fmt(data.fetch_pending + data.fetch_failed)} sub="pending + failed" />
-              <StatCard label="Analysis Queue" value={fmt(data.analysis_queue)} sub="awaiting GPT" />
-              <StatCard label="v2 Complete" value={fmt(data.v2_complete)} sub="fully enriched" accent />
-              <StatCard label="Bucketed" value={fmt(data.bucket_count)} sub="assigned to bucket" />
-              <StatCard label="Bucket Types" value={fmt(data.bucket_candidates)} sub="candidate buckets" />
-              <StatCard label="Discovered Titles" value={fmt(data.discovered_pending)} sub="awaiting review" />
+              <StatCard label="Total Jobs" value={fmt(qd.total_jobs)} sub="all sources" />
+              <StatCard label="With JD" value={fmt(qd.with_description)} sub={`${statuqd.enriched_pct}% enriched`} accent />
+              <StatCard label="Fetch Queue" value={fmt(qd.fetch_pending + qd.fetch_failed)} sub="pending + failed" />
+              <StatCard label="Analysis Queue" value={fmt(qd.analysis_queue)} sub="awaiting GPT" />
+              <StatCard label="v2 Complete" value={fmt(qd.v2_complete)} sub="fully enriched" accent />
+              <StatCard label="Bucketed" value={fmt(qd.bucket_count)} sub="assigned to bucket" />
+              <StatCard label="Bucket Types" value={fmt(qd.bucket_candidates)} sub="candidate buckets" />
+              <StatCard label="Discovered Titles" value={fmt(qd.discovered_pending)} sub="awaiting review" />
             </div>
           </div>
 
           {/* Cron activity strip */}
-          <CronStrip runs={statudata.recent_runs ?? []} />
+          <CronStrip runs={statuqd.recent_runs ?? []} />
         </>
       )}
     </div>
