@@ -165,7 +165,11 @@ export default function CollegeDashboard({ params, publicSlug }: Props) {
       if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
       return res.json();
     },
-    staleTime: 60_000,
+    // Perf #1 (cd-uowd14): pair with server-side s-maxage=300 + SWR=600.
+    // 5 min staleTime means in-tab navigation reuses cache; 30 min gcTime
+    // means back-nav within half an hour skips refetch entirely.
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
     refetchOnWindowFocus: false,
   });
 
