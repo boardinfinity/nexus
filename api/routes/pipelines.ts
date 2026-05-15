@@ -1408,7 +1408,10 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     };
 
     const PAGE = parseInt((req.body as any)?.page_size) || 100;
-    const offset = parseInt((req.body as any)?.offset) || 0;
+    // NOTE: Always fetch from offset=0. Since we filter bucket_id IS NULL,
+    // the set shrinks as jobs are resolved — using a moving offset causes
+    // pagination drift (jobs get skipped when previously-fetched rows are resolved).
+    const offset = 0;
 
     // Fetch a page of v2 jobs with no bucket_id
     const { data: jobs, error: jobsErr } = await supabase
@@ -1418,7 +1421,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
       .is("bucket_id", null)
       .not("job_function", "is", null)
       .order("analyzed_at", { ascending: true })
-      .range(offset, offset + PAGE - 1);
+      .limit(PAGE);
 
     if (jobsErr) return res.status(500).json({ error: jobsErr.message });
     if (!jobs || jobs.length === 0) return res.json({ done: true, processed: 0, offset });
