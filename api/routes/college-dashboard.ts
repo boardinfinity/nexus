@@ -79,60 +79,163 @@ interface Panel<T> {
 
 // ── Internal: assemble one full dashboard payload ────────────────────
 async function buildDashboardPayload(college_id: string): Promise<any> {
-  // 0. College header
-  const { data: college } = await supabase
-    .from("colleges")
-    .select("id, name, short_name, country, city, state, tier, nirf_rank, website, logo_url")
-    .eq("id", college_id)
-    .single();
+  // ── PERF NOTE ────────────────────────────────────────────────────────
+  // This endpoint was hitting Vercel's 60s gateway timeout on cold paths
+  // because eight Supabase round-trips ran sequentially. We now batch
+  // independent reads into Promise.all waves and merged duplicate jobs
+  // pulls (uaeByCountry + topCompaniesRaw → one query with two columns).
+  // ────────────────────────────────────────────────────────────────────
 
-  // 1. Hero counts — programs / courses / mapped skills / campus drives / jobs
-  // Two-step approach (no RPCs needed). Each count is its own simple query.
-  const [programsCountRes, coursesCountRes, campusBatchesRes] = await Promise.all([
+  // ── Wave A: every query with no dependencies (parallel) ──────────────
+  const [
+    collegeRes,
+    programsCountRes,
+    coursesCountRes,
+    campusBatchesRes,
+    collegeCoursesRes,
+    batchIdsRes,
+    programsRes,
+    batchesRes,
+    cpRowsRes,
+    uaeJobsTotalRes,
+    uaeJobsBulkRes,
+    uaeJobIdsRes,
+  ] = await Promise.all([
+    supabase
+      .from("colleges")
+      .select("id, name, short_name, country, city, state, tier, nirf_rank, website, logo_url")
+      .eq("id", college_id)
+      .single(),
     supabase.from("college_programs").select("id", { count: "exact", head: true }).eq("college_id", college_id),
     supabase.from("college_courses").select("id", { count: "exact", head: true }).eq("college_id", college_id),
     supabase.from("campus_upload_batches").select("id", { count: "exact", head: true }).eq("college_id", college_id),
+    supabase.from("college_courses").select("id").eq("college_id", college_id),
+    supabase.from("campus_upload_batches").select("id").eq("college_id", college_id),
+    supabase
+      .from("college_programs")
+      .select("id, name, degree_type, abbreviation, major, duration_years, total_credit_points, delivery_mode")
+      .eq("college_id", college_id)
+      .order("name", { ascending: true })
+      .limit(50),
+    supabase
+      .from("campus_upload_batches")
+      .select("id, program, job_type, drive_year, source, ctc_tag, status, total_files, jds_committed, created_at")
+      .eq("college_id", college_id)
+      .order("created_at", { ascending: false })
+      .limit(100),
+    supabase
+      .from("college_programs")
+      .select("id, name, abbreviation, degree_type")
+      .eq("college_id", college_id)
+      .limit(80),
+    supabase
+      .from("jobs")
+      .select("id", { count: "exact", head: true })
+      .in("location_country", UAE_GCC_COUNTRIES),
+    // Merged: one pull for both country-mix and company-mix.
+    supabase
+      .from("jobs")
+      .select("location_country, company_name")
+      .in("location_country", UAE_GCC_COUNTRIES)
+      .limit(20000),
+    supabase
+      .from("jobs")
+      .select("id")
+      .in("location_country", UAE_GCC_COUNTRIES)
+      .eq("analysis_version", "v2")
+      .limit(20000),
   ]);
 
-  // course_skill count — fetch course ids, then count course_skills.
-  const { data: collegeCourseIdsRaw } = await supabase
-    .from("college_courses")
-    .select("id")
-    .eq("college_id", college_id);
-  const collegeCourseIds = (collegeCourseIdsRaw || []).map((c: any) => c.id);
-  const { count: courseSkillCountRaw } = collegeCourseIds.length > 0
-    ? await supabase
-        .from("course_skills")
-        .select("id", { count: "exact", head: true })
-        .in("course_id", collegeCourseIds)
-    : { count: 0 };
-  const courseSkillCount = courseSkillCountRaw || 0;
+  const college = collegeRes.data;
+  const collegeCourseIds = (collegeCoursesRes.data || []).map((c: any) => c.id);
+  const heroBatchIds = (batchIdsRes.data || []).map((b: any) => b.id);
+  const programs = programsRes.data;
+  const batches = batchesRes.data;
+  const cpRows = cpRowsRes.data;
+  const uaeJobsTotal = uaeJobsTotalRes.count;
+  const uaeJobsBulk = uaeJobsBulkRes.data || [];
+  const uaeJobIds = (uaeJobIdsRes.data || []).map((r: any) => r.id);
 
-  // campus jobs count
-  const { data: batchIdsRaw } = await supabase
-    .from("campus_upload_batches")
-    .select("id")
-    .eq("college_id", college_id);
-  const heroBatchIds = (batchIdsRaw || []).map((b: any) => b.id);
-  const { count: campusJobCountRaw } = heroBatchIds.length > 0
-    ? await supabase
-        .from("jobs")
-        .select("id", { count: "exact", head: true })
-        .in("upload_batch_id", heroBatchIds)
-    : { count: 0 };
-  const campusJobCount = campusJobCountRaw || 0;
-
-  // Alumni count via tight name match (UOWD-specific until university_id
-  // becomes structured — works for any "Wollongong %dubai%" / "%UOWD%" match)
   const collegeName = (college?.name || "").toLowerCase();
   const isUOWD = collegeName.includes("wollongong");
-  const { count: alumniCountRaw } = isUOWD
-    ? await supabase
-        .from("alumni")
-        .select("id", { count: "exact", head: true })
-        .or("university_name.ilike.%wollongong%dubai%,university_name.ilike.%uowd%")
-    : await supabase.from("alumni").select("id", { count: "exact", head: true }).eq("university_id", college_id);
-  const alumniCount = alumniCountRaw || 0;
+
+  // ── Wave B: queries that depend on Wave A id lists (parallel) ────────
+  const programIds = (cpRows || []).map((p: any) => p.id);
+
+  const [
+    courseSkillCountRes,
+    campusJobCountRes,
+    alumniCountRes,
+    campusJobsRes,
+    alumniRowsRes,
+    progCoursesRes,
+    extractedSkillsRes,
+  ] = await Promise.all([
+    collegeCourseIds.length > 0
+      ? supabase
+          .from("course_skills")
+          .select("id", { count: "exact", head: true })
+          .in("course_id", collegeCourseIds)
+      : Promise.resolve({ count: 0 } as any),
+    heroBatchIds.length > 0
+      ? supabase
+          .from("jobs")
+          .select("id", { count: "exact", head: true })
+          .in("upload_batch_id", heroBatchIds)
+      : Promise.resolve({ count: 0 } as any),
+    isUOWD
+      ? supabase
+          .from("alumni")
+          .select("id", { count: "exact", head: true })
+          .or("university_name.ilike.%wollongong%dubai%,university_name.ilike.%uowd%")
+      : supabase
+          .from("alumni")
+          .select("id", { count: "exact", head: true })
+          .eq("university_id", college_id),
+    heroBatchIds.length > 0
+      ? supabase
+          .from("jobs")
+          .select("id, company_name, upload_batch_id")
+          .in("upload_batch_id", heroBatchIds)
+          .limit(10000)
+      : Promise.resolve({ data: [] } as any),
+    isUOWD
+      ? supabase
+          .from("alumni")
+          .select("id, person_id, current_status, university_name, created_at, people(current_title, location_city, location_country, headline)")
+          .or("university_name.ilike.%wollongong%dubai%,university_name.ilike.%uowd%")
+          .order("created_at", { ascending: false })
+          .limit(10000)
+      : supabase
+          .from("alumni")
+          .select("id, person_id, current_status, university_name, created_at, people(current_title, location_city, location_country, headline)")
+          .eq("university_id", college_id)
+          .order("created_at", { ascending: false })
+          .limit(10000),
+    programIds.length > 0
+      ? supabase
+          .from("program_courses")
+          .select("program_id, course_id")
+          .in("program_id", programIds)
+      : Promise.resolve({ data: [] } as any),
+    // Try extracted skills (only if enough analyzed jobs)
+    uaeJobIds.length >= 50
+      ? supabase
+          .from("job_skills")
+          .select("taxonomy_skill_id, taxonomy_skills!inner(name, l1, l2, category)")
+          .in("job_id", uaeJobIds)
+          .not("taxonomy_skill_id", "is", null)
+          .limit(50000)
+      : Promise.resolve({ data: null } as any),
+  ]);
+
+  const courseSkillCount = courseSkillCountRes.count || 0;
+  const campusJobCount = campusJobCountRes.count || 0;
+  const alumniCount = alumniCountRes.count || 0;
+  const campusJobs = campusJobsRes.data || [];
+  const alumniRows = alumniRowsRes.data || [];
+  const progCourses = progCoursesRes.data || [];
+  const extractedSkills = extractedSkillsRes.data;
 
   const hero: Panel<any> = {
     data_quality: "live",
@@ -149,35 +252,21 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     },
   };
 
-  // 2. Programs panel
-  const { data: programs } = await supabase
-    .from("college_programs")
-    .select("id, name, degree_type, abbreviation, major, duration_years, total_credit_points, delivery_mode")
-    .eq("college_id", college_id)
-    .order("name", { ascending: true })
-    .limit(50);
-
+  // 2. Programs panel (data from Wave A)
   const programsPanel: Panel<any> = {
     data_quality: "live",
     data: { items: programs || [], total: (programs || []).length },
   };
 
-  // 3. UAE/GCC jobs scan — headline stats
-  const { count: uaeJobsTotal } = await supabase
-    .from("jobs")
-    .select("id", { count: "exact", head: true })
-    .in("location_country", UAE_GCC_COUNTRIES);
-
-  const { data: uaeByCountry } = await supabase
-    .from("jobs")
-    .select("location_country")
-    .in("location_country", UAE_GCC_COUNTRIES)
-    .limit(20000); // safety cap
-
+  // 3. UAE/GCC jobs scan — headline stats (Wave A bulk pull)
   const byCountry: Record<string, number> = {};
-  (uaeByCountry || []).forEach((r: any) => {
+  const companyCounts: Record<string, number> = {};
+  uaeJobsBulk.forEach((r: any) => {
     const c = r.location_country;
-    byCountry[c] = (byCountry[c] || 0) + 1;
+    if (c) byCountry[c] = (byCountry[c] || 0) + 1;
+    if (r.company_name) {
+      companyCounts[r.company_name] = (companyCounts[r.company_name] || 0) + 1;
+    }
   });
   // Normalize country variants
   const countryNorm: Record<string, string> = {
@@ -198,19 +287,6 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     byCountryNormalized[norm] = (byCountryNormalized[norm] || 0) + v;
   });
 
-  // Top hiring companies in UAE/GCC
-  const { data: topCompaniesRaw } = await supabase
-    .from("jobs")
-    .select("company_name")
-    .in("location_country", UAE_GCC_COUNTRIES)
-    .not("company_name", "is", null)
-    .limit(20000);
-
-  const companyCounts: Record<string, number> = {};
-  (topCompaniesRaw || []).forEach((j: any) => {
-    if (!j.company_name) return;
-    companyCounts[j.company_name] = (companyCounts[j.company_name] || 0) + 1;
-  });
   const topCompanies = Object.entries(companyCounts)
     .sort(([, a], [, b]) => b - a)
     .slice(0, 15)
@@ -225,30 +301,14 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     },
   };
 
-  // 4. Top skills — try job_skills first (extracted demand), fall back to
-  //    report_skill_mentions (secondary-research demand)
+  // 4. Top skills — try extracted demand from Wave B; fall back to reports
+  //    if extracted signal is too small.
   let topSkillsData: any = null;
   let topSkillsQuality: DataQuality = "live";
   let topSkillsNote: string | undefined;
 
-  // Try extracted demand from UAE/GCC jobs
-  const { data: uaeJobIdsRaw } = await supabase
-    .from("jobs")
-    .select("id")
-    .in("location_country", UAE_GCC_COUNTRIES)
-    .eq("analysis_version", "v2")
-    .limit(20000);
-  const uaeJobIds = (uaeJobIdsRaw || []).map((r: any) => r.id);
-
-  if (uaeJobIds.length >= 50) {
+  if (uaeJobIds.length >= 50 && extractedSkills) {
     // Real extracted-demand signal exists
-    const { data: extractedSkills } = await supabase
-      .from("job_skills")
-      .select("taxonomy_skill_id, taxonomy_skills!inner(name, l1, l2, category)")
-      .in("job_id", uaeJobIds)
-      .not("taxonomy_skill_id", "is", null)
-      .limit(50000);
-
     const skillCounts: Record<string, { name: string; l1: string | null; l2: string | null; category: string | null; count: number }> = {};
     (extractedSkills || []).forEach((row: any) => {
       const id = row.taxonomy_skill_id;
@@ -272,7 +332,7 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     topSkillsQuality = uaeJobIds.length >= 1000 ? "live" : "live_partial";
     topSkillsNote = uaeJobIds.length < 1000 ? `Extracted from ${uaeJobIds.length} UAE/GCC JDs (more in pipeline)` : undefined;
   } else {
-    // Fall back to secondary research reports
+    // Fall back to secondary research reports (lazy fetch only on fallback path)
     const { data: reportSkills } = await supabase
       .from("report_skill_mentions")
       .select("taxonomy_skill_id, skill_name, taxonomy_skills(name, l1, l2, category)")
@@ -308,14 +368,7 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     data: topSkillsData,
   };
 
-  // 5. College Jobs panel — campus_upload_batches × jobs
-  const { data: batches } = await supabase
-    .from("campus_upload_batches")
-    .select("id, program, job_type, drive_year, source, ctc_tag, status, total_files, jds_committed, created_at")
-    .eq("college_id", college_id)
-    .order("created_at", { ascending: false })
-    .limit(100);
-
+  // 5. College Jobs panel — campus_upload_batches × jobs (Wave A+B)
   let collegeJobsPanel: Panel<any>;
   if (!batches || batches.length === 0) {
     collegeJobsPanel = {
@@ -324,14 +377,7 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
       data: { drives: 0, total_jds: 0, job_type_mix: {}, ctc_tag_mix: {}, top_recruiters: [], recent_batches: [] },
     };
   } else {
-    const batchIds = batches.map((b: any) => b.id);
-    const { data: campusJobs } = await supabase
-      .from("jobs")
-      .select("id, company_name, upload_batch_id")
-      .in("upload_batch_id", batchIds)
-      .limit(10000);
-
-    const totalJds = (campusJobs || []).length;
+    const totalJds = campusJobs.length;
     const jobTypeMix: Record<string, number> = {};
     const ctcMix: Record<string, number> = {};
     batches.forEach((b: any) => {
@@ -343,7 +389,7 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
       ctcMix[ctc] = (ctcMix[ctc] || 0) + w;
     });
     const recruiterCounts: Record<string, number> = {};
-    (campusJobs || []).forEach((j: any) => {
+    campusJobs.forEach((j: any) => {
       if (!j.company_name) return;
       recruiterCounts[j.company_name] = (recruiterCounts[j.company_name] || 0) + 1;
     });
@@ -368,21 +414,7 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
   // 6. Alumni glimpse — count + location distribution + sample headlines
   // Note: alumni.current_status and people.current_title are raw LinkedIn
   // headlines (e.g. 'Future AI Engineer | Big Data Student | Solving...'),
-  // not normalized job titles. We surface honest signal: total, country
-  // distribution, and a small sample of recent headlines for flavor.
-  const { data: alumniRows } = isUOWD
-    ? await supabase
-        .from("alumni")
-        .select("id, person_id, current_status, university_name, created_at, people(current_title, location_city, location_country, headline)")
-        .or("university_name.ilike.%wollongong%dubai%,university_name.ilike.%uowd%")
-        .order("created_at", { ascending: false })
-        .limit(10000)
-    : await supabase
-        .from("alumni")
-        .select("id, person_id, current_status, university_name, created_at, people(current_title, location_city, location_country, headline)")
-        .eq("university_id", college_id)
-        .order("created_at", { ascending: false })
-        .limit(10000);
+  // not normalized job titles. (Data from Wave B alumniRows)
 
   const countryCounts: Record<string, number> = {};
   const samples: Array<{ title: string; country: string | null }> = [];
@@ -428,26 +460,12 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
   // 7. Gap heatmap — program × skill demand-vs-coverage
   // Demand: top skill from chosen source (extracted or reports)
   // Coverage: # courses in program that teach that skill
+  // cpRows + progCourses come from Wave A/B; only Wave C remains.
   const topDemandSkills = (topSkillsData?.items || []).slice(0, 25);
-
-  // Fetch program → course → skill links for this college
-  const { data: cpRows } = await supabase
-    .from("college_programs")
-    .select("id, name, abbreviation, degree_type")
-    .eq("college_id", college_id)
-    .limit(80);
-
   const programList = cpRows || [];
-  const programIds = programList.map((p: any) => p.id);
-
-  // Join program_courses → course_skills
-  const { data: progCourses } = await supabase
-    .from("program_courses")
-    .select("program_id, course_id")
-    .in("program_id", programIds);
-
   const courseIds = Array.from(new Set((progCourses || []).map((r: any) => r.course_id)));
 
+  // ── Wave C: course_skills join (depends on courseIds from Wave B) ─────
   const { data: courseSkillRows } = courseIds.length > 0
     ? await supabase
         .from("course_skills")
@@ -468,8 +486,8 @@ async function buildDashboardPayload(college_id: string): Promise<any> {
     courseToPrograms[pc.course_id].push(pc.program_id);
   });
   (courseSkillRows || []).forEach((cs: any) => {
-    const programs = courseToPrograms[cs.course_id] || [];
-    programs.forEach((pid) => {
+    const programIdsForCourse = courseToPrograms[cs.course_id] || [];
+    programIdsForCourse.forEach((pid) => {
       if (!programSkillCoverage[pid]) programSkillCoverage[pid] = {};
       programSkillCoverage[pid][cs.taxonomy_skill_id] = (programSkillCoverage[pid][cs.taxonomy_skill_id] || 0) + 1;
     });
