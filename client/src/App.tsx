@@ -14,6 +14,7 @@ import Companies from "@/pages/companies";
 import People from "@/pages/people";
 import Pipelines from "@/pages/pipelines/index";
 import JobCollection from "@/pages/pipelines/job-collection";
+import NexusFlow from "@/pages/pipelines/nexus-flow";
 import JDIntelligence from "@/pages/pipelines/jd-intelligence";
 import PeopleAlumni from "@/pages/pipelines/people-alumni";
 import DataQualityPipelines from "@/pages/pipelines/data-quality";
@@ -56,6 +57,7 @@ function AppRouter() {
       <Route path="/people" component={People} />
       <Route path="/upload" component={UploadPage} />
       <Route path="/upload/campus" component={UploadCampusPage} />
+      <Route path="/pipelines/nexus-flow" component={NexusFlow} />
       <Route path="/pipelines/jobs" component={JobCollection} />
       <Route path="/pipelines/jd" component={JDIntelligence} />
       <Route path="/pipelines/people" component={PeopleAlumni} />

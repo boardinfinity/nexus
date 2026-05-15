@@ -1359,19 +1359,36 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
     return res.json({ ok: true, discovered_title_id: titleId })
   }
 
-  // GET /pipelines/jd/queue-status — queue depth + active batch info
+  // GET /pipelines/jd/queue-status — queue depth + active batch + full dashboard intel
   if (path === "/pipelines/jd/queue-status" && req.method === "GET") {
     if (!requireReader(auth, "pipelines", res)) return;
-    const [queueRes, v2Res, fetchRes, batchRes] = await Promise.all([
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const [
+      queueRes, v2Res, fetchPendingRes, fetchFailedRes, fetchNoJdRes,
+      batchRes, totalRes, withDescRes,
+      srcLinkedIn, srcClay, srcNaukri, srcGoogle, srcBayt,
+      fetchLinkedIn, fetchClay, fetchNaukri, fetchGoogle, fetchBayt,
+      bucketCountRes, bucketCandidatesRes, discoveredPendingRes,
+      recentRunsRes, avgMsRes, trend7dRes,
+    ] = await Promise.all([
+      // analysis queue
       supabase.from("jobs").select("id", { count: "exact", head: true })
         .not("description", "is", null)
         .or("analysis_version.is.null,analysis_version.neq.v2")
         .in("enrichment_status", ["pending", "partial", "imported"]),
+      // v2 complete
       supabase.from("jobs").select("id", { count: "exact", head: true })
         .eq("analysis_version", "v2"),
+      // fetch pending
       supabase.from("jobs").select("id", { count: "exact", head: true })
-        .or("description.is.null,description.lt.100")
-        .eq("jd_fetch_status", "pending"),
+        .in("jd_fetch_status", ["pending"]),
+      // fetch failed
+      supabase.from("jobs").select("id", { count: "exact", head: true })
+        .eq("jd_fetch_status", "failed"),
+      // fetch no_jd_found
+      supabase.from("jobs").select("id", { count: "exact", head: true })
+        .eq("jd_fetch_status", "no_jd_found"),
+      // active batch
       supabase.from("pipeline_runs")
         .select("id, config, started_at, processed_items")
         .eq("pipeline_type", "jd_batch_submit")
@@ -1379,17 +1396,119 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
         .order("created_at", { ascending: false })
         .limit(1)
         .maybeSingle(),
+      // total jobs
+      supabase.from("jobs").select("id", { count: "exact", head: true }),
+      // with description (>= 100 chars)
+      supabase.from("jobs").select("id", { count: "exact", head: true })
+        .not("description", "is", null)
+        .gte("description", "a"), // any non-null
+      // source counts
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "linkedin"),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "clay_linkedin"),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "naukrigulf"),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "google_jobs"),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "bayt"),
+      // fetch queue by source (pending + failed)
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "linkedin").in("jd_fetch_status", ["pending", "failed"]),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "clay_linkedin").in("jd_fetch_status", ["pending", "failed"]),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "naukrigulf").in("jd_fetch_status", ["pending", "failed"]),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "google_jobs").in("jd_fetch_status", ["pending", "failed"]),
+      supabase.from("jobs").select("id", { count: "exact", head: true }).eq("source", "bayt").in("jd_fetch_status", ["pending", "failed"]),
+      // bucket assignments
+      supabase.from("jobs").select("id", { count: "exact", head: true }).not("bucket_id", "is", null),
+      supabase.from("job_buckets").select("id", { count: "exact", head: true }).eq("status", "candidate"),
+      // discovered titles pending review
+      supabase.from("discovered_titles").select("id", { count: "exact", head: true }).eq("status", "candidate"),
+      // recent jd_enrichment runs (last 8)
+      supabase.from("pipeline_runs")
+        .select("id, started_at, processed_items, status")
+        .eq("pipeline_type", "jd_enrichment")
+        .order("created_at", { ascending: false })
+        .limit(8),
+      // avg analysis ms from recent succeeded runs
+      supabase.from("pipeline_runs")
+        .select("started_at, completed_at, processed_items")
+        .eq("pipeline_type", "jd_enrichment")
+        .eq("status", "succeeded")
+        .not("completed_at", "is", null)
+        .gt("processed_items", 0)
+        .order("created_at", { ascending: false })
+        .limit(10),
+      // v2 count 7 days ago for trend
+      supabase.from("jobs").select("id", { count: "exact", head: true })
+        .eq("analysis_version", "v2")
+        .lt("updated_at", sevenDaysAgo),
     ]);
+
+    const totalJobs = totalRes.count ?? 0;
+    const withDesc = withDescRes.count ?? 0;
+    const enrichedPct = totalJobs > 0 ? Math.round((withDesc / totalJobs) * 100) : 0;
+
+    // Compute avg analysis ms
+    let avgMs: number | null = null;
+    if (avgMsRes.data && avgMsRes.data.length > 0) {
+      const valid = avgMsRes.data.filter((r: any) => r.completed_at && r.processed_items > 0);
+      if (valid.length > 0) {
+        const totalMs = valid.reduce((sum: number, r: any) => {
+          const ms = new Date(r.completed_at).getTime() - new Date(r.started_at).getTime();
+          return sum + (ms / r.processed_items);
+        }, 0);
+        avgMs = Math.round(totalMs / valid.length);
+      }
+    }
+
+    const v2Now = v2Res.count ?? 0;
+    const v2Before = trend7dRes.count ?? 0;
+    const trend7dDelta = v2Now - v2Before;
+
     return res.json({
+      // source breakdown
+      source_linkedin: srcLinkedIn.count ?? 0,
+      source_clay_linkedin: srcClay.count ?? 0,
+      source_naukrigulf: srcNaukri.count ?? 0,
+      source_google_jobs: srcGoogle.count ?? 0,
+      source_bayt: srcBayt.count ?? 0,
+      total_jobs: totalJobs,
+      // enrichment
+      with_description: withDesc,
+      no_description: totalJobs - withDesc,
+      enriched_pct: enrichedPct,
+      // fetch queues
+      fetch_pending: fetchPendingRes.count ?? 0,
+      fetch_failed: fetchFailedRes.count ?? 0,
+      fetch_no_jd_found: fetchNoJdRes.count ?? 0,
+      fetch_by_source: {
+        linkedin: fetchLinkedIn.count ?? 0,
+        clay_linkedin: fetchClay.count ?? 0,
+        naukrigulf: fetchNaukri.count ?? 0,
+        google_jobs: fetchGoogle.count ?? 0,
+        bayt: fetchBayt.count ?? 0,
+      },
+      // legacy compat
+      fetch_queue: fetchPendingRes.count ?? 0,
+      // analysis
       analysis_queue: queueRes.count ?? 0,
-      v2_complete: v2Res.count ?? 0,
-      fetch_queue: fetchRes.count ?? 0,
+      v2_complete: v2Now,
+      // intelligence
+      bucket_count: bucketCountRes.count ?? 0,
+      bucket_candidates: bucketCandidatesRes.count ?? 0,
+      discovered_pending: discoveredPendingRes.count ?? 0,
+      avg_analysis_ms: avgMs,
+      trend_7d_delta: trend7dDelta,
+      // batch
       active_batch: batchRes.data ? {
         run_id: batchRes.data.id,
         batch_id: batchRes.data.config?._batch_id ?? null,
         started_at: batchRes.data.started_at,
         processed: batchRes.data.processed_items ?? 0,
       } : null,
+      // cron history
+      recent_runs: (recentRunsRes.data ?? []).map((r: any) => ({
+        id: r.id,
+        started_at: r.started_at,
+        processed_items: r.processed_items ?? 0,
+        status: r.status,
+      })),
     });
   }
 

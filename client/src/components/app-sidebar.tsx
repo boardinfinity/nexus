@@ -3,7 +3,7 @@ import {
   LayoutDashboard, Briefcase, Building2, Users,
   GitBranch, Activity, Settings, Database, LogOut,
   BookOpen, Sparkles, Upload, CalendarClock,
-  ClipboardList, ShieldCheck, FileText, GraduationCap, ClipboardCheck, Shield,
+  ClipboardList, ShieldCheck, FileText, GraduationCap, ClipboardCheck, Shield, Zap,
 } from "lucide-react";
 import {
   Sidebar, SidebarContent, SidebarFooter, SidebarGroup,
@@ -25,6 +25,7 @@ const navItems = [
   { title: "Upload", href: "/upload", icon: Upload, section: "upload" },
   { title: "Campus JD Upload", href: "/upload/campus", icon: Building2, section: "upload" },
   { title: "Pipelines", href: "/pipelines", icon: GitBranch, section: "pipelines" },
+  { title: "Nexus Flow", href: "/pipelines/nexus-flow", icon: Zap, section: "pipelines" },
   { title: "Schedules", href: "/schedules", icon: CalendarClock, section: "schedules" },
   { title: "Taxonomy", href: "/taxonomy", icon: BookOpen, section: "taxonomy" },
   { title: "Discovered Titles", href: "/discovered-titles", icon: Sparkles, section: "pipelines" },
