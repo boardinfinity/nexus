@@ -1394,7 +1394,7 @@ export async function handlePipelineRoutes(path: string, req: VercelRequest, res
 
   // ── Backfill bucket resolver for existing v2 jobs (no GPT — resolver only) ──
   if (path === "/pipelines/jd/backfill-buckets" && req.method === "POST") {
-    if (!requireWriter(auth, "pipelines", res)) return;
+    if (!requireReader(auth, "pipelines", res)) return;
 
     // Remap stale prompt codes → correct DB FK codes
     const FUNCTION_REMAP: Record<string, string> = {
