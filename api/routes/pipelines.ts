@@ -2459,8 +2459,8 @@ async function executeJDEnrichment(
   runId: string,
   config: any
 ) {
-  // Hard cap at 40 per invocation (Vercel 300s budget: ~6s/job × 40 = 240s)
-  const PER_INVOCATION_CAP = 40;
+  // Hard cap at 100 per invocation (Vercel 300s budget: ~5.3s/job ÷ CONCURRENCY=3 × 100 ≈ 177s — safe)
+  const PER_INVOCATION_CAP = 100;
   const requestedBatch = Math.min(parseInt(config.batch_size) || 50, PER_INVOCATION_CAP);
   const CONCURRENCY = 3; // parallel runAnalyzeJd() calls
 
