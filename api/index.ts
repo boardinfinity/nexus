@@ -1,6 +1,11 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { supabase, APIFY_API_KEY, CRON_SECRET } from "./lib/supabase";
 import { verifyAuth } from "./lib/auth";
+import { initSentry, Sentry } from "./lib/sentry";
+import { checkRateLimit, getClientId, getBucketForPath } from "./lib/rate-limit";
+
+// Initialize Sentry once at module load (warm-start reuse across invocations).
+initSentry();
 
 // Pre-auth route handlers (public / custom JWT auth)
 import { handlePlaceIntelRoutes, handlePlaceIntelAdminRoutes } from "./routes/placeintel";
@@ -52,12 +57,31 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const pathFromQuery = Array.isArray(pathParam) ? pathParam.join("/") : pathParam;
   const path = pathFromQuery ? `/${pathFromQuery}` : (req.url?.replace(/^\/api\/index\.ts/, "").replace(/^\/api/, "").split("?")[0] || "/");
 
+  // ==================== RATE LIMIT (log_only baseline; flip to enforce later) ====================
+  // Skip rate-limit for the Vercel-internal scheduler tick (header-authenticated).
+  if (path !== "/scheduler/tick") {
+    try {
+      const clientId = getClientId(req.headers as any);
+      const bucket = getBucketForPath(path, false);
+      const decision = await checkRateLimit(bucket, clientId);
+      if (decision.shouldBlock) {
+        res.setHeader("X-RateLimit-Limit", String(decision.limit ?? ""));
+        res.setHeader("X-RateLimit-Remaining", String(decision.remaining ?? ""));
+        res.setHeader("X-RateLimit-Reset", String(decision.reset ?? ""));
+        return res.status(429).json({ error: "Too many requests" });
+      }
+    } catch {
+      // never let limiter failures break traffic
+    }
+  }
+
   // ==================== PLACEINTEL ROUTES (public / placeintel-JWT auth, before main auth) ====================
   if (path.startsWith("/placeintel/") && !path.startsWith("/placeintel/admin") && !path.startsWith("/placeintel/sync")) {
     try {
       return await handlePlaceIntelRoutes(path, req, res);
     } catch (err: any) {
       console.error("PlaceIntel API Error:", err);
+      Sentry.captureException(err, { tags: { route: "placeintel" } });
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -68,6 +92,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return await handleSurveyRoutes(path, req, res);
     } catch (err: any) {
       console.error("Survey API Error:", err);
+      Sentry.captureException(err, { tags: { route: "survey" } });
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -80,6 +105,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: "Not found" });
     } catch (err: any) {
       console.error("Public College Dashboard API Error:", err);
+      Sentry.captureException(err, { tags: { route: "public-college-dashboard" } });
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -92,6 +118,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).json({ error: "Not found" });
     } catch (err: any) {
       console.error("Public Extract UAE Job Skills API Error:", err);
+      Sentry.captureException(err, { tags: { route: "public-extract-uae" } });
       return res.status(500).json({ error: err.message || "Internal server error" });
     }
   }
@@ -112,6 +139,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // Handle access-denied page for non-authenticated users on non-public routes
   if (!auth.nexusUser && !path.startsWith("/public")) {
     return res.status(401).json({ error: "Access denied. Contact your administrator to get access." });
+  }
+
+  // Attach user context to Sentry for authed requests (no PII other than id).
+  if (auth.nexusUser?.id) {
+    Sentry.setUser({ id: auth.nexusUser.id });
   }
 
   let result: VercelResponse | undefined;
@@ -170,6 +202,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(404).json({ error: "Route not found", path });
   } catch (err: any) {
     console.error("API Error:", err);
+    Sentry.captureException(err, { tags: { route: path.split("/")[1] || "unknown" } });
     return res.status(500).json({ error: err.message || "Internal server error" });
   }
 }
