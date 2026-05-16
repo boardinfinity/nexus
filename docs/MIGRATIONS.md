@@ -1,20 +1,39 @@
 # Nexus — Migration Log
 
-**The next migration number is: `044`** (reserve before writing SQL).
+**The next migration number is: `045`** (reserve before writing SQL).
 
-| # | File | Date | Author | Summary |
+> Tracked migrations (`list_migrations`): 5 entries. The remaining SQL files in `/migrations/` were applied earlier or via dashboard — they exist on the DB but aren't in the Supabase migration tracker.
+
+---
+
+## Applied (chronological)
+
+| # | File | Applied | Author | Summary |
 |---|---|---|---|---|
-| 025 | `025_intelligence_framework.sql` | 2026-04-09 | abhay | 12 cols on jobs (job_function, job_family, job_industry, bucket, sub_role, experience_min/max, education_req, jd_quality, confidence, analysis_version, analyzed_at). 8 cols on taxonomy_skills (status, mention_count, company_count, parent_skill_id, aliases, is_auto_created, validated_at, first_seen_at). 2 cols on job_skills (is_required, skill_tier). Reference tables: job_functions (26), job_families (20), job_industries (15). upsert_skill() + validate_skills() SECURITY DEFINER functions. 8 indexes. RLS on reference tables. |
-| 026 | `026_*.sql` | — | — | (reserve / placeholder — fill in actual content) |
-| 027 | `027_job_roles.sql` | 2026-04-14 | abhay | `job_roles` table (84 roles, 791 synonyms imported from Airtable) + `jobs.job_role_id` FK. |
-| 028 | `028_jobs_richer_fields.sql` | 2026-04-14 | abhay | `is_remote`, `job_publisher`, `apply_platforms`, `qualifications[]`, `responsibilities[]`, `benefits[]`, `salary_text`, `title_normalized`, `company_name_normalized` on jobs. |
-| 029 | `029_colleges_extension.sql` | 2026-04-15 | abhay | `degree_level`, `ranking_source`, `ranking_year`, `ranking_score`, `linkedin_slug` on colleges + NIRF MBA Top 50 seed. |
-| 030 | `030_survey_admin_v2.sql` | 2026-04-29 | abhay | New tables: `surveys`, `survey_invites`, `email_queue`. FK-bind `survey_respondents.survey_id`, `survey_responses.survey_id`, `survey_skill_ratings.survey_id` (NOT NULL). Unique on `(survey_id, lower(email))` for invites + respondents. Legacy v1 archived row preserved (`00000000-0000-0000-0000-00000000beef`). |
-| 031 | `031_job_buckets_phase1.sql` | 2026-04-30 | abhay | Bucketization Phase 0/1. Adds `jobs.standardized_title`, `jobs.company_type`, `jobs.geography`, `jobs.bucket_id`, `jobs.bucket_match_confidence`, `jobs.bucket_match_reason`, `jobs.bucket_status_at_assignment`. New tables: `job_buckets`, `job_bucket_aliases`, `job_bucket_evidence`, `job_bucket_skill_map`, `job_bucket_overlays`, `job_bucket_review_queue`, `job_bucket_merge_history`. RLS hides candidate buckets from non-admin users. |
-| 032 | `032_survey_status_published.sql` | — | — | (already in repo — backfill summary when known) |
-| 033 | `033_taxonomy_4category_model.sql` | 2026-05-06 | abhay | Taxonomy 4-category L1/L2 model. Adds `l1`, `l2`, `domain_tag`, `india_relevance` cols on `taxonomy_skills` with CHECK constraints (4-value l1 enum, 10-value l2 enum, valid l1+l2 pair, domain enum, india enum). 5 indexes + 1 partial unique index for v2 batch. Bulk-inserts 1,419 net-new contemporary skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged). Existing 8,887 legacy rows untouched. source=`nexus_taxonomy_v2_2026_05`. |
-| 037 | `037_taxonomy_legacy_backfill_and_regions.sql` | 2026-05-06 | abhay | Taxonomy legacy backfill + regions. Adds `regions text[]` column on `taxonomy_skills` + GIN index. Bulk deterministic backfill of `l1`/`l2` for 8,887 legacy rows (technology→TECHNICAL SKILLS/Tool, skill→COMPETENCIES/Skill, ability→COMPETENCIES/Ability, knowledge→KNOWLEDGE/Knowledge). Seeds `regions` from `india_relevance` (india_specific→[India], india_strong→[India,Global], else→[Global]). Replaces `get_taxonomy_stats()` to return `by_l1`, `by_l2` (nested), `by_region`. Final state: 0 null l1, 0 null regions, 10,307 total. |
-| 039 | `039_campus_upload_batches.sql` | 2026-05-07 | jdenh001 | Campus upload batches. New table `campus_upload_batches` (id uuid PK, college_id FK, program text, job_type CHECK enum, drive_year int, source text, ctc_tag text, status CHECK enum, uploaded_by FK auth.users, total_files int, jds_committed int, timestamps). Adds `jobs.upload_batch_id` uuid FK → campus_upload_batches ON DELETE SET NULL. Indexes: `idx_campus_upload_batches_college`, `idx_campus_upload_batches_status_year`, `idx_jobs_upload_batch_id`. RLS: admin full access; college_rep read+insert+update scoped to their `restricted_college_ids`; no DELETE policy for college_rep. Auto-update trigger `trg_campus_batch_updated_at`. |
+| 025 | `025_intelligence_framework.sql` | 2026-04-09 | abhay | 12 cols on jobs (job_function, job_family, job_industry, bucket, sub_role, experience_min/max, education_req, jd_quality, confidence, analysis_version, analyzed_at). 8 cols on taxonomy_skills. 2 cols on job_skills. Reference tables: job_functions (26), job_families (20), job_industries (15). upsert_skill() + validate_skills() SECURITY DEFINER. 8 indexes. RLS on reference tables. |
+| 026 | `026_bulk_pipeline_helpers.sql` | 2026-04 | abhay | Bulk pipeline helper functions. |
+| 027 | `027_job_role_taxonomy.sql` | 2026-04-14 | abhay | `job_roles` table (84 roles, 791 synonyms imported from Airtable) + `jobs.job_role_id` FK. |
+| 028 | `028_google_jobs_fields.sql` | 2026-04-14 | abhay | `is_remote`, `job_publisher`, `apply_platforms`, `qualifications[]`, `responsibilities[]`, `benefits[]`, `salary_text`, `title_normalized`, `company_name_normalized`. |
+| 029 | `029_college_master_list.sql` | 2026-04-15 | abhay | `degree_level`, `ranking_source`, `ranking_year`, `ranking_score`, `linkedin_slug` on colleges + NIRF MBA Top 50 seed. |
+| 030 | `030_survey_admin_v2.sql` | 2026-04-29 | abhay | New tables: `surveys`, `survey_invites`, `email_queue`. FK-bind `survey_respondents.survey_id`, `survey_responses.survey_id`, `survey_skill_ratings.survey_id` (NOT NULL). Unique on `(survey_id, lower(email))`. |
+| 031 | `031_job_buckets_phase1.sql` | 2026-04-30 | abhay | Bucketization Phase 0/1. `jobs.standardized_title`, `company_type`, `geography`, `bucket_id`, `bucket_match_confidence`, `bucket_match_reason`, `bucket_status_at_assignment`. New tables: `job_buckets`, `job_bucket_aliases`, `job_bucket_evidence`, `job_bucket_skill_map`, `job_bucket_overlays`, `job_bucket_review_queue`, `job_bucket_merge_history`. RLS hides candidate buckets. |
+| 032 | `032_survey_status_published.sql` | 2026-05-05 | abhay | Survey status `published` value added to CHECK constraint. **Tracked** in `list_migrations`. |
+| 033 | `033_taxonomy_4category_model.sql` | 2026-05-06 | abhay | Taxonomy 4-category L1/L2 model. `l1`, `l2`, `domain_tag`, `india_relevance` on `taxonomy_skills` with CHECK constraints. 5 indexes + partial unique. Bulk-inserts 1,419 net-new contemporary skills. source=`nexus_taxonomy_v2_2026_05`. |
+| 037 | `037_taxonomy_legacy_backfill_and_regions.sql` | 2026-05-06 | abhay | Taxonomy legacy backfill + regions. `regions text[]` + GIN. Deterministic backfill l1/l2 for 8,887 legacy rows. Seeds regions from `india_relevance`. Replaces `get_taxonomy_stats()`. Final state then: 0 null l1, 10,307 total. (Today total taxonomy_skills = 41,630.) |
+| 038 | `038_analyze_jd_runs_and_l2_to_l1.sql` | 2026-05-07 | jdenh001 | `analyze_jd_runs` table (pipeline call-level logging, 5 indexes) + `l2_to_l1_lookup` table (10-row L2→L1 seed). RLS: read=authenticated, write=admin. |
+| 038b | `038b_upsert_skill_l1_l2.sql` | 2026-05-07 | jdenh001 | Extends upsert_skill() with optional p_l1/p_l2 params. Adds `find_similar_skill()` (pg_trgm) + `append_skill_alias()`. Enables `fuzzystrmatch`. GIN on aliases[] + trigram on name. |
+| 039 | `039_campus_upload_batches.sql` | 2026-05-07 | jdenh001 | Campus upload batches. New table `campus_upload_batches` (id, college_id FK, program, job_type CHECK, drive_year, source, ctc_tag, status CHECK, uploaded_by FK auth.users, total_files, jds_committed, timestamps). `jobs.upload_batch_id` FK. 3 indexes. RLS: admin full; college_rep read+insert+update scoped to `restricted_college_ids`. |
+| 040 | `040_job_pipeline_p2.sql` | 2026-05-13 | amb-jobs | Job Collection P2: `jobs.last_seen_at`, `role_match_score`, `discovery_source`. New tables: `discovered_titles` (unmatched harvested), `discovery_runs` (sweep run log). 6 indexes. RLS: read=authenticated, write=admin. |
+| 041 | `041_discovered_titles_increment_rpc.sql` | 2026-05-13 | amb-jobs | `increment_discovered_title_counts(p_run_id, p_country, p_source)` SECURITY DEFINER. Supports discovery-harvest. EXECUTE to authenticated. |
+| **042** | `042_college_regions.sql` | 2026-05-14 | cd-uowd14 | **Tracked**. `college_regions` table mapping colleges to `country_variant` strings as they appear in `jobs.country`. Cols: id, college_id FK, country_variant, country_label, is_primary, created_at. Unique on (college_id, country_variant). RLS: authenticated read, service_role full. Supports College Dashboard Live Jobs section. |
+| **043** | `043_upsert_skill_external_id.sql` | 2026-05-14 | cd-uowd14 | **Tracked**. Adds external_id support to `upsert_skill()` for ETL/import flows. |
+| 043b | `043_jobs_country_perf_idx.sql` | 2026-05-15 | cd-uowd14 | **(Also numbered 043 — duplicate file in repo, applied separately.)** Adds `idx_jobs_location_country` (partial, WHERE NOT NULL) and `idx_jobs_location_country_v2` (composite location_country + analysis_version='v2'). CONCURRENTLY. Eliminated 60s dashboard timeout. |
+| **044** | `044_campus_excel_support.sql` | 2026-05-14 | cd-uowd14 | **Tracked**. Campus Excel ingest v2 support (`d1896da`) — extended schema for camjdbcab (`college_dashboard_share_tokens` table for replacing hardcoded `DEMO_SLUGS`; share-token issuance/validation flow). |
+
+### Drift notes
+
+- 2 files in repo numbered `043` — `043_upsert_skill_external_id.sql` (tracked) and `043_jobs_country_perf_idx.sql` (applied separately, not in tracker). Treat the perf-idx one as `043b` going forward; rename in repo at next opportunity.
+- Migrations 014-024, 026, 027 etc. exist as SQL files but aren't in `list_migrations` (applied pre-tracker). Don't re-apply.
 
 ---
 
@@ -22,35 +41,27 @@
 
 | # | Reserved For | Reserved By | Status |
 |---|---|---|---|
-| 034 | Alumni Insights core (re-reserve) | TBD | available |
-| 035 | Alumni Insights seed (re-reserve) | TBD | available |
-| 036 | Bucket validation cycle audit columns | TBD | available |
-| 038 | `038_analyze_jd_runs_and_l2_to_l1.sql` | 2026-05-07 | jdenh001 (Track A) | analyze_jd_runs table (pipeline call-level logging, 5 indexes) + l2_to_l1_lookup table (10-row L2→L1 seed). RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
-| 038b | `038b_upsert_skill_l1_l2.sql` | 2026-05-07 | jdenh001 (Track B) | Extends upsert_skill() with optional p_l1/p_l2 params (backwards compat). Adds find_similar_skill() RPC (pg_trgm similarity pre-filter) and append_skill_alias() RPC (fuzzy-merge alias append + mention_count increment). Enables fuzzystrmatch extension. GIN index on aliases[] + trigram index on name. NOT applied yet — pending user CLI apply. |
-| 039 | _(applied — see main table)_ | jdenh001 | applied 2026-05-07 |
-| 040 | `040_job_pipeline_p2.sql` | 2026-05-13 | amb-jobs-pipeline | Job Collection Pipeline P2: adds `jobs.last_seen_at`, `jobs.role_match_score`, `jobs.discovery_source` columns. New tables: `discovered_titles` (unmatched titles harvested from discovery sweeps; cols: id, title, normalized_title, country, source, run_id, observed_count, first_seen_at, last_seen_at, status candidate/promoted/ignored, promoted_role_id FK), `discovery_runs` (sweep run log; cols: id, run_type domain/industry, country, query, jobs_found, new_titles, started_at, finished_at, status, pipeline_run_id FK). 6 indexes. RLS: read=authenticated, write=admin. NOT applied yet — pending user CLI apply. |
-| 041 | `041_discovered_titles_increment_rpc.sql` | 2026-05-13 | amb-jobs-pipeline | `increment_discovered_title_counts(p_run_id, p_country, p_source)` SECURITY DEFINER RPC. Supports the discovery-harvest endpoint by atomically incrementing `discovered_titles.observed_count` and refreshing `last_seen_at` for rows touched within the last 5 minutes. Granted EXECUTE to authenticated. NOT applied yet — pending user CLI apply. |
-| 042 | `042_college_regions.sql` | 2026-05-15 | cd-uowd14 | New `college_regions` table mapping each college to one-or-more `country_variant` strings (raw variants as they appear in `jobs.country`). Cols: id, college_id FK, country_variant, country_label, is_primary, created_at. Unique on (college_id, country_variant). RLS: authenticated read, service_role full. Supports College Dashboard Live Jobs section. NOT applied yet — pending Supabase apply. |
-| 043 | `043_jobs_country_perf_idx.sql` | 2026-05-15 | cd-uowd14 | College Dashboard perf fix. Adds `idx_jobs_location_country` (partial, WHERE NOT NULL) and `idx_jobs_location_country_v2` (composite location_country+analysis_version, WHERE analysis_version='v2') on `public.jobs`. Eliminates seq-scan of 21k-row jobs table on every dashboard /by-slug load that filters UAE/GCC variants. Uses CREATE INDEX CONCURRENTLY — no table lock. NOT applied yet — pending Supabase apply. |
-| 044 | _(open)_ | TBD | available |
-
-> Note: Two earlier migration files exist for Alumni Insights as `0001_alumni_insights_core.sql` and `0002_alumni_insights_seed.sql`. Before applying, decide whether to renumber to fit the main sequence (032/033) or keep as a separate alumni_insights namespace.
+| 045 | Sentry release tagging table + audit_dashboard_events (Norms 6 + 10) | TBD | available |
+| 046 | Open | TBD | available |
+| 047 | Open | TBD | available |
 
 ---
 
-## How to add a migration
+## How to add a migration (current protocol)
 
-1. Check this file for the next number.
-2. Add a row in the Reservation queue with status "in progress" + your thread short_id.
-3. Write SQL in `/tmp/nexus-amb/migrations/<NNN>_<feature>.sql`.
-4. Apply via Supabase CLI/dashboard (NOT via execute_sql).
-5. Once applied, move the row up to the main table with the date and summary.
-6. Update `/docs/STATUS.md` with a new entry.
-
----
+1. Reserve a number here with status `in progress` + thread short_id.
+2. Write SQL in `/migrations/<NNN>_<feature>.sql` (repo root, not `/tmp`).
+3. **Always include a rollback block at the top.** Per Norm 7, destructive migrations require `pg_dump` first.
+4. Apply via `supabase` MCP `apply_migration` OR `supabase db push` CLI. **Never via `execute_sql`.**
+5. Verify with `list_migrations` and `get_advisors security` — baseline must remain 0 ERROR.
+6. Move row to the main table above with applied date.
+7. Update `/docs/STATUS.md` with a 1-line entry.
+8. If RLS changed: update `/docs/RLS.md`.
 
 ## Conventions
 
 - Always include rollback notes in a comment block at the top of the file.
-- RLS additions must be documented in `/docs/RLS.md`.
+- RLS additions must be documented in `RLS.md`.
 - Renames + drops require explicit user approval — flag in tracker before applying.
+- Destructive ops require pre-migration `pg_dump` per Norm 7.
+- New RPC: explicit `REVOKE ALL FROM PUBLIC` then `GRANT EXECUTE TO authenticated, service_role` per Norm 4. `REVOKE FROM anon, authenticated` alone is a no-op.

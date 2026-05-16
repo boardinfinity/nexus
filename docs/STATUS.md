@@ -1,63 +1,102 @@
 # Nexus — Rolling STATUS Log
 
-Append a 1-line entry after every meaningful ship. Most-recent first. Format:
-`YYYY-MM-DD · <feature> · <commit-sha> · <one-line summary>`
+Append a 1-line entry after every meaningful ship. **Most-recent first.** Format:
+`YYYY-MM-DD · <feature/short_id> · <commit-sha> · <one-line summary>`
+
+> **Source of truth:** This file lives in **two places** — Space (for thread context) and `/docs/STATUS.md` in `boardinfinity/nexus` (for repo context). Both must stay in lockstep.
+
+---
+
+## Current ground truth (as of 2026-05-17)
+
+| Metric | Value | Source |
+|---|---|---|
+| `jobs` count | 59,497 | Supabase live |
+| `jobs` with posted_at | 57,195 | Supabase live |
+| `jobs` UAE/GCC (AE/SA/QA/OM/KW/BH) | 2,729 | Supabase live |
+| `alumni` count | 18,636 | Supabase live |
+| `taxonomy_skills` count | 41,630 | Supabase live |
+| `colleges` count | 982 | Supabase live |
+| `job_buckets` count | 3,186 | Supabase live |
+| `surveys` count | 6 | Supabase live |
+| `pipeline_runs` count | 1,253 | Supabase live |
+| `pipeline_schedules` count | 83 | Supabase live |
+| `secondary_reports` count | 31 | Supabase live |
+| Latest migration applied (tracked) | `044_campus_excel_support` | `list_migrations` |
+| Next migration number | **045** | per repo `/migrations` |
+| Security advisors: ERROR | 0 | `get_advisors` |
+| Security advisors: WARN | 1 (`pg_trgm` in public — deferred) | `get_advisors` |
+| Security advisors: INFO | 38 (RLS-enabled-no-policy — by design, service-role architecture) | `get_advisors` |
+| Supabase compute | **Medium** (~$60/mo) — upgraded from Nano during UOWD demo | Plan |
+| Vercel plan | **Pro** · `maxDuration: 300` | Plan |
+| HIBP password breach check | enabled | Supabase Auth |
+| Repo (canonical) | `github.com/boardinfinity/nexus` | n/a |
+| Mirror (read-only) | `github.com/abhay-boardi/nexus` | n/a |
 
 ---
 
 ## 2026
 
-- 2026-05-15 · job90sch · live-db · Activated 64 active Nexus 90 job collection schedules in Supabase: 90 distinct roles covered; cadence tiers 56 daily / 21 weekly / 13 monthly; India uses LinkedIn + Google Jobs; UAE/Saudi use LinkedIn + Google Jobs + Bayt + NaukriGulf.
-- 2026-05-15 · job90sch · cef419b · Job collection scheduler rollout support: compact Google role queries (1 query per role), schedules API/UI accepts Bayt + NaukriGulf and monthly cadence, added idempotent 90-role schedule seed script. Live schedule activation pending confirmation because recurring runs consume provider credits.
-- 2026-05-07 · jd-analyzer-enhancement-COMPLETE · affaf26+16de0f3+dffb624+e1aa504+2ce15e4 · ALL 5 TRACKS SHIPPED to boardinfinity/nexus@main. Track A backend hardening (unified pipeline + migration 038 + runs endpoint) · Track B L1/L2 + fuzzy synonyms (prompt v2.2 + migration 038b + 0 null l1 across 10,307 skills) · Track C frontend transparency (jd-analyzer.tsx 716→459 lines + 7 sub-components with tooltips/badges/disclosures) · Track D bulk campus upload (migration 039 + campus-upload.ts + 4-step wizard at /upload/campus) · Track E runs dashboard (/jd-analyzer/runs with 7-card KPI strip + drill-down + auto-refresh). Production verified 200 OK. 3 migrations awaiting user apply: 038, 038b, 039. All 5 Feature Tracker rows = Done. Owner thread jdenh001.
-- 2026-05-07 · track-E-runs-dashboard · 2ce15e4 · Track E: /jd-analyzer/runs admin dashboard. New page jd-analyzer-runs.tsx (648 lines) — 7-card KPI strip (total runs, 7d, success/partial/failure rates, avg latency, skills, new skills), filter bar (source/status/date/limit), 13-column runs table with status badges + truncated errors + job/batch links, side-panel drill-down with full error_message + Re-run via POST /api/analyze-jd, 10s auto-refresh toggle, pagination 50/page, empty states for unapplied 038. Sidebar 'Analyzer Runs' link. Admin-only v1 with TODO(jdenh001) for SPOC scoping. Commits: 18ef398, 3281c6e, 82a46f5, 2ce15e4.
-- 2026-05-07 · track-C-frontend-transparency · dffb624 · Track C: JD Analyzer results refactored into 7 transparent sub-components (ResultHeader, ClassificationCard, BucketMappingCard, ExperienceEducationCTC, SkillsCard + types/InfoTooltip) with shadcn Tooltip explainers for sub_role/confidence/candidate-bucket, auto-created badges, L1-coloured skill chips, 'Why this bucket?' Collapsible disclosure. jd-analyzer.tsx 716→459 lines, defensively typed for forward-compat with Track A/B payloads.
-- 2026-05-07 · track-B-l1l2-synonyms · b6230ae · Track B: updated JD_CLASSIFICATION_PROMPT to v2.2 (explicit L2 category field + 10-value enum docs), wired l1/l2 into processSkill() + upsert_skill RPC (p_l1/p_l2 params), added fuzzy-match step (pg_trgm similarity ≥ 0.7 + Levenshtein ≤ 2) with alias append and [fuzzy-merge] logging. Migration 038b: find_similar_skill() + append_skill_alias() RPCs + fuzzystrmatch ext. Backfill verified: 0 null l1 across 10,307 skills.
-- 2026-05-07 · track-D-bulk-campus-upload · 3d1d6ec · Track D: bulk campus JD upload. Migration 039 (campus_upload_batches + jobs.upload_batch_id FK, RLS scoped to college_rep), api/routes/campus-upload.ts (5 routes: create batch, multipart file upload, review, commit, list), client/src/pages/upload-campus.tsx (4-step wizard), App.tsx + app-sidebar.tsx wired. Commits: e5e8d61 (039.sql), 1567692 (campus-upload.ts), 6897b84 (upload-campus.tsx), 1729e9a (App.tsx), 5d55a24 (sidebar), 3d1d6ec (index.ts).
-- 2026-05-07 · track-A-backend-hardening · 6a1cecf · Track A: unified analyze-jd pipeline (api/lib/analyze-jd.ts), structured upsert_skill error logging → analyze_jd_runs, GET /api/analyze-jd/runs, migration 038 (analyze_jd_runs + l2_to_l1_lookup), async_batch instrumentation. All 3 entry points (manual_single, async_batch, bulk_upload) route through canonical pipeline. Commits: 727211e (038.sql), 55968d5 (analyze-jd.ts), 031b217 (taxonomy.ts), a5294b7 (batch.ts), 6a1cecf (index.ts).
-- 2026-05-07 · jd-analyzer-enhancement · — · Kicked off Analyze JD enhancement cycle (Whimsical board). 5 tracks: A backend hardening, B L1/L2 skills + synonyms, C frontend transparency, D bulk campus upload, E runs dashboard. Reserved migrations 038 (analyze_jd_runs + l2_to_l1) and 039 (campus_upload_batches). 5 Feature Tracker rows under P2 JD Pipeline owned by thread jdenh001.
-- 2026-05-06 · taxonomy · 6237894 · Taxonomy admin UI v2: replaced category tabs with L1 chips (4) + smart L2 dropdown (valid pairs only) + multi-region filter + Source filter (v2/legacy). API `/taxonomy` accepts `l1`, `l2`, `regions`, `source_filter`; `/taxonomy/stats` returns `by_l1`, `by_l2`, `by_region`. Migration 037: adds `regions text[]` (GIN), backfills l1/l2 for 8,887 legacy rows (technology→Tool, skill→Skill, ability→Ability, knowledge→Knowledge), seeds regions from `india_relevance`, extends `get_taxonomy_stats()`. Final L1 distribution: TECHNICAL SKILLS 9,574 / COMPETENCIES 334 / KNOWLEDGE 288 / CREDENTIAL 111 = 10,307.
-- 2026-05-06 · taxonomy · 4b48c9c · Migration 033: 4-category L1/L2 model on `taxonomy_skills` (l1+l2+domain_tag+india_relevance cols + CHECK constraints + indexes) and bulk insert of 1,419 net-new modern skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged). Existing 8,887 legacy rows untouched.
-- 2026-05-06 · uowd-survey · bd929ff · UOWD survey: 25 preset skill rows (text-only) + optional taxonomy add-more picker.
-- 2026-05-06 · setup · 5c8faee · Created /docs/ folder with STATUS.md, FEATURE_TRACKER.md, MIGRATIONS.md, ENV.md, RLS.md, MODELS.md. Established Notion+/docs hybrid coordination model, seeded Notion Feature Tracker DB (60 rows), refreshed universal thread context template.
-- 2026-05-05 · job-role-master · — · Replaced public.job_roles from May-2026 75-row CSV; restored 15 legacy entries; deduped synonyms → 90 distinct records.
-- 2026-04-30 · bucketization · PR #7 · Phase 0/1 merged. Migration 031, 7 bucket tables, deterministic resolver, dry-run endpoint, JD Analyzer Bucket Mapping panel. Seeded 41 candidate buckets.
-- 2026-04-30 · alumni-insights · — · Spec finalized; migrations 0001_alumni_insights_core.sql + 0002_alumni_insights_seed.sql ready for application.
+### May (active month)
+
+- 2026-05-15 · job90sch · `9bd944b` · Docs: mark 90-role rollout active. Final closeout of scheduler activation cycle.
+- 2026-05-15 · job90sch · `live-db` · Activated 64 active schedules in Supabase: 90 distinct roles; 56 daily / 21 weekly / 13 monthly; India = LinkedIn + Google; UAE/Saudi = LinkedIn + Google + Bayt + NaukriGulf. `pipeline_schedules` now at 83 rows.
+- 2026-05-15 · job90sch · `cef419b` · Job collection scheduler 90-role rollout support: compact Google role queries, schedules API/UI accepts Bayt + NaukriGulf + monthly cadence, idempotent 90-role seed script.
+- 2026-05-15 · run-history · `5f7e352` · JD fetch/analysis result breakdown, correct View Jobs links, missing pipeline labels; track fetched/no_jd_found counters in pipeline_runs.config.
+- 2026-05-15 · scheduler · `c55610d` · Add `checkAndRunJdFetchCron()` — JD fetch was never auto-triggered on tick because no schedule row existed.
+- 2026-05-15 · nexus-flow · `d47601a` + `7025d44` + `65e0009` · Flatten nexus-flow into single component; rename props to avoid minifier ReferenceError on production build.
+- 2026-05-15 · nexus-flow · `d908714` · **Phase 4+2 — unified pipeline dashboard.** 4-stage view (Sources/Repo/JD Fetch/Analysis), Stage 4 intelligence (buckets, discovered titles, 7d trend), Phase 2 batch submit wired inline, responsive layout, extended queue-status API (24 parallel Supabase queries).
+- 2026-05-15 · jd-fetch · `0e71c94` · **Phase 3 — Google Search + GPT-4.1 mini extraction**, no_jd_found status, location-aware queries, geoToSearchLocation() helper, 3-strategy logic (direct URL → Google+GPT → no_jd_found).
+- 2026-05-15 · jd-bulk · `db9103e` · Import resolveBucket in pipelines.ts (was missing — caused ReferenceError for all 100 backfill jobs per page).
+- 2026-05-15 · jd-bulk · `eda1ad9` · Backfill always fetches offset=0 (prevent pagination drift on shrinking set).
+- 2026-05-15 · jd-bulk · `f90a036` · Add `/pipelines/jd/backfill-buckets` endpoint — resolver-only backfill for 3,656 v2 jobs.
+- 2026-05-15 · jd-bulk · `96d8b34` · Raise jd_enrichment PER_INVOCATION_CAP 40→100 (5.3s/job ÷ CONC=3 × 100 ≈ 177s, fits 300s cap).
+- 2026-05-15 · jd-bulk · `70f3936` · Perf: pre-load bucket catalog once before chunk loop (300 DB calls → 3 per batch).
+- 2026-05-15 · jd-bulk · `1f24427` + `bb46e68` · Sync LLM prompt codes with DB FKs (FN-PRD/CSU/ITS/LGL/QAL/REL); FK guard in createCandidateBucket; hard-filter fn/family/industry mismatches.
+- 2026-05-15 · jd-bulk · `4929e2f` · **Phase 1: 3-tier bucket resolver** (validated ≥50% → auto_assign, candidate ≥50% → tentative, else → auto_create). Batch cap 100. View Jobs fix. Analyze JD drawer shows ClassificationCard + BucketMappingCard + SkillsCard.
+- 2026-05-15 · jd-bulk · `a787150` · **JD bulk pipeline proper fix** — remove drain chain, stateless 5-min cron, zombie watchdog, JDBatchStatus UI, batchSize 8.
+- 2026-05-15 · cd-uowd14 · `3a0ac20` · Closeout — Perf #1 + mig 044 written + 22 Phase 1-5 rows in Notion.
+- 2026-05-15 · cd-uowd14 · `b3ba3eb` · **Perf #1 — edge cache** (s-maxage=300, SWR=600) on public `/by-slug` + `/jobs`; React-Query staleTime 5min + gcTime 30min.
+- 2026-05-15 · cd-uowd14 · `7439b46` · Dashboard timeout resolution — Wave A/B/C refactor + compute upgrade to Medium. /by-slug now 3s, /jobs 9.4s.
+- 2026-05-15 · cd-uowd14 · `275bf31` · Migration 043 — index `jobs.location_country` to fix College Dashboard 60s timeout. CONCURRENTLY.
+- 2026-05-15 · cd-uowd14 · `6a88746` · Parallelize buildDashboardPayload into Wave A/B/C + merge duplicate UAE/GCC jobs pulls to fix 60s gateway timeout.
+- 2026-05-15 · jd-bulk · `3659c42` · Fix QueueStatus active_batch type — object not string, fix .slice() crash.
+- 2026-05-14 · me-jobs · `4bc931f` · P0 async decouple + timeout raises (all 4 executors), P1 salary currency fix + incrementalMode default, P2 multi-country schedules, tabbed UI (4 tabs).
+- 2026-05-14 · audit · — · 3 clay_linkedin CSV uploads stuck mid-batch on client-side abandonment → marked failed; opened `amb-uprc09` for watchdog work.
+- 2026-05-14 · amb-uprc09 · `9abbc6f` · **Upload fix: truthful skipped counters + expireStuckUploads watchdog wired into `/scheduler/tick` (30-min threshold) + finalizeUpload treats fully-deduped re-uploads as completed + UI copy fixes.** (Reference impl of Norm 1 for the next uploader.)
+- 2026-05-14 · cd-uowd14 · `e000b47` · **College Dashboard Phase 0 v0 for UOWD.** 8-panel public endpoint at `/c/uowd-9k3xr2vp/dashboard`. Vercel verified: 40 programs / 181 courses / 1,388 mapped skills / 9,502 alumni. Demo URL live.
+- 2026-05-14 · cd-uowd14 · `4c0b6c6` · **UAE/GCC skill extraction worker** — Vercel re-entrant. Endpoints: POST `/admin/extract-uae-job-skills/{start,tick,stop}`, GET `/status`. 25 jobs/tick × concurrency=5, ~4min budget, resumable via `analysis_version!='v2'`, reuses `batch_jobs`. CRON_SECRET-gated public tick for self-recursion.
+- 2026-05-14 · me-jobs · `ca8dedb` · Restored Bayt + NaukriGulf executors (clobbered by concurrent push 19f6b17).
+- 2026-05-14 · me-jobs · `d7cf5c3` · **Bayt + NaukriGulf executors + frontend forms.** pipeline_type: `bayt_jobs` | `naukrigulf_jobs`. No migration needed.
+- 2026-05-13 · amb-jobs · `922d6d6` · P3 closeout. `/pipelines/jobs/recover-bulk-roles` (harvests 30 role datasets per bulk pipeline_run, pre/post snapshot pattern to compensate for processLinkedInResults overwrite). 9 bulk runs recovered → 1,629 bulk jobs. Discovery-harvest 96/96 in chunked mode → 1,829 discovered_titles. Fresh 24h: 5,104.
+- 2026-05-13 · amb-jobs · — · Bulk-dispatch + discovery-sweep fired. **Discovery-sweep WORKED** (96 runs, 2,932 jobs). **Bulk-dispatch FAILED** with 300s timeout — 270 Apify launches × fire-and-forget exceeded budget. Lesson: never fan out >30 parallel Apify launches in a single request.
+- 2026-05-13 · amb-jobs · — · P3 routes added: `/pipelines/jobs/bulk-dispatch`, `/discovery-sweep`, `/discovery-harvest`. Plumbed `discovery_source` through executeLinkedInJobs + processLinkedInResults + executeGoogleJobs.
+- 2026-05-13 · amb-jobs · — · **Migration 040 applied** (`last_seen_at` on 22,118 rows). Promoted `role_match_score` + `last_seen_at` writes into new columns on LinkedIn + Google insert paths.
+- 2026-05-13 · amb-jobs · — · **P2 migration 040 reserved + written** (`jobs.last_seen_at`, `role_match_score`, `discovery_source`; `discovered_titles` + `discovery_runs` tables).
+- 2026-05-13 · amb-jobs · — · P1 LinkedIn mapping patches (qualifications, responsibilities, benefits, salary_text, is_remote, work_type, application_url multi-key); persist job_role_id at insert; OR-query overflow detection; COALESCE company URL backfill.
+- 2026-05-13 · ui-discovery · — · Job drawer Intelligence card (mapped role, match score, mapped bucket, discovery source, JD status, last seen). New `/discovered-titles` admin page (status/country filters, promote/ignore actions).
+- 2026-05-07 · jd-analyzer-enhancement-COMPLETE · `affaf26+16de0f3+dffb624+e1aa504+2ce15e4` · **All 5 tracks shipped.** Track A backend hardening (unified pipeline + 038 + runs endpoint) · Track B L1/L2 + fuzzy synonyms (prompt v2.2 + 038b + 0 null l1 across 10,307 v2-tagged skills) · Track C frontend transparency (jd-analyzer.tsx 716→459 lines + 7 sub-components) · Track D bulk campus upload (039 + /upload/campus 4-step wizard) · Track E `/jd-analyzer/runs` admin dashboard. All Feature Tracker rows = Done. Owner thread `jdenh001`.
+- 2026-05-06 · taxonomy · `6237894` · Taxonomy admin UI v2 — L1 chips + smart L2 dropdown + multi-region filter + Source filter. Migration 037: `regions text[]` GIN, backfill l1/l2 for 8,887 legacy rows, seeds regions. **Note today's count is 41,630 total taxonomy_skills (corpus grew).**
+- 2026-05-06 · taxonomy · `4b48c9c` · **Migration 033 — 4-category L1/L2 model.** l1+l2+domain_tag+india_relevance on taxonomy_skills. Bulk inserts 1,419 net-new modern skills (AI/ML 413, Modern SWE 351, Business/Ops 406, EdTech 173, Cross-cutting 79; 143 India-tagged).
+- 2026-05-06 · uowd-survey · `bd929ff` · UOWD survey 25 preset skill rows + optional taxonomy add-more picker.
+- 2026-05-06 · setup · `5c8faee` · Created `/docs/` folder with all state files. Established Notion+/docs hybrid coordination model. Seeded Notion Feature Tracker DB (60 rows).
+- 2026-05-05 · job-role-master · — · Replaced `public.job_roles` from May-2026 75-row CSV; restored 15 legacy entries; deduped synonyms → 90 distinct records.
+
+### April
+
+- 2026-04-30 · bucketization · PR #7 · Phase 0/1 merged. Migration 031, 7 bucket tables, deterministic resolver, dry-run endpoint, JD Analyzer Bucket Mapping panel. Seeded 41 candidate buckets. **(Note: `job_buckets` is now 3,186 due to auto-create flow.)**
+- 2026-04-30 · alumni-insights · — · Spec finalized; migrations `0001_alumni_insights_core.sql` + `0002_alumni_insights_seed.sql` ready. Application status TBD.
 - 2026-04-29 · surveys · — · Survey Admin v2 shipped. Migration 030, JSONB schema-driven runtime, OTP gate, Mandrill mailer, AI wizard (Brief/Doc/Clone), SPOC scoping with 3-layer enforcement.
-- 2026-04-15 · scheduler · 32440c8 · Reduced to 1 schedule per tick; daily cron at midnight UTC.
-- 2026-04-15 · scheduler · af98838 · Vercel-aware throttling.
-- 2026-04-15 · scheduler · dd9795c · Removed duplicate inline tick handler; delegated to scheduler.ts.
+- 2026-04-15 · scheduler · `32440c8` · Reduced to 1 schedule per tick; daily cron at midnight UTC.
+- 2026-04-15 · scheduler · `af98838` · Vercel-aware throttling.
+- 2026-04-15 · scheduler · `dd9795c` · Removed duplicate inline tick handler; delegated to scheduler.ts.
 - 2026-04-15 · alumni-scraper · — · Rebuilt with college selection from master list, post-scrape education validation.
 - 2026-04-14 · jobs-pipeline · — · LinkedIn + Google Jobs rebuilt on Apify-only; 22-country dropdown; richer fields.
-- 2026-04-14 · job-roles · — · Migration 027: 84 roles + 791 synonyms imported from Airtable; jobs.job_role_id FK.
-- 2026-04-14 · masters-ui · — · /masters page with Job Roles + Colleges tabs.
-- 2026-04-09 · intelligence-framework · — · Migration 025: P1 schema for Intelligence Framework. 26 functions, 20 families, 15 industries seeded. upsert_skill() + validate_skills() functions.
+- 2026-04-14 · job-roles · — · Migration 027: 84 roles + 791 synonyms imported from Airtable; `jobs.job_role_id` FK.
+- 2026-04-14 · masters-ui · — · `/masters` page with Job Roles + Colleges tabs.
+- 2026-04-09 · intelligence-framework · — · Migration 025: P1 schema for Intelligence Framework. 26 functions, 20 families, 15 industries seeded. `upsert_skill()` + `validate_skills()`.
 - 2026-04-03 · marketing · — · Nexus product marketing wireframe + Nexus University one-pager.
-2026-05-13 09:01 UTC amb-jobs-pipeline: P1 started — patching LinkedIn mapping (qualifications, responsibilities, benefits, salary_text, is_remote, work_type, application_url multi-key), persisting job_role_id at insert, OR-query overflow detection, COALESCE company URL backfill
 
-2026-05-13 09:13 UTC · amb-jobs-pipeline · P2 migration 040 reserved + written (jobs.last_seen_at, role_match_score, discovery_source; discovered_titles + discovery_runs tables; backfill role_match_score from raw_data). Awaiting CLI apply.
-2026-05-13 09:30 UTC · amb-jobs-pipeline · Migration 040 applied (last_seen_at on 22118 rows). Promoted role_match_score + last_seen_at writes into the new columns on LinkedIn + Google insert paths.
-2026-05-13 09:38 UTC · amb-jobs-pipeline · P3 routes added: /pipelines/jobs/bulk-dispatch, /pipelines/jobs/discovery-sweep, /pipelines/jobs/discovery-harvest. Plumbed discovery_source through executeLinkedInJobs + processLinkedInResults + executeGoogleJobs, and _pipeline_run_id into raw_data for harvest joins. Migration 041 (increment_discovered_title_counts RPC) reserved.
+### May 17 — Audit & Norms (this session)
 
-2026-05-13 10:15 UTC · amb-jobs-pipeline · Bulk-dispatch + discovery-sweep fired. Discovery-sweep WORKED (96 runs, 56+ completed, 2932 jobs landed, discovery_source populating cleanly across domain_sweep + 19 industries). Bulk-dispatch FAILED with Vercel 300s timeout: fanning out 9 pipeline_runs × 30 roles each = ~270 Apify launches in one fire-and-forget request killed the function before _job_roles metadata could be persisted, so /poll cannot recover. 9 stuck pending runs marked failed. Recovery: re-fire 9 country×exp combos sequentially via standard /pipelines POST (single combo = 30 parallel Apify launches + persisted metadata, fits 300s budget). bulk_dispatch_id=ed53671c-c7d3-42ce-86c1-86d50b19b298.
-
-2026-05-13 11:30 UTC · 922d6d6 · amb-jobs-pipeline · P3 closeout. Added /pipelines/jobs/recover-bulk-roles endpoint that harvests all 30 role datasets per bulk pipeline_run (primary + 29 _additional_runs), accumulating processed_items/total_items via pre/post snapshot pattern (compensates for processLinkedInResults overwrite flaw). Recovered all 9 bulk runs → 1629 bulk jobs landed (discovery_source IS NULL). Discovery-harvest run in chunked single-id mode (per-discovery_run_id to avoid 300s timeout): 96/96 succeeded, 1829 discovered_titles persisted with normalized titles + country. Total fresh jobs last 24h: 5104. P3 complete.
-
-2026-05-13 18:15 UTC · ui-discovery · UI for new ME backfill fields. Job drawer now has Intelligence card (mapped role, match score with progress bar, mapped bucket, discovery source, JD status, last seen, posted). New /discovered-titles admin page with status/country filters + promote/ignore actions. Backend: GET /discovered-titles list, POST /discovered-titles/:id/promote (creates job_role with family + original title as synonym), POST /discovered-titles/:id/ignore. Wired path matcher in api/index.ts and sidebar nav entry.
-2026-05-14 · me-jobs-pipeline · d7cf5c3 · feat: Bayt.com + NaukriGulf executors (executeBaytJobs, executeNaukriGulfJobs, processMEJobResults), mappers (mapBaytJob, mapNaukriGulfJob, mapBaytCareerLevel, mapBaytCountryCode), BaytForm + NaukriGulfForm frontend. pipeline_type: bayt_jobs | naukrigulf_jobs. No migration needed.
-2026-05-14 · me-jobs-pipeline · ca8dedb · fix: restored executeBaytJobs/executeNaukriGulfJobs/processMEJobResults clobbered by concurrent push (19f6b17). ME pipeline now live.
-2026-05-14 · 89b6ac0 · Verified discovery + UI clean against Phases 1-3 security baseline (advisors at documented baseline; 0 client supabase.rpc/from; 7 routes boot)
-2026-05-14 · me-jobs-pipeline · 4bc931f · feat: P0 async decouple + timeout raises (all 4 executors), P1 salary currency fix + incrementalMode default, P2 multi-country schedules, tabbed UI (4 tabs)
-2026-05-14 · [audit] · RC: 3 clay_linkedin CSV uploads (5f6d6a83, 9cde0d0d, 25b2a589) stuck mid-batch on client-side abandonment; marked failed; opened amb-uprc09 to ship watchdog + truthful counters
-2026-05-14 · amb-uprc09 · 9abbc6f · fix(upload): truthful skipped counters (data.length detection vs ignoreDuplicates) + expireStuckUploads watchdog wired into /scheduler/tick (30-min threshold) + finalizeUpload now treats fully-deduped re-uploads as completed + UI copy fixes
-2026-05-14 · cd-uowd14 · e000b47 · feat(college-dashboard): Phase 0 v0 UOWD demo + UAE skill extraction. api/routes/college-dashboard.ts (8-panel consolidated endpoint w/ public-slug variant), api/index.ts wiring, client/src/pages/college-dashboard.tsx (single-fetch React page with honest data-quality chips + heatmap + exec summary), App.tsx routes (/colleges/:id/dashboard + standalone /c/uowd-9k3xr2vp/dashboard), scripts/extract-uae-job-skills.ts (idempotent v2 backfill for ~3,404 UAE/GCC jobs). Pushed to boardinfinity/nexus@main (was looking at wrong repo earlier). Vercel deploy verified: /api/health 200, public endpoint returns 40 programs / 181 courses / 1,388 mapped skills / 9,502 alumni for UOWD. Demo URL: https://nexus.boardinfinity.com/#/c/uowd-9k3xr2vp/dashboard
-2026-05-14 · cd-uowd14 · 4c0b6c6 · feat(uae-extract): Vercel re-entrant UAE/GCC job-skill extraction worker. New api/routes/extract-uae-job-skills.ts (419 lines) + api/index.ts wiring. Endpoints: POST /admin/extract-uae-job-skills/start|tick|stop, GET /status?batch_id=, POST /public/extract-uae-job-skills/tick (CRON_SECRET, for self-recursion). Processes 25 jobs/tick at concurrency=5, ~4 min budget per tick under Vercel 5min cap, self-schedules next tick via fire-and-forget HTTP, resumable via jobs.analysis_version!='v2' filter, reuses batch_jobs table (batch_type='uae_realtime_extraction'). Verified live: /api/health 200; admin endpoint returns 401 (auth gate); public tick returns 401 without CRON_SECRET (gate works). Lets Abhay trigger ~3,404-job backfill from browser without a terminal.
-2026-05-15 · jd-enrichment-v2 · 85a47dc49937f81d1566a2117233c554064027b9 · Wire runAnalyzeJd() v2.2 into executeJDEnrichment() bulk pipeline — replaces old gpt-4o-mini multi-JD batch, now uses gpt-4.1-mini + L1/L2 + bucket resolver + analyze_jd_runs instrumentation, cap 40/run.
-2026-05-15 · jd-autodrain · 0e9aa495b1e6388ade9ffb7c3bbb083cbfadac8f · feat(jd-drain): self-chaining auto-drain loop — start-drain/stop-drain/chain endpoints + JDAutoDrain UI component with progress bar, is_active stop flag, queue empty auto-stop.
-2026-05-15 · a787150a · JD bulk pipeline proper fix: remove drain chain, stateless 5-min cron, zombie watchdog, JDBatchStatus UI, batchSize 8
-2026-05-15 · 4929e2fe · Phase 1: 3-tier bucket resolver (validated≥50%→auto_assign, candidate≥50%→tentative, else→auto_create), batch cap 100, View Jobs link fixed for jd_enrichment, Analyze JD drawer shows ClassificationCard+BucketMappingCard+SkillsCard
-2026-05-15 · f90a0368 · feat: backfill-buckets endpoint (resolver-only, stale code remap), cron cap 40→100, schedule batch_size=100
-2026-05-15 · eda1ad9e · fix: backfill pagination drift — always fetch offset=0 (shrinking set); script v3 with stuck-loop guard
-2026-05-15 · db9103e7 · fix: import resolveBucket in pipelines.ts — was missing, caused ReferenceError for all 100 backfill jobs per page
-2026-05-15 · 0e71c948 · feat(jd-fetch): Phase 3 — Google Search + GPT-4.1 mini extraction, no_jd_found status, location-aware queries, geoToSearchLocation() helper, 3-strategy logic (direct URL → Google+GPT → no_jd_found)
-2026-05-15 · d9087142 · feat(nexus-flow): Phase 4+2 — Nexus Flow unified pipeline dashboard. 4 stage cards (Sources/Repo/JD Fetch 3A/Analysis 3B), Stage 4 intelligence (bucketed jobs, bucket candidates, discovered titles, 7d trend, avg analysis time), Phase 2 batch submit wired inline, cron activity strip, extended queue-status API (24 parallel Supabase queries), responsive 1→4-col grid, sidebar + App.tsx route
+- 2026-05-17 · norms · — · **Codified 12 Global Norms** in `nexus_global_norms.md`. Refreshed all Space state files (STATUS, FEATURE_TRACKER, MIGRATIONS, MODELS, RLS, ENV, recent_dev_digest). Patching 3 Space-scoped skills. Wiring Sentry, Upstash rate-limiting, weekly cost/infra digest cron. Staging workflow documented (Vercel Preview + Supabase Branches).
